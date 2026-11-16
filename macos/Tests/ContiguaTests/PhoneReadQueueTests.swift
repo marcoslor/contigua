@@ -112,4 +112,39 @@ final class PhoneReadQueueTests: XCTestCase {
         XCTAssertEqual(failed.code, "not_available")
         XCTAssertFalse(failed.ok)
     }
+
+    /// MCP-9: a read queued past its caller's bound leaves the queue and fails
+    /// `timeout`; the body gets only the time left.
+    func testAQueuedReadTimesOutAtTheCallersBound_MCP9() async throws {
+        let queue = PhoneReadQueue()
+        let broker = UITreeBroker()
+        var sent: [Int] = []
+        let first = Task {
+            try await queue.run(until: .now + .seconds(5)) { left in
+                try await broker.read(stream: 3, timeout: left.seconds) { sent.append($0) }
+            }
+        }
+        await yieldALot()
+        let started = ContinuousClock.now
+        do {
+            _ = try await queue.run(until: .now + .milliseconds(100)) { left in
+                try await broker.read(stream: 3, timeout: left.seconds) { sent.append($0) }
+            }
+            XCTFail("the queued read must time out")
+        } catch {
+            XCTAssertEqual(error as? UITreeError, .timedOut)
+        }
+        XCTAssertLessThan(ContinuousClock.now - started, .seconds(1))
+        XCTAssertEqual(sent, [1], "the timed-out read is never sent")
+        var lefts: [Duration] = []
+        broker.reply(reply(seq: 1))
+        _ = try await first.value
+        _ = try await queue.run(until: .now + .seconds(2)) { left in lefts.append(left) }
+        XCTAssertLessThanOrEqual(lefts.first ?? .zero, .seconds(2))
+        XCTAssertGreaterThan(lefts.first ?? .zero, .seconds(1))
+    }
+
+    func testTheSettleGraceIsThePhonesPlusThree_MCP9() {
+        XCTAssertEqual(UISettleBroker.grace, 5.5)
+    }
 }
