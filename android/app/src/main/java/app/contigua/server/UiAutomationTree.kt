@@ -257,8 +257,10 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
         /** `UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES`. */
         const val CONNECT_FLAGS = 1
         const val SETTLE_MS = 300L
-        const val CONNECT_TIMEOUT_MS = 3_000L
-        const val THREAD_START_MS = 2_000L
+        // WIN-79 F5: thread start, connect and settle stay under the Mac's 5 s
+        // deadline, so a first read answers before the Mac gives up on it.
+        const val CONNECT_TIMEOUT_MS = 2_500L
+        const val THREAD_START_MS = 1_000L
     }
 }
 
