@@ -247,10 +247,13 @@ final class UITreeTests: XCTestCase {
         var refs = UITreeRefs()
         refs.remember(try XCTUnwrap(UITree(message: phoneReply())).assigning(snapshot: 1))
         refs.forget(stream: 3) // window.closed
-        XCTAssertEqual(refs.resolved(ref: "s1e1", stream: 3), .windowClosed)
+        XCTAssertEqual(refs.resolved(ref: "s1e1", stream: 3), .noTree)
         XCTAssertEqual(UITreeTapPlan(refs.resolved(ref: "s1e1", stream: 3), ref: "s1e1"),
-                       .refuse(UITreeRefusal.windowClosed))
-        XCTAssertTrue(UITreeRefusal.windowClosed.contains("closed"))
+                       .refuse(UITreeRefusal.noTree("s1e1")))
+        // The sentence names the ref and the next step (the tool answers "no
+        // such window" before this for a window that is really gone).
+        XCTAssertTrue(UITreeRefusal.noTree("s1e1").contains("s1e1"))
+        XCTAssertTrue(UITreeRefusal.noTree("s1e1").contains("Call ui_tree first."))
     }
 
     @MainActor
@@ -267,7 +270,7 @@ final class UITreeTests: XCTestCase {
         fixture.manager.resetForNextCheck(forgetPrefs: true)
         XCTAssertEqual(fixture.open().stream, stream, "the id is handed out again")
         let plan = UITreeTapPlan(refs.resolved(ref: "s1e1", stream: stream), ref: "s1e1")
-        XCTAssertEqual(plan, .refuse(UITreeRefusal.windowClosed))
+        XCTAssertEqual(plan, .refuse(UITreeRefusal.noTree("s1e1")))
         XCTAssertEqual(refs.nextSnapshot(for: stream), 1, "a reused id starts its read count at 1")
     }
 
@@ -301,7 +304,7 @@ final class UITreeTests: XCTestCase {
                            box: [540, 640, 780, 760], off: false)))
         XCTAssertEqual(refs.resolved(ref: "s12e9", stream: 3),
                        .stale(ref: "s12e9", snapshot: 12, latest: 12))
-        XCTAssertEqual(refs.resolved(ref: "s12e1", stream: 4), .windowClosed,
+        XCTAssertEqual(refs.resolved(ref: "s12e1", stream: 4), .noTree,
                        "a ref belongs to its window")
         // A second tree replaces the first: the old names mean new elements.
         var moved = phoneReply()
@@ -313,7 +316,34 @@ final class UITreeTests: XCTestCase {
         XCTAssertEqual(refs.resolved(ref: "s12e1", stream: 3),
                        .stale(ref: "s12e1", snapshot: 12, latest: 13))
         refs.forget(stream: 3)
-        XCTAssertEqual(refs.resolved(ref: "s13e0", stream: 3), .windowClosed)
+        XCTAssertEqual(refs.resolved(ref: "s13e0", stream: 3), .noTree)
+    }
+
+    func test_WIN79_aRefTheLatestTreeNeverHadSaysSo() {
+        // A made-up row of the latest read, and a ref with no snapshot (the old
+        // "e5" form), must not claim to come from a snapshot.
+        for (ref, snapshot) in [("s12e9", 12), ("e5", 0)] {
+            let sentence = UITreeRefusal.stale(ref: ref, snapshot: snapshot, latest: 12)
+            XCTAssertEqual(sentence, "\(ref) is not in the window's latest tree (s12). Use a ref from that tree, or call ui_tree again.")
+        }
+        XCTAssertEqual(UITreeRefusal.stale(ref: "s3e1", snapshot: 3, latest: 12),
+                       "s3e1 is from snapshot s3, but the window is at s12. Call ui_tree again.")
+    }
+
+    @MainActor
+    func test_WIN79_aReconnectRefusesWithoutSayingTheWindowClosed() async throws {
+        let broker = UITreeBroker()
+        var seq = 0
+        let read = Task { try await broker.read(stream: 3, timeout: 5, send: { seq = $0 }) }
+        await waitUntil { seq != 0 }
+        broker.reply(try XCTUnwrap(UITree(message: phoneReply(seq: seq))))
+        _ = try await read.value
+        broker.fail(.notConnected) // the session ended; the window stays open
+        guard case .refuse(let sentence) = UITreeTapPlan(broker.resolved(ref: "s1e1", stream: 3), ref: "s1e1") else {
+            return XCTFail("a ref from before the reconnect must press nothing")
+        }
+        XCTAssertTrue(sentence.contains("since the phone reconnected"), sentence)
+        XCTAssertFalse(sentence.contains("closed"), sentence)
     }
 
     // MARK: The read lifecycle (F5, F6, F8)

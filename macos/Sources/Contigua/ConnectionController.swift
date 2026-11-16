@@ -1309,7 +1309,8 @@ final class ConnectionController {
 
     /// The element `ref` named in the tree last read for that window (WIN-79),
     /// with the read it came from. `.stale` when the client kept a ref from an
-    /// older screen, `.windowClosed` when the window is gone.
+    /// older screen, `.noTree` when the window has no read since it opened or
+    /// since the phone reconnected.
     func uiTreeResolved(ref: String, stream: UInt32) -> UITreeResolution {
         uiTreeBroker.resolved(ref: ref, stream: stream)
     }
