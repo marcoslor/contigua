@@ -39,6 +39,59 @@ def note(text):
     sys.stdout.flush()
 
 
+# --- MCP-5: every answer matches its outputSchema and its text mirror -------
+
+ANSWERS_CHECKED = 0
+ANSWERS_BROKEN = 0
+
+
+def _schema_type_ok(value, kind):
+    if kind == "null":
+        return value is None
+    if kind == "boolean":
+        return isinstance(value, bool)
+    if kind == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if kind == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if kind == "string":
+        return isinstance(value, str)
+    if kind == "array":
+        return isinstance(value, list)
+    if kind == "object":
+        return isinstance(value, dict)
+    return True
+
+
+def schema_problems(value, schema, where="answer"):
+    """The ways `value` breaks a JSON Schema subset (type, properties,
+    required, items): what a strict MCP client checks structuredContent with."""
+    problems = []
+    kinds = schema.get("type")
+    if kinds is not None:
+        kinds = kinds if isinstance(kinds, list) else [kinds]
+        if not any(_schema_type_ok(value, kind) for kind in kinds):
+            return ["%s is %s, not %s" % (where, type(value).__name__, "/".join(kinds))]
+    if isinstance(value, dict):
+        for key in schema.get("required", []):
+            if key not in value:
+                problems.append("%s lacks required %r" % (where, key))
+        for key, sub in schema.get("properties", {}).items():
+            if key in value:
+                problems += schema_problems(value[key], sub, "%s.%s" % (where, key))
+    if isinstance(value, list) and isinstance(schema.get("items"), dict):
+        for index, item in enumerate(value):
+            problems += schema_problems(item, schema["items"], "%s[%d]" % (where, index))
+    return problems
+
+
+def text_block(result):
+    for block in result.get("content", []):
+        if block.get("type") == "text":
+            return block.get("text", "")
+    return ""
+
+
 # --- MCP stdio client ------------------------------------------------------
 
 class MCP:
@@ -48,6 +101,7 @@ class MCP:
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, bufsize=1)
         self.next_id = 0
+        self.schemas = None
 
     def _write(self, object):
         self.proc.stdin.write(json.dumps(object, separators=(",", ":")) + "\n")
@@ -82,13 +136,43 @@ class MCP:
                             timeout=timeout)
         if "error" in reply:
             raise RuntimeError("%s: JSON-RPC error %r" % (name, reply["error"]))
-        return reply["result"]
+        result = reply["result"]
+        if not result.get("isError"):
+            self.check_answer(name, result)
+        return result
+
+    def check_answer(self, name, result):
+        """MCP-5: structuredContent equals its text mirror and validates
+        against the tool's outputSchema. A FAIL line names the break."""
+        global ANSWERS_CHECKED, ANSWERS_BROKEN
+        if self.schemas is None:
+            tools = self.request("tools/list")["result"]["tools"]
+            self.schemas = {tool["name"]: tool.get("outputSchema") for tool in tools}
+        answer = result.get("structuredContent")
+        problems = []
+        if answer is None:
+            problems.append("no structuredContent")
+        else:
+            try:
+                if json.loads(text_block(result)) != answer:
+                    problems.append("the text mirror differs from structuredContent")
+            except ValueError:
+                problems.append("the text mirror is not JSON")
+            schema = self.schemas.get(name)
+            if schema is None:
+                problems.append("tools/list declares no outputSchema")
+            else:
+                problems += schema_problems(answer, schema)
+        ANSWERS_CHECKED += 1
+        if problems:
+            ANSWERS_BROKEN += 1
+            report(False, "[MCP-5] MCP %s answer: %s" % (name, "; ".join(problems[:3])))
 
     def text(self, name, arguments=None, timeout=60):
         result = self.tool(name, arguments, timeout)
         if result.get("isError"):
             raise RuntimeError("%s: %s" % (name, result["content"][0]["text"]))
-        body = result["content"][0]["text"]
+        body = text_block(result)
         if not body:
             raise RuntimeError("%s: empty result text" % name)
         return json.loads(body)
