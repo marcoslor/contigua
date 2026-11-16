@@ -767,7 +767,7 @@ final class ConnectionController {
         }
         mcp.start()
         windows.onStreamClosed = { [weak self] stream in
-            DispatchQueue.main.async {
+            DispatchQueue.main.async {  // gcd: the close arrives on the session queue; hop to main first
                 self?.uiTreeBroker.forget(stream: stream) // F4: a closed window's refs die with it
                 self?.dockFollowWindowClosed(stream)
             }
