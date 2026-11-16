@@ -67,12 +67,12 @@ extension MCPToolHost {
 
 // MARK: - The screenshot source (MCP-60)
 
-/// A decoded frame from after the call and its count on the window's clock.
+/// A decoded frame from after the call, its count on the window's clock and
+/// when it arrived (uptime). Its age is taken when the answer is made (MCP-20).
 struct SnapshotFrame {
     let buffer: CVPixelBuffer
     let seq: Int
-    let at: TimeInterval?
-    var ageMs: Int? = nil
+    let at: TimeInterval
 }
 
 /// What a screenshot reads its frame from: a window, or a fake in the tests.
@@ -112,9 +112,7 @@ extension StreamWindowController: ScreenshotSource {
             let token = view.beginFrameSnapshot(after: seq) { buffer, stamp in
                 MainActor.assumeIsolated {
                     guard let buffer, let stamp else { once.finish(nil); return }
-                    let now = ProcessInfo.processInfo.systemUptime
-                    once.finish(SnapshotFrame(buffer: buffer, seq: stamp.seq, at: stamp.at,
-                                              ageMs: FrameClock.ms(since: stamp.at, now: now)))
+                    once.finish(SnapshotFrame(buffer: buffer, seq: stamp.seq, at: stamp.at))
                 }
             }
             Task { @MainActor in
@@ -178,7 +176,10 @@ enum Screenshot {
         var answer: [String: Any] = [
             "window": id,
             "state": state(),
-            "frame": FrameClock.object(seq: frame.seq, ageMs: frame.ageMs),
+            // MCP-20: the age now, when the answer is made, not at decode.
+            "frame": FrameClock.object(seq: frame.seq,
+                                       ageMs: FrameClock.ms(since: frame.at,
+                                                            now: ProcessInfo.processInfo.systemUptime)),
             "image": [image.0, image.1],
             "size": [size.0, size.1],
         ]
