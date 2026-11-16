@@ -69,6 +69,24 @@ final class ScreenshotSourceTests: XCTestCase {
         return answer
     }
 
+    // [MCP-61] An offline window can't make a picture: say so at once,
+    // without asking for a keyframe or waiting out the 2 s bound.
+    func testAnOfflinePhoneIsPhoneOfflineAtOnce() async throws {
+        let source = FakeSource(newestSeq: 7, deliver: nil)
+        let started = ProcessInfo.processInfo.systemUptime
+        do {
+            _ = try await Screenshot.result(id: 3, state: "offline", source: source,
+                                            streamSize: (64, 64), crop: nil,
+                                            online: false, phone: "Pixel")
+            XCTFail("an offline phone answered a screenshot")
+        } catch let error as MCPToolError {
+            XCTAssertEqual(error.code, .phoneOffline)
+            XCTAssertEqual(error.message, MCPToolError.phoneOffline("Pixel").message)
+        }
+        XCTAssertNil(source.askedAfter, "no keyframe is asked of an offline phone")
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - started, 0.5)
+    }
+
     // [MCP-60]
     func testTheAnswerIsAFrameThatArrivedAfterTheCall() async throws {
         let source = FakeSource(newestSeq: 40, deliver: SnapshotFrame(
