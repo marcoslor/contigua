@@ -766,13 +766,13 @@ final class VideoLayerView: NSView {
             guard let self else { return }
             self.snapshotter?.cancel()
             guard let format = self.formatDescription else {
-                DispatchQueue.main.async { handler(nil, nil) }
+                DispatchQueue.main.async { handler(nil, nil) }  // gcd: the existing hop from the video queue, its handler re-signed for the stamp
                 return
             }
             let snapshotter = KeyframeSnapshotter()
             self.snapshotter = snapshotter
             snapshotter.begin(format: format, after: after) { buffer, stamp in
-                DispatchQueue.main.async { handler(buffer, stamp) }
+                DispatchQueue.main.async { handler(buffer, stamp) }  // gcd: the existing hop from the video queue, its handler re-signed for the stamp
             }
             DispatchQueue.main.async { [weak self] in self?.onRequestKeyframe?() }
         }
