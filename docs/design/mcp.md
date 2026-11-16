@@ -79,7 +79,7 @@ coordinates the TOUCH frames carry). Window ids are the stream ids
 | `list_windows` | — | `id`, `package` (null for the Phone Mirror), width and height (stream pixels) |
 | `screenshot` | `window` | PNG image content of the last displayed frame, longest side ≤ 1280 px |
 | `ui_tree` | `window` | the display's accessibility tree, trimmed for a reader: one row per label or control, with its text, view id, bounds in the display's pixels and a tap point in 0..1 of the display's input space; `displayId` names the display, `size` the pixel space, `snapshot` this window's read count, and an off-screen node keeps its text with `off: true` and no tap point |
-| `tap` | `window`, `x`, `y`, or `window`, `ref` | down/up at the point, or at the element the ref (`s<snapshot>e<row>`) named in the latest `ui_tree`; a ref from an older tree, a closed window or an off-screen node is refused; the answer echoes that read's `snapshot` and the node's `box` |
+| `tap` | `window`, `x`, `y`, or `window`, `ref` | down/up at the point, or at the element the ref (`s<snapshot>e<row>`) named in the latest `ui_tree`; a ref from an older tree, from before the window reopened or the phone reconnected, or for an off-screen node is refused with a sentence that says which; the answer echoes that read's `snapshot` and the node's `box` |
 | `long_press` | `window`, `x`, `y`, `ms` ≤ 3000 | down, wait, up |
 | `swipe` | `window`, `x1`, `y1`, `x2`, `y2`, `ms` ≤ 2000 | down, interpolated moves at ~60 Hz, up |
 | `type_text` | `window`, `text` ≤ 2000 chars | the same `text` frame the keyboard sends |
@@ -120,8 +120,9 @@ clients learned the hard way:
   so a ref never crosses the wire. `tap` accepts a ref as well as a point. The
   refs belong to the tree that was just read: a newer tree replaces them, so a
   ref the client kept from an older screen is refused with a sentence naming
-  both snapshots instead of pressing whatever moved under that point, and a ref
-  whose window closed is refused too. This is the same ref-per-snapshot rule
+  both snapshots instead of pressing whatever moved under that point; a ref
+  from before the window reopened or the phone reconnected is refused with a
+  sentence that says so. This is the same ref-per-snapshot rule
   accessibility-driven automation clients use; it turns "tap at 0.42, 0.31" into
   "tap that button". A ref is not a promise the screen is the same: an overlay
   that appears after the read can cover the node, and the tap lands where the

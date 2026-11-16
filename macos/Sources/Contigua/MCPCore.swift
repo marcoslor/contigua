@@ -176,7 +176,7 @@ enum MCPTools {
                 description: "The accessibility tree of the window's display: one entry per label or control, with its text, view id, bounds in the display's pixels, a tap point in 0..1 and a ref. displayId names the phone display it was read from; size names the pixel space box is in; snapshot counts this window's reads. An off-screen node keeps its text with off:true and no tap point. Cheaper and more exact than a screenshot for finding what to press. Read it again after an action: a ref only protects against a newer tree, not against a screen that changed under it.",
                 schema: object(["window": window], required: ["window"])),
         MCPTool(name: .tap,
-                description: "Tap a point in the window, or an element by the ref ui_tree gave. A ref wins over x and y and is refused once a newer tree replaced it, when the window closed, or when the node is off screen. The answer echoes the snapshot the ref came from and the node's box.",
+                description: "Tap a point in the window, or an element by the ref ui_tree gave. A ref wins over x and y. It is refused, with a sentence saying what to do, when a newer tree replaced it, when the window has had no tree read since it opened or since the phone reconnected, or when the node is off screen. The answer echoes the snapshot the ref came from and the node's box.",
                 schema: object([
                     "window": window, "x": pointX, "y": pointY,
                     "ref": ["type": "string", "minLength": 1, "maxLength": 32,

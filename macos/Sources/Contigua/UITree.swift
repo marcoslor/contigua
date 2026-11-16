@@ -293,7 +293,7 @@ struct UITreeRefs {
     }
 
     func resolved(ref: String, stream: UInt32) -> UITreeResolution {
-        guard let read = reads[stream] else { return .windowClosed }
+        guard let read = reads[stream] else { return .noTree }
         guard let placed = read.nodes[ref] else {
             return .stale(ref: ref, snapshot: Self.snapshot(in: ref), latest: read.snapshot)
         }
@@ -320,8 +320,10 @@ enum UITreeResolution: Equatable {
     /// The ref is from an older tree: name both snapshots so the client knows
     /// which read it pressed on (F1).
     case stale(ref: String, snapshot: Int, latest: Int)
-    /// No tree for this window: it closed, or was never read (F4).
-    case windowClosed
+    /// No tree for this window: never read, reopened under this id (F4), or
+    /// read before the phone reconnected. The tool has already checked that the
+    /// window is open, so this never means "closed".
+    case noTree
 }
 
 /// Why a `ui.tree` read produced nothing. The tool turns these into one human
@@ -356,8 +358,8 @@ enum UITreeTapPlan: Equatable {
             }
         case .stale(let ref, let snapshot, let latest):
             self = .refuse(UITreeRefusal.stale(ref: ref, snapshot: snapshot, latest: latest))  // F1
-        case .windowClosed:
-            self = .refuse(UITreeRefusal.windowClosed)  // F4
+        case .noTree:
+            self = .refuse(UITreeRefusal.noTree(ref))  // F4, and a reconnect
         }
     }
 }
@@ -366,9 +368,18 @@ enum UITreeTapPlan: Equatable {
 /// tool layer, so the unit tests assert the exact words.
 enum UITreeRefusal {
     static func stale(ref: String, snapshot: Int, latest: Int) -> String {
-        "\(ref) is from snapshot s\(snapshot), but the window is at s\(latest). Call ui_tree again."
+        // A ref from an older read names both reads. One the latest read never
+        // had (a made-up row, or a ref with no snapshot such as "e5") must not
+        // claim it came from a snapshot.
+        if snapshot > 0, snapshot < latest {
+            return "\(ref) is from snapshot s\(snapshot), but the window is at s\(latest). Call ui_tree again."
+        }
+        return "\(ref) is not in the window's latest tree (s\(latest)). Use a ref from that tree, or call ui_tree again."
     }
-    static var windowClosed: String { "That window closed. Call ui_tree again." }
+    /// The window is open (the tool checked) but has no tree to resolve against.
+    static func noTree(_ ref: String) -> String {
+        "\(ref) names nothing: this window has had no tree read since it opened or since the phone reconnected. Call ui_tree first."
+    }
     static func offScreen(_ ref: String) -> String {
         "\(ref) is off screen: scroll it into view and read the tree again."
     }
