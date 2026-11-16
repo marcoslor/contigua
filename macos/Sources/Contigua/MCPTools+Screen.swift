@@ -22,9 +22,14 @@ extension MCPToolHost {
                                    ref: $0, window: id, frameSize: size)
         }
         do {
-            return try await Screenshot.result(id: id, state: stateToken(for: window), source: window,
-                                               streamSize: size, crop: crop,
-                                               online: controller.link.isOnline, phone: phoneName)
+            let result = try await Screenshot.result(id: id, state: stateToken(for: window), source: window,
+                                                     streamSize: size, crop: crop,
+                                                     online: controller.link.isOnline, phone: phoneName)
+            // MCP-21: the state as it is when the answer is made. A window's
+            // first frame can end its opening while the call waits for it.
+            guard case .image(let png, var answer) = result else { return result }
+            answer["state"] = stateToken(for: window)
+            return .image(png, answer)
         } catch let error as MCPToolError where error.code == .noFrame {
             // The state at the bound, not at the call: an opening window may
             // have gone live, a live one may have stalled.
