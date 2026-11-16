@@ -1566,8 +1566,11 @@ def cmd_ui_settle(client, args):
         raise DeckError("no window.opened within %ss" % args.wait)
 
     started = time.monotonic()
-    client.send_json({"t": "ui.settle", "stream": stream, "seq": 1,
-                      "quietMs": args.quiet_ms, "timeoutMs": args.timeout_ms})
+    request = {"t": "ui.settle", "stream": stream, "seq": 1,
+               "quietMs": args.quiet_ms, "timeoutMs": args.timeout_ms}
+    if args.no_stream:
+        del request["stream"]
+    client.send_json(request)
     deadline = time.time() + args.wait
     while time.time() < deadline:
         frame = client.recv(0.25)
@@ -1585,6 +1588,9 @@ def cmd_ui_settle(client, args):
             print("ui.settle ok=%s settled=%s waitedMs=%s events=%s reason=%s elapsed_ms=%d" % (
                 msg.get("ok"), msg.get("settled"), msg.get("waitedMs"), msg.get("events"),
                 msg.get("reason"), elapsed_ms))
+            if args.no_stream:
+                print("ui.settle stream=%s code=%s" % (msg.get("stream"), msg.get("code")))
+                return 0
             if msg.get("ok") is not True:
                 raise DeckError("ui.settle failed: code=%s message=%s"
                                 % (msg.get("code"), msg.get("message", "")))
@@ -3131,6 +3137,8 @@ def build_parser():
     sp.add_argument("--quiet-ms", type=int, default=300, dest="quiet_ms")
     sp.add_argument("--timeout-ms", type=int, default=2000, dest="timeout_ms")
     sp.add_argument("--wait", type=float, default=5.0, help="seconds to wait for the reply")
+    sp.add_argument("--no-stream", action="store_true", dest="no_stream",
+                    help="send ui.settle without a stream and print the failure's stream and code")
 
     sp = sub.add_parser("latency", help="ping round-trip latency", **spp)
     sp.add_argument("--count", type=int, default=20)

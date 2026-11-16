@@ -5367,8 +5367,13 @@ class Session(object):
         flags. `--ignore-ui-settle` models a phone that cannot watch a display."""
         if self.phone.args.ignore_ui_settle:
             return
-        stream = msg.get("stream")
         seq = msg.get("seq")
+        stream = msg.get("stream")
+        if stream is None:
+            # As the phone: a settle with no stream answers stream 0, no_window.
+            self._send_ui_settle(0, seq, {"ok": False, "code": "no_window",
+                                          "message": "There is no window to settle."})
+            return
         window = self.windows.get(stream)
         if window is None:
             self._send_ui_settle(stream, seq, {"ok": False, "code": "no_window",
@@ -5378,9 +5383,14 @@ class Session(object):
             self._send_ui_settle(stream, seq, {"ok": False, "code": "busy",
                                                "message": "The last accessibility request is still running."})
             return
-        # Item 7's clamp: timeoutMs 200-10000.
+        # Item 7's clamps: timeoutMs 200-10000, quietMs 100-2000 and then at
+        # most timeoutMs (MCP-81). The answer time is --settle-ms; a display
+        # that would settle only after the timeout answers changes at it.
         timeout = min(10000, max(200, int(msg.get("timeoutMs") or 2000)))
-        if self.phone.args.never_settle:
+        quiet = min(timeout, min(2000, max(100, int(msg.get("quietMs") or 300))))
+        print("fakephone: ui.settle stream=%s quiet_ms=%d timeout_ms=%d" % (stream, quiet, timeout),
+              file=sys.stderr)
+        if self.phone.args.never_settle or int(self.phone.args.settle_ms) > timeout:
             delay, settled, events, reason = timeout, False, 1, "changes"
         elif self.phone.args.settle_loading:
             delay, settled, events, reason = timeout, False, 0, "loading"
