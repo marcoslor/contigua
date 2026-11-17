@@ -171,6 +171,10 @@ final class FileDropSender {
     /// The gesture is over (saved, refused, cancelled or lost): a source's temp
     /// folder can go. Not called while a batch moves to its next file.
     @ObservationIgnored var onSettled: (() -> Void)?
+    /// The gesture ended (MCP-44): ok, or the sentence of why not. The
+    /// sentence is the phone's own when the phone refused; a Mac-side failure
+    /// gets a closed one, never a file's name.
+    @ObservationIgnored var onEnded: ((_ ok: Bool, _ sentence: String?) -> Void)?
 
     /// How long an outcome stays up, and the sleep it waits on (a test's own).
     private let finishedHold: Duration
@@ -398,6 +402,12 @@ final class FileDropSender {
         // token and is what the e2e reads (the privacy pass must not hide it).
         Log.app.notice("drop: \(ok ? "ok" : "failed", privacy: .public): \(outcome.kind, privacy: .public)")
         if keepState { return }
+        let fromPhone: Bool
+        switch outcome {
+        case .busy, .checksum, .cancelled, .tooLarge, .phone: fromPhone = true
+        default: fromPhone = false
+        }
+        onEnded?(ok, ok ? nil : (fromPhone ? text : "The file could not be sent (\(outcome.kind))."))
         queue = []
         current = nil
         target = nil
