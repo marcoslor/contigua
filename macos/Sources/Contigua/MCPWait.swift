@@ -166,12 +166,14 @@ enum MCPWaitRunner {
         case .settle:
             // PROTOCOL.md "UI tree" §7 caps one settle at 10 s: chain them,
             // each its own turn in the read queue, until one settles or less
-            // than 200 ms of timeoutMs is left (MCP-111).
+            // than 200 ms of timeoutMs is left (MCP-111). The first is always
+            // sent: the floor applies only to the chained ones.
             let end = start + timeoutMs
             var reason = "changes"
             var settled = false
-            while let next = MCPWaitPlan.nextSettle(remainingMs: end - env.nowMs()) {
-                switch await env.settle(quietMs: MCPActMachine.quietMs, timeoutMs: next, untilMs: until) {
+            var next: Int? = min(timeoutMs, MCPWaitPlan.settleCapMs)
+            while let timeout = next {
+                switch await env.settle(quietMs: MCPActMachine.quietMs, timeoutMs: timeout, untilMs: until) {
                 case .reply(true, _, _):
                     settled = true
                 case .reply(false, _, let last):
@@ -180,6 +182,7 @@ enum MCPWaitRunner {
                     return .fail(code)
                 }
                 if settled { break }
+                next = MCPWaitPlan.nextSettle(remainingMs: end - env.nowMs())
             }
             var answer = MCPWaitAnswer(waitedMs: env.nowMs() - start, until: settled ? "met" : "timeout",
                                        reason: settled ? nil : reason)
