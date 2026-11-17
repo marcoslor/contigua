@@ -501,4 +501,35 @@ final class MCPActArgumentTests: XCTestCase {
             }
         }
     }
+
+    // MARK: wait (plan T11)
+
+    // [MCP-96]
+    func testWaitNeedsMsOrText() async throws {
+        let none = await MCPDispatcher.handle(line: callRequest("wait", ["window": 3]),
+                                              client: MCPClientID(1), perform: { _, _ in .answer([:]) })
+        XCTAssertEqual(try errorCode(none), -32602)
+        let error = try XCTUnwrap(try decode(none)["error"] as? [String: Any])
+        XCTAssertEqual(error["message"] as? String, "wait needs ms or text")
+        let long = await MCPDispatcher.handle(line: callRequest("wait", ["window": 3, "ms": 30001]),
+                                              client: MCPClientID(1), perform: { _, _ in .answer([:]) })
+        XCTAssertEqual(try errorCode(long), -32602)
+        XCTAssertEqual(try MCPArguments.call("wait", ["window": 3, "ms": 5000]),
+                       .wait(window: 3, mode: .clock(ms: 5000), timeoutMs: 10000, observe: .tree))
+        XCTAssertEqual(try MCPArguments.call("wait", ["window": 3, "text": "Continue", "gone": true,
+                                                      "timeoutMs": 1500]),
+                       .wait(window: 3, mode: .text("Continue", gone: true), timeoutMs: 1500, observe: .tree))
+        XCTAssertThrowsError(try MCPArguments.call("wait", ["window": 3, "text": "a", "timeoutMs": 30001]))
+    }
+
+    // [MCP-111]
+    func testSettleTakesNoMsOrText() async throws {
+        let data = await MCPDispatcher.handle(
+            line: callRequest("wait", ["window": 3, "settle": true, "ms": 500]),
+            client: MCPClientID(1), perform: { _, _ in .answer([:]) })
+        XCTAssertEqual(try errorCode(data), -32602)
+        XCTAssertThrowsError(try MCPArguments.call("wait", ["window": 3, "settle": true, "text": "a"]))
+        XCTAssertEqual(try MCPArguments.call("wait", ["window": 3, "settle": true]),
+                       .wait(window: 3, mode: .settle, timeoutMs: 10000, observe: .tree))
+    }
 }
