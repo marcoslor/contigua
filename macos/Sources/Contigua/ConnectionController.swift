@@ -1317,22 +1317,22 @@ final class ConnectionController {
                 until: ContinuousClock.Instant? = nil) async throws -> UITree {
         guard link.isOnline, let session else { throw UITreeError.notConnected }
         let bound = until ?? .now + .milliseconds(Int(timeout * 1000))
-        return try await phoneReads.run(until: bound) { left in
-            try await uiTreeBroker.read(stream: stream, timeout: min(timeout, left.seconds)) { seq in
+        return try await phoneReads.run(until: bound) { [uiTreeBroker] in
+            try await uiTreeBroker.read(stream: stream, timeout: timeout) { seq in
                 session.requestUITree(stream: stream, seq: seq)
             }
         }
     }
 
     /// `ui.settle` for a window's display (MCP-81), in the phone's read queue
-    /// (MCP-9), within the caller's bound `until`. The Mac waits `timeoutMs`
-    /// plus the phone's 2.5 s and 3 s; a closed session fails at once.
+    /// (MCP-9). The caller is answered by `until`; the request itself waits
+    /// `timeoutMs` plus the phone's 2.5 s and 3 s, holding the queue; a closed
+    /// session fails at once.
     func uiSettle(stream: UInt32, quietMs: Int, timeoutMs: Int,
                   until: ContinuousClock.Instant) async throws -> UISettleReply {
         guard link.isOnline, let session else { throw UITreeError.notConnected }
-        return try await phoneReads.run(until: until) { left in
-            try await uiSettleBroker.settle(stream: stream, quietMs: quietMs, timeoutMs: timeoutMs,
-                                            within: left.seconds) { seq in
+        return try await phoneReads.run(until: until) { [uiSettleBroker] in
+            try await uiSettleBroker.settle(stream: stream, quietMs: quietMs, timeoutMs: timeoutMs) { seq in
                 session.requestUISettle(stream: stream, seq: seq, quietMs: quietMs, timeoutMs: timeoutMs)
             }
         }
