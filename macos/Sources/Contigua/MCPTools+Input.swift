@@ -270,12 +270,17 @@ final class MCPHostActEnvironment: MCPActEnvironment {
             result = .failed("timeout")
         } catch UITreeError.notConnected {
             result = .failed("phone_offline")
+        } catch is CancellationError {
+            // The client left with the press already sent: it may have landed.
+            result = .failed(UIPressResult.cancelled)
         } catch {
             result = .failed("failed")
         }
         // MCP-84: only a press that happened, or may have, is input on the window.
         if result.mayHaveActed { host.controller.windowActs.agentInput(window: stream, client: client) }
         switch result {
+        case .failed(UIPressResult.cancelled):
+            return .pressFailed("failed")  // the machine knows no cancelled code
         case .failed(let code):
             return .pressFailed(code)
         case .reply(let reply) where !reply.ok:
