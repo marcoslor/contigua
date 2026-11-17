@@ -115,6 +115,11 @@ final class MCPCoreTests: XCTestCase {
                       "description": "Vertical position, 0 (top) to 1 (bottom), in the window's video rect."],
                 "ref": ["type": "string", "minLength": 1, "maxLength": 32,
                         "description": "Element ref from ui_tree, e.g. \"s13e5\". Takes precedence over x and y."],
+                // MCP-81, MCP-82 (T5).
+                "wait": ["type": "string", "enum": ["settle", "none"],
+                         "description": "settle (the default for an action) waits until the window's accessibility tree has not changed for 300 ms and nothing on it is loading, at most 2 s; none answers at once."],
+                "observe": ["type": "string", "enum": ["tree", "none"],
+                            "description": "tree (the default) returns the ui_tree answer read after the settle; none returns no screen."],
             ],
         ]
         XCTAssertEqual(tap.schema as NSDictionary, expected as NSDictionary)
@@ -334,6 +339,16 @@ final class MCPCoreTests: XCTestCase {
         }
     }
 
+    // [MCP-64] `ui_tree` and `screenshot` with `wait: "settle"` carry `settle`:
+    // both outputSchemas declare it.
+    func testTreeAndScreenshotDeclareSettle_MCP64() throws {
+        for tool: MCPToolName in [.screenshot, .uiTree] {
+            let schema = MCPOutputSchemas.schema(for: tool)
+            let properties = try XCTUnwrap(schema["properties"] as? [String: Any])
+            XCTAssertNotNil(properties["settle"], tool.rawValue)
+        }
+    }
+
     // [MCP-20] [MCP-21] Every answer that reflects a window's screen declares
     // `state` and `frame` as required, and the stamp fills them in.
     func testScreenAnswersRequireStateAndFrame() throws {
@@ -438,5 +453,52 @@ final class MCPCoreTests: XCTestCase {
         let oversized = Data(repeating: 0x20, count: MCPProtocol.maxLineBytes + 1)
         let data = await MCPDispatcher.handle(line: oversized, client: MCPClientID(1), perform: { _, _ in .answer([:]) })
         XCTAssertEqual(try errorCode(data), -32600)
+    }
+}
+
+// MARK: - T5: wait and observe on every action (MCP-64, MCP-80, MCP-82)
+
+final class MCPActArgumentTests: XCTestCase {
+    func testObserveDefaultsToTree_MCP82() throws {
+        XCTAssertEqual(try MCPArguments.call("tap", ["window": 3, "x": 0.5, "y": 0.5]),
+                       .tap(window: 3, x: 0.5, y: 0.5, wait: .settle, observe: .tree))
+        XCTAssertEqual(try MCPArguments.call("press_key", ["window": 3, "key": "back"]),
+                       .pressKey(window: 3, key: .back, wait: .settle, observe: .tree))
+        XCTAssertEqual(try MCPArguments.call("ui_tree", ["window": 3]), .uiTree(window: 3, wait: .none))
+        XCTAssertEqual(try MCPArguments.call("screenshot", ["window": 3]),
+                       .screenshot(window: 3, ref: nil, wait: .none))
+    }
+
+    func testWaitAndObserveAreTakenOnEveryAction_MCP81_MCP82() throws {
+        let act: [String: Any] = ["wait": "none", "observe": "none"]
+        func with(_ args: [String: Any]) -> [String: Any] { args.merging(act) { a, _ in a } }
+        XCTAssertEqual(try MCPArguments.call("tap", with(["window": 3, "ref": "s1e2"])),
+                       .tapRef(window: 3, ref: "s1e2", wait: .none, observe: .none))
+        XCTAssertEqual(try MCPArguments.call("long_press", with(["window": 3, "x": 0, "y": 1, "ms": 10])),
+                       .longPress(window: 3, x: 0, y: 1, ms: 10, wait: .none, observe: .none))
+        XCTAssertEqual(try MCPArguments.call("swipe", with(["window": 3, "x1": 0, "y1": 0, "x2": 1, "y2": 1, "ms": 10])),
+                       .swipe(window: 3, x1: 0, y1: 0, x2: 1, y2: 1, ms: 10, wait: .none, observe: .none))
+        XCTAssertEqual(try MCPArguments.call("type_text", with(["window": 3, "text": "a"])),
+                       .typeText(window: 3, text: "a", wait: .none, observe: .none))
+        XCTAssertEqual(try MCPArguments.call("screenshot", ["window": 3, "wait": "settle"]),
+                       .screenshot(window: 3, ref: nil, wait: .settle))
+        XCTAssertEqual(try MCPArguments.call("ui_tree", ["window": 3, "wait": "settle"]),
+                       .uiTree(window: 3, wait: .settle))
+        XCTAssertThrowsError(try MCPArguments.call("tap", ["window": 3, "x": 0.5, "y": 0.5, "wait": "forever"]))
+        XCTAssertThrowsError(try MCPArguments.call("tap", ["window": 3, "x": 0.5, "y": 0.5, "observe": 1]))
+        XCTAssertThrowsError(try MCPArguments.call("ui_tree", ["window": 3, "observe": "tree"]))
+    }
+
+    func testInputAnswersDeclareTheEnvelopeAndNoOk_MCP80() {
+        for tool: MCPToolName in [.tap, .longPress, .swipe, .typeText, .pressKey] {
+            let schema = MCPOutputSchemas.schema(for: tool)
+            let properties = schema["properties"] as? [String: Any] ?? [:]
+            XCTAssertNil(properties["ok"], "\(tool)")
+            XCTAssertEqual(Set(schema["required"] as? [String] ?? []),
+                           ["window", "did", "on", "settle", "state", "frame"], "\(tool)")
+            for key in ["alsoActed", "closed", "tree", "treeError"] {
+                XCTAssertNotNil(properties[key], "\(tool) \(key)")
+            }
+        }
     }
 }

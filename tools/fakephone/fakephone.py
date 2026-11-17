@@ -342,6 +342,24 @@ MEDIA_DURATION_MS = 30_000
 MEDIA_MAX_VOLUME = 15
 
 
+
+def mode_on(args, name):
+    """A settle or close flag (B1's `--never-settle`, `--settle-loading`,
+    `--ignore-ui-settle`, `--close-on-back`), from the command line or, with
+    `--mode-file`, from that file's words as each request arrives: one e2e run
+    switches modes without restarting the phone (plan T5, suite_act)."""
+    if getattr(args, name, False):
+        return True
+    path = getattr(args, "mode_file", None)
+    if not path:
+        return False
+    try:
+        with open(path) as handle:
+            words = handle.read().split()
+    except OSError:
+        return False
+    return name.replace("_", "-") in words
+
 class FakeMedia(object):
     """The fake phone's Now Playing (docs/design/notify.md "Media part 2"): the
     session list, the chosen one, its position and its absolute volume. Every
@@ -5381,7 +5399,7 @@ class Session(object):
         }
         # --settle-loading models a skeleton screen: a spinner row marked loading,
         # and the reply says the tree is still loading (MCP-103).
-        if self.phone.args.settle_loading:
+        if mode_on(self.phone.args, "settle_loading"):
             box_spinner = [int(w * 0.45), int(h * 0.32), int(w * 0.55), int(h * 0.38)]
             nodes.append({"i": len(nodes), "k": 8, "p": 0, "l": 0, "role": "ProgressBar",
                           "box": box_spinner, "at": at(box_spinner), "loading": True})
@@ -5457,7 +5475,7 @@ class Session(object):
     def _on_ui_settle(self, msg):
         """Answer settled after `--settle-ms`, or still-changing per the settle
         flags. `--ignore-ui-settle` models a phone that cannot watch a display."""
-        if self.phone.args.ignore_ui_settle:
+        if mode_on(self.phone.args, "ignore_ui_settle"):
             return
         seq = msg.get("seq")
         stream = msg.get("stream")
@@ -5482,9 +5500,9 @@ class Session(object):
         quiet = min(timeout, min(2000, max(100, int(msg.get("quietMs") or 300))))
         print("fakephone: ui.settle stream=%s quiet_ms=%d timeout_ms=%d" % (stream, quiet, timeout),
               file=sys.stderr)
-        if self.phone.args.never_settle or int(self.phone.args.settle_ms) > timeout:
+        if mode_on(self.phone.args, "never_settle") or int(self.phone.args.settle_ms) > timeout:
             delay, settled, events, reason = timeout, False, 1, "changes"
-        elif self.phone.args.settle_loading:
+        elif mode_on(self.phone.args, "settle_loading"):
             delay, settled, events, reason = timeout, False, 0, "loading"
         else:
             delay, settled, events, reason = int(self.phone.args.settle_ms), True, 0, None
@@ -5691,7 +5709,7 @@ class Session(object):
         self.phone.events.key(msg.get("stream", 0), proto.KEY_UP, keycode, 0)
         # --close-on-back: a back on an app's last screen ends it, so the window
         # closes with app_exited (MCP-83's wire).
-        if action == "back" and self.phone.args.close_on_back:
+        if action == "back" and mode_on(self.phone.args, "close_on_back"):
             stream_id = window.stream_id
             if window._resize_timer is not None:
                 window._resize_timer.cancel()
@@ -6657,6 +6675,9 @@ def build_parser():
     p.add_argument("--settle-loading", action="store_true",
                    help="ui.settle answers still_changing (reason loading) at timeoutMs, "
                         "and ui.tree marks a spinner row loading")
+    p.add_argument("--mode-file", metavar="PATH",
+                   help="a file of words (never-settle, settle-loading, ignore-ui-settle, "
+                        "close-on-back) read at each request, on top of those flags")
     p.add_argument("--close-on-back", action="store_true",
                    help="a nav back closes the stream with window.closed reason app_exited")
     p.add_argument("--ignore-task-front", action="store_true",

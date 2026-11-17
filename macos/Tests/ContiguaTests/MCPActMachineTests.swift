@@ -1,0 +1,529 @@
+// One act call (docs/specs/mcp.md "One act call", MCP-8, MCP-80…87, MCP-107,
+// MCP-108): every row of the table is one `(state, event) → (state, actions)`
+// asserted exactly. The answer's `did` and `on` are pure functions of the call
+// and the window's latest tree, tested here too.
+
+import XCTest
+@testable import Contigua
+
+final class MCPActMachineTests: XCTestCase {
+    typealias M = MCPActMachine
+
+    private func machine(_ state: M.State, path: M.Path = .input, wait: MCPWait = .settle,
+                         observe: MCPObserve = .tree, settle: M.Settle? = nil,
+                         nextReq: Int = 1) -> M {
+        var m = M(path: path, wait: wait, observe: observe)
+        m.state = state
+        m.settle = settle
+        m.nextReq = nextReq
+        return m
+    }
+
+    private func step(_ m: M, _ e: M.Event) -> (M.State, [M.Action], M) {
+        let (next, actions) = M.step(m, e)
+        return (next.state, actions, next)
+    }
+
+    private let settled412 = M.Settle(state: "settled", waitedMs: 412, reason: nil)
+
+    // MARK: Queued
+
+    func testATurnOnALiveWindowSendsTheInputAndSettles_MCP81() {
+        var (state, actions, m) = step(machine(.queued), .turn(.live))
+        XCTAssertEqual(state, .sending)
+        XCTAssertEqual(actions, [.sendInput])
+        (state, actions, m) = step(m, .inputSent)
+        XCTAssertEqual(state, .settling(1))
+        XCTAssertEqual(actions, [.sendSettle(req: 1, quietMs: 300, timeoutMs: 2000)])
+    }
+
+    func testATurnOnALiveWindowPressesARef() {
+        let (state, actions, _) = step(machine(.queued, path: .press), .turn(.live))
+        XCTAssertEqual(state, .pressing)
+        XCTAssertEqual(actions, [.sendPress])
+    }
+
+    func testATurnOnALiveWindowTypes() {
+        let (state, actions, _) = step(machine(.queued, path: .type), .turn(.live))
+        XCTAssertEqual(state, .typing)
+        XCTAssertEqual(actions, [.sendType])
+    }
+
+    func testNoInputBeforeTheWindowIsLive_MCP85() {
+        let (state, actions, _) = step(machine(.queued), .turn(.notReady))
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [.fail("not_ready")])
+        XCTAssertFalse(actions.contains(.sendInput))
+    }
+
+    func testATurnOnAGoneWindowFailsNoWindow_MCP85() {
+        let (state, actions, _) = step(machine(.queued), .turn(.gone))
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [.fail("no_window")])
+    }
+
+    func testATurnWithThePhoneOfflineFailsPhoneOffline_MCP85() {
+        let (state, actions, _) = step(machine(.queued), .turn(.phoneOffline))
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [.fail("phone_offline")])
+    }
+
+    func testARefusedRefPressesNothing_MCP108() {
+        for code in ["stale_ref", "off_screen"] {
+            let (state, actions, _) = step(machine(.queued), .refused(code))
+            XCTAssertEqual(state, .done)
+            XCTAssertEqual(actions, [.fail(code)])
+        }
+    }
+
+    // MARK: Pressing and Typing (T10, T13)
+
+    func testAPressThatLandedIsSent() {
+        let (state, actions, _) = step(machine(.pressing, wait: .none, observe: .none), .pressOK)
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [.answer(M.Answer(settle: M.Settle(state: "not_waited")))])
+    }
+
+    func testAPressThatFailedNamesWhy() {
+        let cases = [("gone", "stale_ref"), ("not_visible", "stale_ref"),
+                     ("off_screen", "off_screen"), ("covered", "covered")]
+        for (phone, code) in cases {
+            let (state, actions, _) = step(machine(.pressing), .pressFailed(phone))
+            XCTAssertEqual(state, .done, phone)
+            XCTAssertEqual(actions, [.fail(code)], phone)
+        }
+    }
+
+    func testTypedTextIsSentWithItsEntry() {
+        let (state, actions, _) = step(machine(.typing, wait: .none, observe: .none),
+                                       .typeOK(entry: "inserted", via: "keys"))
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [.answer(M.Answer(settle: M.Settle(state: "not_waited"),
+                                                  entry: "inserted", via: "keys"))])
+    }
+
+    func testTypingThatFailedFailsWithItsCode() {
+        for code in ["no_field", "not_supported", "failed"] {
+            let (state, actions, _) = step(machine(.typing), .typeFailed(code))
+            XCTAssertEqual(state, .done)
+            XCTAssertEqual(actions, [.fail(code)])
+        }
+    }
+
+    // MARK: Sent
+
+    func testSettledThenTreeAnswersWithTheTree_MCP81() {
+        var (state, actions, m) = step(machine(.sent), .entry)
+        XCTAssertEqual(state, .settling(1))
+        XCTAssertEqual(actions, [.sendSettle(req: 1, quietMs: 300, timeoutMs: 2000)])
+        (state, actions, m) = step(m, .settleReply(req: 1, settled: true, waitedMs: 412, reason: nil))
+        XCTAssertEqual(state, .observing(2))
+        XCTAssertEqual(actions, [.sendTree(req: 2)])
+        (state, actions, m) = step(m, .treeReply(req: 2, "T"))
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [.answer(M.Answer(settle: settled412, tree: "T"))])
+    }
+
+    func testNoWaitWithATreeReadsAtOnce_MCP82() {
+        let (state, actions, m) = step(machine(.sent, wait: .none), .entry)
+        XCTAssertEqual(state, .observing(1))
+        XCTAssertEqual(actions, [.sendTree(req: 1)])
+        XCTAssertEqual(m.settle, M.Settle(state: "not_waited"))
+    }
+
+    func testNoWaitNoObserveAnswersAtOnce_MCP81() {
+        let (state, actions, _) = step(machine(.sent, wait: .none, observe: .none), .entry)
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [.answer(M.Answer(settle: M.Settle(state: "not_waited")))])
+    }
+
+    // MARK: Settling
+
+    func testObserveTreeReadsAfterTheSettle_MCP82() {
+        let (state, actions, m) = step(machine(.settling(1), nextReq: 2),
+                                       .settleReply(req: 1, settled: true, waitedMs: 412, reason: nil))
+        XCTAssertEqual(state, .observing(2))
+        XCTAssertEqual(actions, [.sendTree(req: 2)])
+        XCTAssertEqual(m.settle, settled412)
+    }
+
+    func testASettleWithNothingToObserveAnswers_MCP82() {
+        let (state, actions, _) = step(machine(.settling(1), observe: .none, nextReq: 2),
+                                       .settleReply(req: 1, settled: true, waitedMs: 412, reason: nil))
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [.answer(M.Answer(settle: settled412))])
+    }
+
+    func testATimeoutCarriesItsReason_MCP107() {
+        let (state, actions, _) = step(machine(.settling(1), observe: .none, nextReq: 2),
+                                       .settleReply(req: 1, settled: false, waitedMs: 2000, reason: "loading"))
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [.answer(M.Answer(settle: M.Settle(state: "still_changing",
+                                                                   waitedMs: 2000, reason: "loading")))])
+    }
+
+    func testAStillChangingWithNoReasonSaysChanges_MCP107() {
+        let (_, _, m) = step(machine(.settling(1), nextReq: 2),
+                             .settleReply(req: 1, settled: false, waitedMs: 2000, reason: nil))
+        XCTAssertEqual(m.settle, M.Settle(state: "still_changing", waitedMs: 2000, reason: "changes"))
+    }
+
+    func testASettleThePhoneCannotWatchIsUnavailable_MCP81() {
+        let (state, actions, m) = step(machine(.settling(1), nextReq: 2),
+                                       .settleFailed(req: 1, code: "not_available"))
+        XCTAssertEqual(state, .observing(2))
+        XCTAssertEqual(actions, [.sendTree(req: 2)])
+        XCTAssertEqual(m.settle, M.Settle(state: "unavailable"))
+        let (state2, actions2, _) = step(machine(.settling(1), observe: .none, nextReq: 2),
+                                         .settleFailed(req: 1, code: "not_available"))
+        XCTAssertEqual(state2, .done)
+        XCTAssertEqual(actions2, [.answer(M.Answer(settle: M.Settle(state: "unavailable")))])
+    }
+
+    // MARK: Observing
+
+    func testATreeFailureAfterTheActionIsNotAnError_MCP82() {
+        let (state, actions, _) = step(machine(.observing(2), settle: settled412, nextReq: 3),
+                                       .treeFailed(req: 2, code: "timeout"))
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [.answer(M.Answer(settle: settled412, treeError: "timeout"))])
+    }
+
+    // MARK: Closing, the link, the deadline, the client
+
+    func testAWindowThatClosesDuringTheSettleSaysWhy_MCP83() {
+        let (state, actions, _) = step(machine(.settling(1), nextReq: 2),
+                                       .windowClosed(reason: "app_exited", by: "phone"))
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [.answer(M.Answer(
+            settle: M.Settle(state: "window_closed"), state: "closed",
+            closed: M.Closed(reason: "app_exited", by: "phone")))])
+    }
+
+    func testAWindowThatClosesWhileSentOrObservingSaysWhy_MCP83() {
+        for start in [M.State.sent, .observing(2)] {
+            let (state, actions, _) = step(machine(start, settle: settled412, nextReq: 3),
+                                           .windowClosed(reason: "app_exited", by: "phone"))
+            XCTAssertEqual(state, .done)
+            XCTAssertEqual(actions, [.answer(M.Answer(
+                settle: M.Settle(state: "window_closed"), state: "closed",
+                closed: M.Closed(reason: "app_exited", by: "phone")))], "\(start)")
+        }
+    }
+
+    func testAWindowThatClosesBeforeThePressFailsNoWindow() {
+        for start in [M.State.pressing, .typing] {
+            let (state, actions, _) = step(machine(start), .windowClosed(reason: "app_exited", by: "phone"))
+            XCTAssertEqual(state, .done)
+            XCTAssertEqual(actions, [.fail("no_window")])
+        }
+    }
+
+    func testALostLinkBeforeTheInputFailsPhoneOffline() {
+        for start in [M.State.queued, .pressing, .typing] {
+            let (state, actions, _) = step(machine(start), .linkLost)
+            XCTAssertEqual(state, .done)
+            XCTAssertEqual(actions, [.fail("phone_offline")], "\(start)")
+        }
+    }
+
+    func testALostLinkAfterTheInputAnswersInterrupted() {
+        for start in [M.State.sent, .settling(1), .observing(2)] {
+            let (state, actions, _) = step(machine(start, nextReq: 3), .linkLost)
+            XCTAssertEqual(state, .done)
+            XCTAssertEqual(actions, [.answer(M.Answer(settle: M.Settle(state: "interrupted"),
+                                                      state: "offline"))], "\(start)")
+        }
+    }
+
+    func testTheDeadlineAnswersTimeout_MCP8() {
+        for start in [M.State.queued, .pressing, .typing] {
+            let (state, actions, _) = step(machine(start), .deadline(waitedMs: 5000))
+            XCTAssertEqual(state, .done)
+            XCTAssertEqual(actions, [.fail("timeout")], "\(start)")
+        }
+        let (state, actions, _) = step(machine(.settling(1), nextReq: 2), .deadline(waitedMs: 4990))
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [.answer(M.Answer(settle: M.Settle(state: "still_changing",
+                                                                   waitedMs: 4990, reason: "deadline")))])
+        let (state2, actions2, _) = step(machine(.observing(2), settle: settled412, nextReq: 3),
+                                         .deadline(waitedMs: 5000))
+        XCTAssertEqual(state2, .done)
+        XCTAssertEqual(actions2, [.answer(M.Answer(settle: settled412, treeError: "timeout"))])
+    }
+
+    func testAClientThatLeftGetsNoAnswer() {
+        for start in [M.State.queued, .opening, .pressing, .typing, .sent, .settling(1), .observing(2)] {
+            let (state, actions, _) = step(machine(start, nextReq: 3), .clientGone)
+            XCTAssertEqual(state, .done)
+            XCTAssertEqual(actions, [], "\(start)")
+        }
+    }
+
+    func testThePersonsInputIsAddedToAlsoActed_MCP84() {
+        var (state, actions, m) = step(machine(.settling(1), observe: .none, nextReq: 2), .otherInput("person"))
+        XCTAssertEqual(state, .settling(1))
+        XCTAssertEqual(actions, [])
+        (_, _, m) = step(m, .otherInput("person"))
+        (_, _, m) = step(m, .otherInput("another_agent"))
+        (state, actions, m) = step(m, .settleReply(req: 1, settled: true, waitedMs: 412, reason: nil))
+        XCTAssertEqual(actions, [.answer(M.Answer(settle: settled412,
+                                                  alsoActed: ["person", "another_agent"]))])
+    }
+
+    func testLateRepliesAreIgnoredBySeq() {
+        // A reply for a request the call is no longer waiting on.
+        let (state, actions, _) = step(machine(.observing(2), settle: settled412, nextReq: 3),
+                                       .settleReply(req: 1, settled: true, waitedMs: 50, reason: nil))
+        XCTAssertEqual(state, .observing(2))
+        XCTAssertEqual(actions, [])
+        let (state2, actions2, _) = step(machine(.settling(4), nextReq: 5), .treeReply(req: 3, "old"))
+        XCTAssertEqual(state2, .settling(4))
+        XCTAssertEqual(actions2, [])
+        let (state3, actions3, _) = step(machine(.settling(4), nextReq: 5),
+                                         .settleReply(req: 3, settled: true, waitedMs: 1, reason: nil))
+        XCTAssertEqual(state3, .settling(4))
+        XCTAssertEqual(actions3, [])
+    }
+
+    func testATreeReplyBeforeTheTreeWasAskedIsIgnored() {
+        let (state, actions, _) = step(machine(.settling(1), nextReq: 2), .treeReply(req: 2, "early"))
+        XCTAssertEqual(state, .settling(1))
+        XCTAssertEqual(actions, [])
+    }
+
+    func testDoneIgnoresEverything() {
+        let events: [M.Event] = [.turn(.live), .pressOK, .entry, .linkLost, .clientGone,
+                                 .deadline(waitedMs: 1), .otherInput("person"),
+                                 .windowClosed(reason: "closed", by: "you"),
+                                 .settleReply(req: 1, settled: true, waitedMs: 1, reason: nil)]
+        for event in events {
+            let (state, actions, _) = step(machine(.done, nextReq: 2), event)
+            XCTAssertEqual(state, .done)
+            XCTAssertEqual(actions, [], "\(event)")
+        }
+    }
+
+    // MARK: Opening (T6) and screenshot
+
+    func testAnOpenThatGotItsFirstFrameSettles() {
+        let (state, actions, _) = step(machine(.opening), .opened)
+        XCTAssertEqual(state, .settling(1))
+        XCTAssertEqual(actions, [.sendSettle(req: 1, quietMs: 300, timeoutMs: 2000)])
+    }
+
+    func testAnOpenPastItsBoundIsStillOpening_MCP41() {
+        let (state, actions, _) = step(machine(.opening), .openBound)
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [.answer(M.Answer(settle: M.Settle(state: "not_ready"), state: "opening"))])
+    }
+
+    func testAnOpenThePhoneRefusedFailsWithItsCode() {
+        let (state, actions, _) = step(machine(.opening), .openFailed("not_found"))
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [.fail("not_found")])
+    }
+
+    func testAScreenshotThatWaitsEntersSent_MCP64() {
+        let m = M(screenshotWaiting: ())
+        XCTAssertEqual(m.state, .sent)
+        let (state, actions, _) = step(m, .entry)
+        XCTAssertEqual(state, .settling(1))
+        XCTAssertEqual(actions, [.sendSettle(req: 1, quietMs: 300, timeoutMs: 2000)])
+    }
+
+    // MARK: The envelope's `did` and `on` (MCP-80, MCP-87, MCP-108)
+
+    private func tree(snapshot: Int, nodes: [UITree.Node]) -> UITree {
+        UITree(seq: 1, stream: 3, ok: true, code: nil, message: nil, displayId: 47,
+               snapshot: snapshot, size: [1080, 2400], truncated: false, layers: [],
+               nodes: nodes, note: nil)
+    }
+
+    private func node(_ i: Int, ref: String, role: String, text: String? = nil, box: [Int],
+                      at: UITree.Point? = nil, click: Bool = false) -> UITree.Node {
+        UITree.Node(index: i, ref: ref, parent: nil, layer: 0, role: role, text: text,
+                    desc: nil, id: nil, box: box, at: at, off: false, click: click,
+                    edit: false, scroll: false, check: nil, selected: false, focused: false,
+                    disabled: false, password: false, loading: false)
+    }
+
+    func testAPointTapNamesTheNodeUnderIt_MCP87() throws {
+        let latest = tree(snapshot: 4, nodes: [
+            node(0, ref: "s4e0", role: "FrameLayout", box: [0, 0, 1080, 2400]),
+            node(1, ref: "s4e1", role: "Button", text: "Continue",
+                 box: [108, 1440, 972, 1680], click: true),
+        ])
+        let did = MCPActDid.tap(x: 0.5, y: 0.65, holdMs: nil, latest: latest)
+        let hit = try XCTUnwrap(did.object["hit"] as? [String: Any])
+        XCTAssertEqual(hit["ref"] as? String, "s4e1")
+        XCTAssertEqual(hit["role"] as? String, "Button")
+        XCTAssertEqual(hit["text"] as? String, "Continue")
+        XCTAssertEqual(did.snapshot, 4)
+        XCTAssertEqual(did.object["at"] as? [Double], [0.5, 0.65])
+    }
+
+    func testAPointTapOutsideEveryClickableHasNoHit_MCP87() {
+        let latest = tree(snapshot: 4, nodes: [
+            node(1, ref: "s4e1", role: "Button", box: [108, 1440, 972, 1680], click: true),
+        ])
+        let did = MCPActDid.tap(x: 0.05, y: 0.05, holdMs: nil, latest: latest)
+        XCTAssertNil(did.object["hit"])
+        XCTAssertEqual(did.snapshot, 4)
+        XCTAssertNil(MCPActDid.tap(x: 0.5, y: 0.5, holdMs: nil, latest: nil).snapshot)
+    }
+
+    func testATapByRefNamesItsNode_MCP108() throws {
+        let latest = tree(snapshot: 4, nodes: [
+            node(5, ref: "s4e5", role: "Button", text: "Add to cart",
+                 box: [100, 200, 300, 400], at: UITree.Point(x: 0.2, y: 0.125), click: true),
+        ])
+        let did = try XCTUnwrap(MCPActDid.tap(ref: "s4e5", holdMs: nil, latest: latest))
+        XCTAssertEqual(did.object["ref"] as? String, "s4e5")
+        XCTAssertEqual(did.object["at"] as? [Double], [0.2, 0.125])
+        XCTAssertEqual(did.object["box"] as? [Int], [100, 200, 300, 400])
+        let named = try XCTUnwrap(did.object["node"] as? [String: String])
+        XCTAssertEqual(named, ["role": "Button", "text": "Add to cart"])
+        XCTAssertEqual(did.snapshot, 4)
+    }
+
+    func testTheEnvelopeNamesWhatWasPressedAndWhatItActedOn_MCP80() throws {
+        let did = MCPActDid.key("back")
+        let answer = MCPActEnvelope.answer(
+            window: 3, did: did, frameAtInput: 1302,
+            result: M.Answer(settle: settled412, tree: #"{"nodes":[]}"#, alsoActed: ["person"]))
+        XCTAssertNil(answer["ok"])
+        XCTAssertEqual(answer["window"] as? Int, 3)
+        XCTAssertEqual(answer["did"] as? [String: String], ["action": "key", "key": "back"])
+        let on = try XCTUnwrap(answer["on"] as? [String: Any])
+        XCTAssertTrue(on["snapshot"] is NSNull)
+        XCTAssertEqual(on["frame"] as? Int, 1302)
+        XCTAssertEqual(answer["settle"] as? [String: AnyHashable], ["state": "settled", "waitedMs": 412])
+        XCTAssertEqual(answer["alsoActed"] as? [String], ["person"])
+        XCTAssertNotNil(answer["tree"] as? [String: Any])
+        XCTAssertNil(answer["closed"])
+    }
+
+    func testAClosedEnvelopeHasNoTree_MCP83() throws {
+        let answer = MCPActEnvelope.answer(
+            window: 3, did: MCPActDid.key("back"), frameAtInput: 2210,
+            result: M.Answer(settle: M.Settle(state: "window_closed"), state: "closed",
+                             closed: M.Closed(reason: "app_exited", by: "phone")))
+        XCTAssertEqual(answer["state"] as? String, "closed")
+        XCTAssertEqual(answer["closed"] as? [String: String], ["reason": "app_exited", "closedBy": "phone"])
+        XCTAssertNil(answer["tree"])
+        XCTAssertNil(answer["alsoActed"])
+    }
+
+    // MARK: Review fixes (T5)
+
+    /// MCP-8, MCP-84: a deadline while the input is still going out answers,
+    /// but the call keeps the window's turn until the input has finished.
+    func testADeadlineWhileSendingWaitsForTheInput_MCP8() {
+        var (state, actions, m) = step(machine(.sending), .deadline(waitedMs: nil))
+        XCTAssertEqual(state, .draining)
+        XCTAssertEqual(actions, [.answer(M.Answer(settle: M.Settle(state: "not_waited", reason: "deadline")))])
+        (state, actions, m) = step(m, .otherInput("person"))
+        XCTAssertEqual(state, .draining)
+        XCTAssertEqual(actions, [])
+        (state, actions, m) = step(m, .inputSent)
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [])
+    }
+
+    /// MCP-84: whatever ends the call while its input goes out leaves it draining.
+    func testAnEndWhileSendingDrains_MCP84() {
+        let cases: [(M.Event, [M.Action])] = [
+            (.clientGone, []),
+            (.linkLost, [.answer(M.Answer(settle: M.Settle(state: "interrupted"), state: "offline"))]),
+            (.windowClosed(reason: "app_exited", by: "phone"),
+             [.answer(M.Answer(settle: M.Settle(state: "window_closed"), state: "closed",
+                               closed: M.Closed(reason: "app_exited", by: "phone")))]),
+        ]
+        for (event, expected) in cases {
+            let (state, actions, _) = step(machine(.sending), event)
+            XCTAssertEqual(state, .draining, "\(event)")
+            XCTAssertEqual(actions, expected, "\(event)")
+        }
+    }
+
+    func testTheInputSentGoesOnToTheSettle_MCP81() {
+        let (state, actions, _) = step(machine(.sending, wait: .none, observe: .none), .inputSent)
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [.answer(M.Answer(settle: M.Settle(state: "not_waited")))])
+    }
+
+    /// MCP-8: `waitedMs` counts only the settle's own wait; a call the deadline
+    /// ended before any settle answers `not_waited` with no `waitedMs`.
+    func testTheDeadlineCountsOnlyTheSettlesWait_MCP8() {
+        let (state, actions, _) = step(machine(.sent), .deadline(waitedMs: nil))
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [.answer(M.Answer(settle: M.Settle(state: "not_waited", reason: "deadline")))])
+        let (_, actions2, _) = step(machine(.settling(1), observe: .none, nextReq: 2), .deadline(waitedMs: 1200))
+        XCTAssertEqual(actions2, [.answer(M.Answer(settle: M.Settle(state: "still_changing",
+                                                                    waitedMs: 1200, reason: "deadline")))])
+    }
+
+    /// MCP-83: a settle that finds the display gone waits up to 500 ms for the
+    /// phone's close reason, then answers `window_closed`.
+    func testASettleThatFindsNoDisplayIsWindowClosed_MCP83() {
+        for code in ["no_display", "no_window"] {
+            var (state, actions, m) = step(machine(.settling(1), nextReq: 2), .settleFailed(req: 1, code: code))
+            XCTAssertEqual(state, .closing, code)
+            XCTAssertEqual(actions, [.waitForClose(ms: 500)], code)
+            (state, actions, m) = step(m, .closeWaitOver)
+            XCTAssertEqual(state, .done)
+            XCTAssertEqual(actions, [.answer(M.Answer(settle: M.Settle(state: "window_closed"), state: "closed"))])
+        }
+    }
+
+    func testAClosingCallTakesThePhonesReason_MCP83() {
+        let (state, actions, _) = step(machine(.closing, nextReq: 2),
+                                       .windowClosed(reason: "phone_closed", by: "phone"))
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [.answer(M.Answer(settle: M.Settle(state: "window_closed"), state: "closed",
+                                                  closed: M.Closed(reason: "phone_closed", by: "phone")))])
+    }
+
+    func testAClosingCallPastItsDeadlineIsWindowClosed_MCP8() {
+        for event in [M.Event.deadline(waitedMs: 2100), .linkLost] {
+            let (state, actions, _) = step(machine(.closing, nextReq: 2), event)
+            XCTAssertEqual(state, .done)
+            XCTAssertEqual(actions, [.answer(M.Answer(settle: M.Settle(state: "window_closed"), state: "closed"))],
+                           "\(event)")
+        }
+    }
+
+    /// MCP-8: the Mac's own wait on the settle ran out.
+    func testASettleTimeoutIsStillChanging_MCP8() {
+        let (state, actions, _) = step(machine(.settling(1), observe: .none, nextReq: 2),
+                                       .settleFailed(req: 1, code: "timeout"))
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [.answer(M.Answer(settle: M.Settle(state: "still_changing",
+                                                                   waitedMs: 2000, reason: "deadline")))])
+    }
+
+    func testASettleThatIsBusyOrFailedIsUnavailable_MCP81() {
+        for code in ["busy", "failed", "not_connected"] {
+            let (state, actions, _) = step(machine(.settling(1), observe: .none, nextReq: 2),
+                                           .settleFailed(req: 1, code: code))
+            XCTAssertEqual(state, .done, code)
+            XCTAssertEqual(actions, [.answer(M.Answer(settle: M.Settle(state: "unavailable")))], code)
+        }
+    }
+
+    func testTheDeadlineInOpeningIsNotReady_MCP8() {
+        let (state, actions, _) = step(machine(.opening), .deadline(waitedMs: nil))
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [.answer(M.Answer(settle: M.Settle(state: "not_ready"), state: "opening"))])
+    }
+
+    func testAWindowClosedOrLinkLostInOpeningFails_MCP83() {
+        let (state, actions, _) = step(machine(.opening), .windowClosed(reason: "app_exited", by: "phone"))
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [.fail("no_window")])
+        let (state2, actions2, _) = step(machine(.opening), .linkLost)
+        XCTAssertEqual(state2, .done)
+        XCTAssertEqual(actions2, [.fail("phone_offline")])
+    }
+}
