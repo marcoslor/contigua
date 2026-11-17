@@ -376,7 +376,10 @@ object UiTree {
             if (!node.password) {
                 label(node.text)?.let { row["text"] = it }
                 val desc = label(node.desc)
-                if (desc != null && desc != row["text"]) row["desc"] = desc
+                // A field's desc is what it is, its text only what it holds
+                // now: a field keeps its desc even when the two read the same,
+                // so `ui.press`'s label never depends on what was typed (MCP-86).
+                if (desc != null && (node.editable || desc != row["text"])) row["desc"] = desc
             }
             viewId(node.viewId)?.let { row["id"] = it }
             val box = node.box

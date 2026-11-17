@@ -1538,7 +1538,8 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
    - `nodes`: one row per node worth reading, in document order (the reading order):
      `i` the index, `p` the nearest kept ancestor's index (absent at a root), `l` the
      layer's index, `role` the class's last part (`Button`), `text`, `desc` (absent when
-     it repeats `text`), `id` the view id's part after `:id/`, `box`
+     it repeats `text`, except on an editable row, which keeps its `desc` always: a field's
+     text is only what it holds now, MCP-86), `id` the view id's part after `:id/`, `box`
      `[left,top,right,bottom]` in display pixels (clipped to the display), `at` the box's
      centre as 0..1 of the display's input space (the same coordinates TOUCH and the MCP
      `tap` tool take), and the states that are true: `click`, `edit`, `scroll`, `check`
@@ -1617,7 +1618,9 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
    node's label as the Mac last answered it to the connection that asks: the row's `text`, else
    its `desc`, else the first row under it with either, in reading order, where a row with
    `edit` gives none and neither do the rows under it; an `edit` row's own label is its `desc`,
-   else its `id`, never its `text` (a field's text is its value, not what it is); absent when the Mac
+   else its `id`, never its `text` (a field's text is its value, not what it is; item 2 keeps a
+   field's `desc` even when it equals its `text`, so the label never depends on what was typed),
+   and a `pwd` field, whose row carries no `desc`, is labelled by its `id` alone; absent when the Mac
    has no label for `k` (it never answered that connection a tree with `k`, or no row there
    carried one — a capped tree may have cut the labelled rows), so the phone does not check. The phone finds `k` in
    its latest read of the stream's display, calls `refresh()` on that node and, when it still
@@ -1625,7 +1628,8 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
    now, computes the covering node as `covered` does (item 9) at the bounds' centre, reads the
    same label of the refreshed node (its text, else its description, else the first node under
    it with either, depth first within item 2's depth cap, each trimmed as item 2 trims a label;
-   an editable node is labelled by its description, else its view id as item 2 shortens it, and
+   an editable node is labelled by its description, else its view id as item 2 shortens it, a
+   password one by its view id alone, and
    under another node an editable node and its subtree give none),
    and — when nothing covers it and the label equals `expect` (or `expect` is absent) — injects
    TOUCH down at the centre and up after `H` ms (or at once),
