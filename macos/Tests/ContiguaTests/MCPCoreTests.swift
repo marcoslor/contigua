@@ -113,7 +113,7 @@ final class MCPCoreTests: XCTestCase {
                       "description": "Horizontal position, 0 (left) to 1 (right), in the window's video rect."],
                 "y": ["type": "number", "minimum": 0, "maximum": 1,
                       "description": "Vertical position, 0 (top) to 1 (bottom), in the window's video rect."],
-                "ref": ["type": "string", "minLength": 1, "maxLength": 32,
+                "ref": ["type": "string", "minLength": 1, "maxLength": 32, "pattern": "^e[0-9]+$",
                         "description": "Element ref from ui_tree, e.g. \"e5\". Takes precedence over x and y."],
                 // MCP-81, MCP-82 (T5).
                 "wait": ["type": "string", "enum": ["settle", "none"],
@@ -148,7 +148,7 @@ final class MCPCoreTests: XCTestCase {
              .openApp("com.android.chrome", newWindow: true)),
             ("list_windows", [:], .listWindows),
             ("screenshot", ["window": 3], .screenshot(window: 3, ref: nil)),
-            ("screenshot", ["window": 3, "ref": "s2e1"], .screenshot(window: 3, ref: "s2e1")),
+            ("screenshot", ["window": 3, "ref": "e1"], .screenshot(window: 3, ref: "e1")),
             ("ui_tree", ["window": 3], .uiTree(window: 3)),
             ("tap", ["window": 3, "x": 0.25, "y": 1], .tap(window: 3, x: 0.25, y: 1)),
             ("long_press", ["window": 3, "x": 0, "y": 0.5, "ms": 3000],
@@ -508,8 +508,8 @@ final class MCPActArgumentTests: XCTestCase {
     func testWaitAndObserveAreTakenOnEveryAction_MCP81_MCP82() throws {
         let act: [String: Any] = ["wait": "none", "observe": "none"]
         func with(_ args: [String: Any]) -> [String: Any] { args.merging(act) { a, _ in a } }
-        XCTAssertEqual(try MCPArguments.call("tap", with(["window": 3, "ref": "s1e2"])),
-                       .tapRef(window: 3, ref: "s1e2", wait: .none, observe: .none))
+        XCTAssertEqual(try MCPArguments.call("tap", with(["window": 3, "ref": "e2"])),
+                       .tapRef(window: 3, ref: "e2", wait: .none, observe: .none))
         XCTAssertEqual(try MCPArguments.call("long_press", with(["window": 3, "x": 0, "y": 1, "ms": 10])),
                        .longPress(window: 3, x: 0, y: 1, ms: 10, wait: .none, observe: .none))
         XCTAssertEqual(try MCPArguments.call("swipe", with(["window": 3, "x1": 0, "y1": 0, "x2": 1, "y2": 1, "ms": 10])),

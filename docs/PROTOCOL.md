@@ -1614,13 +1614,18 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
 8. **`ui.press` (B3).** Mac → `{"t":"ui.press","stream":N,"seq":S,"k":K,"holdMs":H,"expect":"…"}`,
    `k` a row's key (item 9, B2), `holdMs` optional (absent = a tap; 1–3000). `expect` is the
    node's label as the Mac last answered it to the connection that asks: the row's `text`, else
-   its `desc`, else the first row under it with either, in reading order (`""` when none has
-   one); absent when the Mac never answered that connection a tree with `k`. The phone finds `k` in
+   its `desc`, else the first row under it with either, in reading order, where a row with
+   `edit` gives none and neither do the rows under it; an `edit` row's own label is its `desc`,
+   else its `id`, never its `text` (a field's text is its value, not what it is); absent when the Mac
+   has no label for `k` (it never answered that connection a tree with `k`, or no row there
+   carried one — a capped tree may have cut the labelled rows), so the phone does not check. The phone finds `k` in
    its latest read of the stream's display, calls `refresh()` on that node and, when it still
    exists, is `isVisibleToUser` and is on the display (item 2's `off` rule), reads its bounds
    now, computes the covering node as `covered` does (item 9) at the bounds' centre, reads the
    same label of the refreshed node (its text, else its description, else the first node under
-   it with either, depth first within item 2's depth cap, each trimmed as item 2 trims a label),
+   it with either, depth first within item 2's depth cap, each trimmed as item 2 trims a label;
+   an editable node is labelled by its description, else its view id as item 2 shortens it, and
+   under another node an editable node and its subtree give none),
    and — when nothing covers it and the label equals `expect` (or `expect` is absent) — injects
    TOUCH down at the centre and up after `H` ms (or at once),
    stamped like a TOUCH frame from the Mac. It answers
