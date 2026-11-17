@@ -504,4 +504,61 @@ final class UITreeTests: XCTestCase {
             XCTAssertNil(ref.range(of: #"^s\d+e\d+$"#, options: .regularExpression), ref)
         }
     }
+
+    // MARK: Review: labels are linear, and no label is no expect (MCP-86)
+
+    private func row(_ i: Int, k: Int?, p: Int?, text: String? = nil) -> UITree.Node {
+        var node = UITree.Node(index: i, ref: k.map { "e\($0)" } ?? "", parent: p, layer: 0,
+                               role: "View", text: text, desc: nil, id: nil, box: nil, at: nil,
+                               off: false, click: false, edit: false, scroll: false, check: nil,
+                               selected: false, focused: false, disabled: false, password: false)
+        node.k = k
+        return node
+    }
+
+    private func tree(_ nodes: [UITree.Node]) -> UITree {
+        UITree(seq: 1, stream: 3, ok: true, code: nil, message: nil, displayId: 1, snapshot: 1,
+               size: nil, truncated: false, layers: [], nodes: nodes, note: nil)
+    }
+
+    func testLabelsOfALargeTreeAreFast() {
+        // One deep chain of 1200 rows in pre-order: the first 400 are keyed
+        // containers with no label, the last row is the only labelled one.
+        var nodes: [UITree.Node] = []
+        for i in 0..<1200 {
+            nodes.append(row(i, k: i < 400 ? i + 1 : nil, p: i == 0 ? nil : i - 1,
+                             text: i == 1199 ? "Leaf" : nil))
+        }
+        let big = tree(nodes)
+        let started = Date()
+        let labels = big.labels()
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1.0)
+        XCTAssertEqual(labels.count, 400)
+        XCTAssertEqual(Set(labels.values), ["Leaf"])
+    }
+
+    func testAnUnlabelledRowTakesTheFirstLabelledRowUnderIt() {
+        let labels = tree([
+            row(0, k: 1, p: nil),                       // A
+            row(1, k: 2, p: 0),                         //   B
+            row(2, k: 3, p: 1, text: "Inner"),          //     first labelled under A
+            row(3, k: 4, p: 0, text: "Later"),          //   a later child of A
+            row(4, k: 5, p: nil),                       // C: no labelled row under it
+            row(5, k: 6, p: nil),                       // D, C's sibling
+            row(6, k: 7, p: 5, text: "Sibling's child"),
+        ]).labels()
+        XCTAssertEqual(labels[1], "Inner")
+        XCTAssertEqual(labels[2], "Inner")
+        XCTAssertNil(labels[5], "never a later sibling's child")
+        XCTAssertEqual(labels[6], "Sibling's child")
+    }
+
+    @MainActor
+    func testARowWithNoLabelSendsNoExpect() {
+        let broker = UITreeBroker()
+        let client = MCPClientID(1)
+        broker.answered(tree([row(0, k: 1, p: nil), row(1, k: 2, p: nil, text: "Pay")]), client: client)
+        XCTAssertNil(broker.expect(client: client, stream: 3, k: 1))
+        XCTAssertEqual(broker.expect(client: client, stream: 3, k: 2), "Pay")
+    }
 }

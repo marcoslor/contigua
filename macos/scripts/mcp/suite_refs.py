@@ -61,7 +61,9 @@ def suite(args):
         report(not reply.get("isError") and len(downs) == 1
                and abs(downs[0].get("nx", -9) - at[0]) < 1e-3 and abs(downs[0].get("ny", -9) - at[1]) < 1e-3,
                "[MCP-86] MCP a ref from read 1 still presses after read 2, once, at its at")
-        report((answer.get("did") or {}).get("box") == label.get("box"),
+        box = (answer.get("did") or {}).get("box")
+        report(isinstance(box, list) and len(box) == 4
+               and all(isinstance(v, (int, float)) for v in box) and box == label.get("box"),
                "[MCP-86] MCP the press's did.box is the box the phone pressed")
 
         # [MCP-86] A ref whose node is gone presses nothing.
