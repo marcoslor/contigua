@@ -32,7 +32,11 @@ final class FakeActEnvironment: MCPActEnvironment {
         if inputMs > 0 { try? await Task.sleep(for: .milliseconds(inputMs)) } // real-time: an input that takes a while to send
         inputEnded = .now
     }
-    func sendPress() async -> MCPActMachine.Event { .pressOK }
+    var pressEvent: MCPActMachine.Event = .pressOK
+    func sendPress() async -> MCPActMachine.Event {
+        log.append("\(name).press")
+        return pressEvent
+    }
     func sendType() async -> MCPActMachine.Event { .typeOK(entry: "inserted", via: "keys") }
 
     func settle(quietMs: Int, timeoutMs: Int, until: ContinuousClock.Instant) async -> MCPSettleResult {
