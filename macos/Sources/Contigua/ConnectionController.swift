@@ -4078,7 +4078,10 @@ final class ConnectionController {
                   let steps = Int(arguments[2]), let stepMs = Int(arguments[3]) else {
                 return "resize-drag needs right|bottom|top AMOUNT STEPS STEP_MS"
             }
-            guard let window = windows.controller(for: 1) else { return "no first window" }
+            // An optional fifth word names the stream (the MCP shape suite's
+            // window is not the first).
+            let target = arguments.count >= 5 ? UInt32(arguments[4]) ?? 1 : 1
+            guard let window = windows.controller(for: target) else { return "no first window" }
             return window.debugResizeDrag(edge: arguments[0], amount: CGFloat(amount),
                                           steps: steps, stepMs: stepMs)
         case "wake-phone":
