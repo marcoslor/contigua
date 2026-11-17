@@ -306,6 +306,83 @@ final class MCPActMachineTests: XCTestCase {
 
     // MARK: Opening (T6) and screenshot
 
+    /// T6 [MCP-41]: an open waits for the phone's `window.opened` and the
+    /// stream's first frame, then settles and reads like an action; its answer
+    /// is the opened-window shape.
+    func testAnOpenWaitsForTheFirstFrameThenSettles_MCP41() {
+        var (state, actions, m) = step(M(opening: .settle, observe: .tree), .windowOpened)
+        XCTAssertEqual(state, .opening)
+        XCTAssertEqual(actions, [])
+        (state, actions, m) = step(m, .firstFrame)
+        XCTAssertEqual(state, .settling(1))
+        XCTAssertEqual(actions, [.sendSettle(req: 1, quietMs: 300, timeoutMs: 2000)])
+        (state, actions, m) = step(m, .settleReply(req: 1, settled: true, waitedMs: 412, reason: nil))
+        XCTAssertEqual(state, .observing(2))
+        XCTAssertEqual(actions, [.sendTree(req: 2)])
+        let tree = #"{"nodes":[{"ref":"s1e0","role":"View"}]}"#
+        (state, actions, m) = step(m, .treeReply(req: 2, tree))
+        XCTAssertEqual(state, .done)
+        let result = M.Answer(settle: settled412, tree: tree)
+        XCTAssertEqual(actions, [.answer(result)])
+
+        let answer = MCPOpenAnswer.answer(window: 5, kind: .app, package: "com.google.android.calculator",
+                                          label: "Calculator", opened: .new, openedBy: "you",
+                                          size: [590, 1280], result: result)
+        XCTAssertEqual(answer["window"] as? Int, 5)
+        XCTAssertEqual(answer["kind"] as? String, "app")
+        XCTAssertEqual(answer["package"] as? String, "com.google.android.calculator")
+        XCTAssertEqual(answer["label"] as? String, "Calculator")
+        XCTAssertEqual(answer["opened"] as? String, "new")
+        XCTAssertEqual(answer["openedBy"] as? String, "you")
+        XCTAssertEqual(answer["size"] as? [Int], [590, 1280])
+        XCTAssertEqual((answer["settle"] as? [String: Any])?["state"] as? String, "settled")
+        XCTAssertEqual((answer["settle"] as? [String: Any])?["waitedMs"] as? Int, 412)
+        XCTAssertNotNil(answer["tree"] as? [String: Any])
+        XCTAssertNil(answer["did"], "an open is not an input: no did")
+
+        // The open bound (10 s) with no first frame: the window exists, still opening.
+        XCTAssertEqual(M.openBoundMs, 10_000)
+        (state, actions, m) = step(M(opening: .settle, observe: .tree), .windowOpened)
+        (state, actions, m) = step(m, .openBound)
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [.answer(M.Answer(settle: M.Settle(state: "not_ready"), state: "opening"))])
+    }
+
+    /// T6: the first frame before the phone's `window.opened` still waits for it.
+    func testAFirstFrameBeforeTheOpenedReplyWaits_MCP41() {
+        var (state, actions, m) = step(M(opening: .settle, observe: .tree), .firstFrame)
+        XCTAssertEqual(state, .opening)
+        XCTAssertEqual(actions, [])
+        (state, actions, m) = step(m, .windowOpened)
+        XCTAssertEqual(state, .settling(1))
+        XCTAssertEqual(actions, [.sendSettle(req: 1, quietMs: 300, timeoutMs: 2000)])
+        _ = m
+    }
+
+    /// T6: `wait: "none"` on an open reads at once when the window is up.
+    func testAnOpenWithWaitNoneReadsAtOnce_MCP41() {
+        var (state, actions, m) = step(M(opening: .none, observe: .tree), .windowOpened)
+        (state, actions, m) = step(m, .firstFrame)
+        XCTAssertEqual(state, .observing(1))
+        XCTAssertEqual(actions, [.sendTree(req: 1)])
+        (state, actions, m) = step(M(opening: .none, observe: .none), .windowOpened)
+        (state, actions, m) = step(m, .firstFrame)
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [.answer(M.Answer(settle: M.Settle(state: "not_waited")))])
+    }
+
+    /// T6 [MCP-43]: a link window answers `kind: link`, with null package and
+    /// label until the phone names the app.
+    func testALinkWindowAnswersKindLinkWithNullNames_MCP43() {
+        let answer = MCPOpenAnswer.answer(window: 7, kind: .link, package: nil, label: nil,
+                                          opened: .new, openedBy: "you", size: [900, 600],
+                                          result: M.Answer(settle: M.Settle(state: "not_ready"), state: "opening"))
+        XCTAssertEqual(answer["kind"] as? String, "link")
+        XCTAssertTrue(answer["package"] is NSNull)
+        XCTAssertTrue(answer["label"] is NSNull)
+        XCTAssertEqual(answer["state"] as? String, "opening")
+    }
+
     func testAnOpenThatGotItsFirstFrameSettles() {
         let (state, actions, _) = step(machine(.opening), .opened)
         XCTAssertEqual(state, .settling(1))
