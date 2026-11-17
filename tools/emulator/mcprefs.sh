@@ -187,10 +187,13 @@ def node(tree, want):
             return row
     return None
 
-def tree_of(client, window, seconds=15):
+def tree_of(client, window, seconds=15, wait=None):
     deadline = time.time() + seconds
     while True:
-        reply = client.tool("ui_tree", {"window": window}, timeout=30)
+        arguments = {"window": window}
+        if wait:
+            arguments["wait"] = wait
+        reply = client.tool("ui_tree", arguments, timeout=30)
         if not reply.get("isError"):
             return reply.get("structuredContent") or {}
         code = json.loads(reply["content"][0]["text"]).get("error", {}).get("code")
@@ -238,10 +241,10 @@ try:
     if not clock:
         sys.exit(1)
     window = client.text("open_app", {"app": clock[0]["package"]}, timeout=60)["window"]
-    time.sleep(2)
 
-    # Start on the Alarm tab.
-    tree = tree_of(client, window)
+    # Start on the Alarm tab. The first read settles the opening window, as an
+    # agent would (#180: a read while it opens can time out; that is not retried).
+    tree = tree_of(client, window, wait="settle")
     alarm = node(tree, lambda r: label(r).lower() == "alarm")
     if alarm:
         tree = client.text("tap", {"window": window, "ref": alarm["ref"]}).get("tree") or tree_of(client, window)
