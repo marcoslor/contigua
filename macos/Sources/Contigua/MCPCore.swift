@@ -82,7 +82,7 @@ enum MCPCall: Equatable {
     case phoneStatus
     case listApps
     /// An open answers like an action: first frame, settle, tree (MCP-41).
-    case openApp(String, newWindow: Bool, wait: MCPWait = .settle, observe: MCPObserve = .tree)
+    case openApp(String, newWindow: Bool, shape: MCPWindowShape = .phone, wait: MCPWait = .settle, observe: MCPObserve = .tree)
     case listWindows
     /// `wait: settle` settles the window first (MCP-64).
     case screenshot(window: Int, ref: String?, wait: MCPWait = .none)
@@ -102,7 +102,7 @@ enum MCPCall: Equatable {
     /// P0 (pmaxx): tap, then time the first displayed frame that changed.
     case inputProbe(window: Int, x: Double, y: Double, width: Double?, height: Double?)
     case closeWindow(window: Int)
-    case sendLink(String, wait: MCPWait = .settle, observe: MCPObserve = .tree)
+    case sendLink(String, shape: MCPWindowShape = .phone, wait: MCPWait = .settle, observe: MCPObserve = .tree)
     case sendFile(String)
 }
 
@@ -188,6 +188,12 @@ enum MCPTools {
         return schema
     }
 
+    /// MCP-100: `shape` on `open_app` and `send_link`.
+    static let shape: [String: Any] = [
+        "type": "string", "enum": MCPWindowShape.allCases.map(\.rawValue),
+        "description": "phone (the default) opens a new window at the phone's portrait shape and its own dp width, at most 1280 px on the long side; window opens it as a person's window. A raised window keeps the shape it has.",
+    ]
+
     /// MCP-81: `wait` on a tool that acts or reads.
     static let wait: [String: Any] = [
         "type": "string", "enum": MCPWait.allCases.map(\.rawValue),
@@ -219,7 +225,7 @@ enum MCPTools {
                             "description": "Package name or app label (or a unique prefix)."],
                     "newWindow": ["type": "boolean",
                                   "description": "Open another window of an app that opens several at a time, instead of raising its window."],
-                    "wait": wait, "observe": observe,
+                    "shape": shape, "wait": wait, "observe": observe,
                 ], required: ["app"])),
         MCPTool(name: .listWindows,
                 description: "The open stream windows: id, package, size ([w, h] in the display pixels ui_tree's box uses), state (opening, live, paused, stalled, offline) and frame (seq, ageMs: how fresh its picture is).",
@@ -288,7 +294,7 @@ enum MCPTools {
                 schema: object([
                     "url": ["type": "string", "minLength": 1, "maxLength": 8192,
                             "description": "The link to open on the phone."],
-                    "wait": wait, "observe": observe,
+                    "shape": shape, "wait": wait, "observe": observe,
                 ], required: ["url"])),
         MCPTool(name: .sendFile,
                 description: "Send one local file to the phone's Download/Contigua folder. Waits up to 30 s for the phone to confirm it: state delivered, or sending while it is still on its way.",
@@ -501,6 +507,15 @@ enum MCPArguments {
         return value
     }
 
+    /// MCP-100: `shape`, `phone` (the default) or `window`; nothing else.
+    private static func shape(_ args: [String: Any]) throws -> MCPWindowShape {
+        guard let raw = args["shape"] else { return .phone }
+        guard let text = raw as? String, let shape = MCPWindowShape(rawValue: text) else {
+            throw MCPArgumentError(message: "“shape” must be one of \(MCPWindowShape.allCases.map(\.rawValue).joined(separator: ", "))")
+        }
+        return shape
+    }
+
     /// An optional normalized size: absent means "the whole picture", present
     /// must still leave a region a luma grid can be taken from.
     private static func optionalDimension(_ args: [String: Any], _ key: String) throws -> Double? {
@@ -527,7 +542,7 @@ enum MCPArguments {
         case .openApp:
             return .openApp(try string(args, "app", maximum: 200),
                             newWindow: try boolean(args, "newWindow", default: false),
-                            wait: try wait(args), observe: try observe(args))
+                            shape: try shape(args), wait: try wait(args), observe: try observe(args))
         case .listWindows:
             return .listWindows
         case .screenshot:
@@ -576,7 +591,7 @@ enum MCPArguments {
         case .closeWindow:
             return .closeWindow(window: try integer(args, "window", minimum: 1, maximum: 1_000_000))
         case .sendLink:
-            return .sendLink(try string(args, "url", maximum: 8192),
+            return .sendLink(try string(args, "url", maximum: 8192), shape: try shape(args),
                              wait: try wait(args), observe: try observe(args))
         case .sendFile:
             return .sendFile(try string(args, "path", maximum: 4096))
