@@ -5504,6 +5504,9 @@ class Session(object):
             delay, settled, events, reason = timeout, False, 1, "changes"
         elif mode_on(self.phone.args, "settle_loading"):
             delay, settled, events, reason = timeout, False, 0, "loading"
+        elif mode_on(self.phone.args, "slow_settle"):
+            # plan T11's suite_wait: a display that settles after 1200 ms.
+            delay, settled, events, reason = min(1200, timeout), 1200 <= timeout, 0, None
         else:
             delay, settled, events, reason = int(self.phone.args.settle_ms), True, 0, None
 
