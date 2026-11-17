@@ -5,6 +5,9 @@
 # 1. The fixed tree: two reads give every row the same `k`, 1…4.
 # 2. --tree-variant: a heading row, a button covered by the banner's `k`, and a
 #    second read without k 2, the other rows keeping theirs.
+# 3. ui.press (item 8, MCP-86/89): k 2 presses Continue at its `at` (one touch
+#    down/up); off-screen k 4 and unknown k 999 press nothing; --tree-variant's
+#    covered k 6 is `covered` by 7; --relabel's k 2 is `changed`, no touch.
 # Exits 0 only if every check passed.
 set -u
 
@@ -76,6 +79,54 @@ for k, node in b.items():
 assert [n["i"] for n in two["nodes"]] == list(range(len(two["nodes"]))), "rows are not renumbered"
 print("  read 1 keys %s, read 2 keys %s, covered %s by %s"
       % (sorted(a), sorted(b), covered[0]["k"], covered[0]["covered"]))
+PY
+
+# presses <name> <flags…> -- <deckctl ui-press args…>: one fake phone, its events file.
+presses() {
+    local name="$1"; shift
+    local flags=()
+    while [ "$1" != "--" ]; do flags+=("$1"); shift; done
+    shift
+    start "$name" --events "$WORK/$name-events.jsonl" "${flags[@]+"${flags[@]}"}"
+    "$PY" "$HERE/deckctl.py" --host 127.0.0.1 --port "$PORT" --state "$WORK/$name-deck.json" \
+        --pair ui-press "$@" > "$WORK/$name.jsonl" 2>"$WORK/$name-deck.err" \
+        || die "ui-press ($name) failed: $(cat "$WORK/$name-deck.err")"
+}
+
+note "ui-press: k 2 presses at its at; off-screen and unknown keys press nothing (MCP-86)"
+presses press -- --k 2 --k 4 --k 999
+"$PY" - "$WORK/press.jsonl" "$WORK/press-events.jsonl" <<'PY' || die "ui-press assertions failed"
+import json, sys
+ok, off, unknown = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+touches = [e for e in map(json.loads, open(sys.argv[2])) if e.get("kind") == "touch"]
+assert ok["ok"] is True and ok["text"] == "Continue" and ok["role"] == "Button", ok
+assert [t["action"] for t in touches] == [0, 1], touches
+assert all([round(t["nx"], 3), round(t["ny"], 3)] == ok["at"] for t in touches), (touches, ok["at"])
+assert off["ok"] is False and off["code"] == "off_screen", off
+assert unknown["ok"] is False and unknown["code"] == "gone", unknown
+print("  press ok at %s, k 4 %s, k 999 %s, touches %d" % (ok["at"], off["code"], unknown["code"], len(touches)))
+PY
+
+note "ui-press --tree-variant: the covered button is not pressed (MCP-89)"
+presses covered --tree-variant -- --k 6
+"$PY" - "$WORK/covered.jsonl" "$WORK/covered-events.jsonl" <<'PY' || die "ui-press covered assertions failed"
+import json, sys
+(reply,) = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+touches = [e for e in map(json.loads, open(sys.argv[2])) if e.get("kind") == "touch"]
+assert reply["ok"] is False and reply["code"] == "covered" and reply["coveredBy"] == 7, reply
+assert touches == [], touches
+print("  k 6 covered by %s, touches 0" % reply["coveredBy"])
+PY
+
+note "ui-press --relabel: a stale expect presses nothing (MCP-86, #188)"
+presses relabel --relabel -- --k 2
+"$PY" - "$WORK/relabel.jsonl" "$WORK/relabel-events.jsonl" <<'PY' || die "ui-press relabel assertions failed"
+import json, sys
+(reply,) = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+touches = [e for e in map(json.loads, open(sys.argv[2])) if e.get("kind") == "touch"]
+assert reply["ok"] is False and reply["code"] == "changed" and reply["now"] == "Continue later", reply
+assert touches == [], touches
+print("  k 2 changed, now %r, touches 0" % reply["now"])
 PY
 
 echo "TREE-KEYS OK"
