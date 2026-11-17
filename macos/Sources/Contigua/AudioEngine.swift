@@ -49,9 +49,66 @@ struct AudioStats: Equatable {
     var channels: UInt8 = 0
 }
 
-final class AudioEngine {
+/// The engine and player calls `AudioEngine` makes, behind one seam so a test
+/// can drive the start against a device change (MEDIA-12).
+protocol AudioOutput: AnyObject {
+    var isRunning: Bool { get }
+    func start() throws
+    func stop()
+    /// The output node's format: (sample rate, channels).
+    var outputFormat: (sampleRate: Double, channels: UInt32) { get }
+    var presentationLatency: TimeInterval { get }
+    var volume: Float { get set }
+    func play()
+    func stopPlayer()
+    func schedule(_ buffer: AVAudioPCMBuffer, completion: @escaping () -> Void)
+    /// Called on whatever thread posts the device change.
+    func onConfigurationChange(_ handler: @escaping () -> Void)
+}
+
+/// The real output: one AVAudioEngine with one player node.
+final class SystemAudioOutput: AudioOutput {
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
+    private var observer: NSObjectProtocol?
+
+    init(format: AVAudioFormat?) {
+        engine.attach(player)
+        if let format {
+            engine.connect(player, to: engine.mainMixerNode, format: format)
+        }
+    }
+
+    deinit {
+        if let observer { NotificationCenter.default.removeObserver(observer) }
+    }
+
+    var isRunning: Bool { engine.isRunning }
+    func start() throws { try engine.start() }
+    func stop() { engine.stop() }
+    var outputFormat: (sampleRate: Double, channels: UInt32) {
+        let format = engine.outputNode.outputFormat(forBus: 0)
+        return (format.sampleRate, format.channelCount)
+    }
+    var presentationLatency: TimeInterval { engine.outputNode.presentationLatency }
+    var volume: Float {
+        get { player.volume }
+        set { player.volume = newValue }
+    }
+    func play() { player.play() }
+    func stopPlayer() { player.stop() }
+    func schedule(_ buffer: AVAudioPCMBuffer, completion: @escaping () -> Void) {
+        player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { _ in completion() }
+    }
+    func onConfigurationChange(_ handler: @escaping () -> Void) {
+        observer = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil,
+        ) { _ in handler() }
+    }
+}
+
+final class AudioEngine {
+    private let output: AudioOutput
     private var format48kStereo: AVAudioFormat?
     private var converter: AudioConverterRef?
     private var inputASBD = AudioStreamBasicDescription()
@@ -86,23 +143,19 @@ final class AudioEngine {
         }
     }
     var volume: Float = 1.0 {
-        didSet { player.volume = muted ? 0 : volume }
+        didSet { output.volume = muted ? 0 : volume }
     }
     var muted = false {
-        didSet { player.volume = muted ? 0 : volume }
+        didSet { output.volume = muted ? 0 : volume }
     }
     var onStateChange: ((Bool) -> Void)?
 
-    init() {
-        engine.attach(player)
-        format48kStereo = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)
-        if let format = format48kStereo {
-            engine.connect(player, to: engine.mainMixerNode, format: format)
-        }
-        player.volume = 1.0
-        NotificationCenter.default.addObserver(
-            forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil,
-        ) { [weak self] _ in
+    init(output: AudioOutput? = nil) {
+        let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)
+        format48kStereo = format
+        self.output = output ?? SystemAudioOutput(format: format)
+        self.output.volume = 1.0
+        self.output.onConfigurationChange { [weak self] in
             self?.configurationChanged()
         }
     }
@@ -122,8 +175,8 @@ final class AudioEngine {
     /// on the new device. The device-change notification arrives on whatever
     /// thread posts it; the state is kept consistent under the lock.
     private func configurationChanged() {
-        player.stop()
-        engine.stop()
+        output.stopPlayer()
+        output.stop()
         lock.lock()
         pendingPCM.removeAll()
         lastPCM = nil
@@ -218,7 +271,7 @@ final class AudioEngine {
         queuedFrames = 0
         machine.handle(.stop)
         lock.unlock()
-        player.stop()
+        output.stopPlayer()
         refreshStatsLocked()
         writeStats()
         onStateChange?(false)
@@ -322,24 +375,24 @@ final class AudioEngine {
         lock.unlock()
         guard playing else { return }
         if !started {
-            if !engine.isRunning {
+            if !output.isRunning {
                 do {
-                    try engine.start()
+                    try output.start()
                 } catch {
                     dropPending()
                     return
                 }
             }
-            let outFormat = engine.outputNode.outputFormat(forBus: 0)
-            guard Self.mayPlay(isRunning: engine.isRunning,
+            let outFormat = output.outputFormat
+            guard Self.mayPlay(isRunning: output.isRunning,
                                sampleRate: outFormat.sampleRate,
-                               channels: outFormat.channelCount) else {
+                               channels: outFormat.channels) else {
                 // No usable output format (device gone or mid-change): drop the
                 // burst rather than crash in play(). The next flush retries.
                 dropPending()
                 return
             }
-            player.play()
+            output.play()
             started = true
         }
         lock.lock()
@@ -371,7 +424,7 @@ final class AudioEngine {
             lock.unlock()
             if full { continue }
             if needOnset, isAudible(scheduled) { markOnset(queuedFrames: ahead - frames) }
-            player.scheduleBuffer(scheduled, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+            output.schedule(scheduled) { [weak self] in
                 self?.rendered(frames: frames)
             }
         }
@@ -475,7 +528,7 @@ final class AudioEngine {
     private func markOnset(queuedFrames ahead: Int64) {
         lock.lock()
         stats.onsetMs = Int(Date().timeIntervalSince1970 * 1000)
-        stats.onsetQueuedMs = Int(ahead * 1000 / 48000) + Int(engine.outputNode.presentationLatency * 1000)
+        stats.onsetQueuedMs = Int(ahead * 1000 / 48000) + Int(output.presentationLatency * 1000)
         lock.unlock()
     }
 
