@@ -309,6 +309,9 @@ final class Session {
     private let queue = DispatchQueue(label: "app.contigua.session")
     private var exporterProvider: (() -> [UInt8]?)?
     private var eventLoopGroup: EventLoopGroup?
+    /// Tests only (#190): runs at the start of every dial, off the session
+    /// queue, so a test can hold a dial while the session closes. nil in the app.
+    var dialGateForTests: (@Sendable () -> Void)?
     private var ownsGroup: Bool = false
 
     private var decoder = FrameDecoder()
@@ -632,7 +635,9 @@ final class Session {
         let learned = dialLearned
         let learnedCert = dialLearnedCert
         let pinned = dialPin.record
+        let gate = dialGateForTests
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in  // gcd: the TLS handshake blocks; one thread per path is the point
+            gate?()
             self?.dial(id: id, endpoint: endpoint, pinned: pinned, group: group,
                        learned: learned, learnedCert: learnedCert)
         }
