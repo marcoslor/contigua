@@ -37,10 +37,11 @@ def suite(args):
                "[MCP-96] MCP wait ms 1000 returns in %.2f s (%s)" % (elapsed, answer.get("waitedMs")))
 
         # [MCP-97] Text already on screen: met, with the Continue button's ref.
-        tree = (client.tool("ui_tree", {"window": window}).get("structuredContent") or {})
-        button = next((n for n in tree.get("nodes") or [] if n.get("text") == "Continue"), {})
         reply, elapsed = call(client, {"window": window, "text": "Continue", "timeoutMs": 3000})
         answer = reply.get("structuredContent") or {}
+        # The Continue row of the wait's own read: a ref names its read's snapshot.
+        tree = answer.get("tree") or {}
+        button = next((n for n in tree.get("nodes") or [] if n.get("text") == "Continue"), {})
         match = answer.get("match") or {}
         report(not reply.get("isError") and answer.get("until") == "met"
                and button.get("ref") is not None and match.get("ref") == button.get("ref"),
