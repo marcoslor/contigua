@@ -1118,7 +1118,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         // resign first.
         performMenuKey(.streamResigned(stream: stream))
         if !closingFromRemote {
-            manager.onMacClosed?(stream, closedByAgent)  // MCP-83: a call on it answers `closed`
+            manager.recordClose(stream, cause: .mac(closedBy.map { .client($0) } ?? .person))  // MCP-52
+            manager.onMacClosed?(stream, closedBy)  // MCP-83: a call on it answers `closed`
             sendClose()
         }
         let count = stills
@@ -2139,8 +2140,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         personSession().nav(stream: stream, action: "back")
     }
 
-    /// `close_window` sets it before closing: the close is the agent's (MCP-52).
-    var closedByAgent = false
+    /// `close_window` sets it before closing: the close is that connection's (MCP-52).
+    var closedBy: MCPClientID?
 
     /// MCP-84: the one way the person's input reaches the phone (clicks,
     /// keys, Back, Home, Recents, the paste key): an agent's call on this

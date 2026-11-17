@@ -9,7 +9,10 @@ extension MCPToolHost {
             throw IntentFailure.phoneNotConnected
         }
         let app = try Self.chooseApp(query, in: IntentsBridge.apps(for: phone))
-        controller.intentsOpenApp(app.pkg, on: phone.id, newWindow: newWindow)
+        // MCP-51: a window this call creates is this connection's.
+        controller.windows.opening(by: client.map { .client($0) } ?? .person) {
+            controller.intentsOpenApp(app.pkg, on: phone.id, newWindow: newWindow)
+        }
         // The window is created synchronously above; the newest stream for
         // that package is the one this call opened.
         let stream = controller.windows.openStreams

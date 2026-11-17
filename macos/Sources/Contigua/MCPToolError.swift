@@ -55,8 +55,31 @@ extension MCPToolError: Equatable {
 // MARK: - The sentences
 
 extension MCPToolError {
-    static func noWindow(_ id: Int) -> MCPToolError {
-        MCPToolError(.noWindow, "No window \(id). Call list_windows to see what is open.", ["window": id])
+    static func noWindow(_ id: Int, closed: MCPWindowLedger.Closed? = nil) -> MCPToolError {
+        guard let closed else {
+            return MCPToolError(.noWindow, "No window \(id). Call list_windows to see what is open.", ["window": id])
+        }
+        let seconds = Int((Double(closed.closedAgoMs) / 1000).rounded())
+        return MCPToolError(.noWindow,
+                            "Window \(id) closed \(seconds) s ago: \(closeClause(closed)). Call list_windows to see what is open.",
+                            ["window": id, "closed": closed.object])
+    }
+
+    /// MCP-53: the clause naming a close's reason and closer.
+    private static func closeClause(_ closed: MCPWindowLedger.Closed) -> String {
+        switch closed.reason {
+        case "app_exited": return "the app exited"
+        case "moved_to_phone": return "the app moved to the phone's own screen"
+        case "phone_closed": return "the phone closed it"
+        case "open_failed": return "the phone could not open it"
+        case "phone_switched": return "the phone in use changed"
+        default:
+            switch closed.closedBy {
+            case "you": return "you closed it"
+            case "another_agent": return "another agent closed it"
+            default: return "the person closed it"
+            }
+        }
     }
 
     static func phoneOffline(_ phone: String?) -> MCPToolError {

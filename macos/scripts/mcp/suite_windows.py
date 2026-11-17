@@ -22,7 +22,7 @@ def open_settings(client):
         time.sleep(0.5)
     last = None
     for _ in range(40):
-        reply = client.tool("open_app", {"app": "com.android.settings", "newWindow": True})
+        reply = client.tool("open_app", {"app": "com.android.settings"})
         if not reply.get("isError"):
             window = (reply.get("structuredContent") or {}).get("window")
             if window:

@@ -310,7 +310,7 @@ def suite(args):
         wait_event(args.events, lambda e: e.get("ev") == "rx" and isinstance(e.get("msg"), dict)
                    and e["msg"].get("t") == "window.close" and e["msg"].get("stream") == window,
                    30, "window.close")
-        report(closed.get("ok") is True and
+        report(closed.get("closed") == {"reason": "closed", "closedBy": "you"} and
                not [w for w in client.text("list_windows").get("windows") or [] if w.get("id") == window],
                "MCP close_window closes the window and tells the phone")
     finally:

@@ -783,10 +783,9 @@ final class ConnectionController {
             MainActor.assumeIsolated { self?.noteOtherInput(stream: stream, source: "person") }
         }
         // MCP-52, MCP-83: the Mac closed a stream itself.
-        windows.onMacClosed = { [weak self] stream, byAgent in
+        windows.onMacClosed = { [weak self] stream, closer in
             MainActor.assumeIsolated {
-                let closed = MCPCloseReason.mac(byAgent: byAgent)
-                self?.windowActs.closed(window: stream, reason: closed.reason, by: closed.by)
+                self?.windowActs.macClosed(window: stream, by: closer)
             }
         }
         windows.onFilesDropped = { [weak self] urls, target in
@@ -1087,7 +1086,7 @@ final class ConnectionController {
         // from here on, and the TLS layer checks the record itself.
         mirrorIdentityPin(deviceId: phone.id)
         remembered.setActive(id: phone.id)
-        windows.closeAll()
+        windows.closeAll(cause: .phoneSwitched)  // MCP-52
         stopClipboardSync()
         book.setCurrent(phone.id, phone: phone.ref).forEach(perform)
         if let session = book.current?.session {
@@ -3325,9 +3324,9 @@ final class ConnectionController {
         case .audioState:
             break
         case .windowClosed(let stream, let reason):
-            // MCP-83: a call acting on the window answers why it closed. Who
-            // closed a window from the Mac is T7's ledger; the phone's own
-            // closes are named here.
+            // MCP-52, MCP-83: the ledger keeps why it closed; a call acting
+            // on the window answers it.
+            windows.recordClose(stream, cause: .phone(reason))
             windowActs.closed(window: stream, reason: MCPCloseReason.token(phone: reason), by: "phone")
             syncAudio()
         case .pairCodeShown(let deviceId, let code):
@@ -4969,7 +4968,7 @@ final class ConnectionController {
         remembered.remember(ref)
         rememberedPhones = remembered.all
         markWelcomeSeen()
-        windows.closeAll()
+        windows.closeAll(cause: .phoneSwitched)  // MCP-52
         if let previous = book.currentId { disconnect(deviceId: previous) }
         let record = book.ensureRecord(for: ref.id, phone: ref)
         book.setCurrent(ref.id, phone: ref, connect: false).forEach(perform)
