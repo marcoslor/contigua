@@ -501,7 +501,7 @@ final class MCPCoreTests: XCTestCase {
                                               client: MCPClientID(1), perform: { _, _ in .answer([:]) })
         XCTAssertEqual(try errorCode(none), -32602)
         let error = try XCTUnwrap(try decode(none)["error"] as? [String: Any])
-        XCTAssertEqual(error["message"] as? String, "wait needs ms or text")
+        XCTAssertEqual(error["message"] as? String, "wait needs ms, text or settle")
         let long = await MCPDispatcher.handle(line: callRequest("wait", ["window": 3, "ms": 30001]),
                                               client: MCPClientID(1), perform: { _, _ in .answer([:]) })
         XCTAssertEqual(try errorCode(long), -32602)

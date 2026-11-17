@@ -16,19 +16,26 @@ final class MCPWaitTests: XCTestCase {
         var readUntil: [Int] = []
         var settles: [(quietMs: Int, timeoutMs: Int)] = []
         var settleReply: MCPSettleResult = .reply(settled: true, waitedMs: 0, reason: nil)
+        /// Settle replies in order (the last repeats); empty: `settleReply`.
+        var settleReplies: [MCPSettleResult] = []
+        /// Read answers in order (the last repeats); empty: `trees`.
+        var readScript: [MCPWaitRead] = []
 
         func nowMs() -> Int { now }
         func sleep(untilMs: Int) async { now = max(now, untilMs) }
         func readTree(untilMs: Int) async -> MCPWaitRead {
             reads.append(now)
             readUntil.append(untilMs)
+            if !readScript.isEmpty { return readScript[min(reads.count - 1, readScript.count - 1)] }
             let index = min(reads.count - 1, trees.count - 1)
             return index >= 0 ? .tree(trees[index]) : .failed("failed")
         }
         func settle(quietMs: Int, timeoutMs: Int, untilMs: Int) async -> MCPSettleResult {
             settles.append((quietMs, timeoutMs))
-            if case .reply(_, let waited, _) = settleReply { now += waited }
-            return settleReply
+            let reply = settleReplies.isEmpty ? settleReply
+                : settleReplies[min(settles.count - 1, settleReplies.count - 1)]
+            if case .reply(_, let waited, _) = reply { now += waited }
+            return reply
         }
     }
 
@@ -132,5 +139,76 @@ final class MCPWaitTests: XCTestCase {
         XCTAssertFalse(env.readUntil.isEmpty)
         XCTAssertTrue(env.readUntil.allSatisfy { $0 == 1500 + 3000 }, "\(env.readUntil)")
         XCTAssertEqual(MCPWaitRunner.boundMs(.clock(ms: 5000), timeoutMs: 10000), 8000)
+    }
+
+    // [MCP-111]
+    func testASettleLongerThanTheWireCapIsSeveralSettles() async throws {
+        let env = FakeWait()
+        env.trees = [tree([("e1", "Hello")])]
+        env.settleReplies = [.reply(settled: false, waitedMs: 10000, reason: "changes"),
+                             .reply(settled: true, waitedMs: 1200, reason: nil)]
+        let result = try answer(await MCPWaitRunner.run(.settle, timeoutMs: 30000, observe: .tree, env: env))
+        XCTAssertEqual(env.settles.map(\.timeoutMs), [10000, 10000])
+        XCTAssertEqual(result.until, "met")
+        XCTAssertEqual(result.waitedMs, 11200)
+        XCTAssertNil(result.reason)
+    }
+
+    // [MCP-111]
+    func testAChainedSettleTimesOutWithTheLastReason() async throws {
+        let env = FakeWait()
+        env.trees = [tree([("e1", "Hello")])]
+        env.settleReplies = [.reply(settled: false, waitedMs: 10000, reason: "changes"),
+                             .reply(settled: false, waitedMs: 10000, reason: "changes"),
+                             .reply(settled: false, waitedMs: 5000, reason: "loading")]
+        let result = try answer(await MCPWaitRunner.run(.settle, timeoutMs: 25000, observe: .tree, env: env))
+        XCTAssertEqual(env.settles.map(\.timeoutMs), [10000, 10000, 5000])
+        XCTAssertEqual(result.until, "timeout")
+        XCTAssertEqual(result.reason, "loading")
+        XCTAssertEqual(result.waitedMs, 25000)
+    }
+
+    // [MCP-97]
+    func testABusyReadIsRetriedAtTheNextPoll() async throws {
+        let env = FakeWait()
+        env.readScript = [.failed("busy"), .tree(tree([("e4", "Continue")]))]
+        let result = try answer(await MCPWaitRunner.run(.text("Continue", gone: false), timeoutMs: 10000,
+                                                        observe: .tree, env: env))
+        XCTAssertEqual(env.reads, [0, 500])
+        XCTAssertEqual(result.until, "met")
+        XCTAssertEqual(result.match?["ref"] as? String, "e4")
+    }
+
+    // [MCP-97]
+    func testABusyAtTheDeadlineIsTheError() async throws {
+        let env = FakeWait()
+        env.readScript = [.failed("busy")]
+        let outcome = await MCPWaitRunner.run(.text("Continue", gone: false), timeoutMs: 1500,
+                                              observe: .tree, env: env)
+        guard case .fail(let code) = outcome else { return XCTFail("expected busy, got \(outcome)") }
+        XCTAssertEqual(code, "busy")
+        XCTAssertEqual(env.reads, [0, 500, 1000, 1500])
+    }
+
+    // [MCP-97]
+    func testAnotherReadFailureEndsTheWait() async throws {
+        let env = FakeWait()
+        env.readScript = [.failed("no_display"), .tree(tree([("e4", "Continue")]))]
+        let outcome = await MCPWaitRunner.run(.text("Continue", gone: false), timeoutMs: 10000,
+                                              observe: .tree, env: env)
+        guard case .fail(let code) = outcome else { return XCTFail("expected no_display, got \(outcome)") }
+        XCTAssertEqual(code, "no_display")
+        XCTAssertEqual(env.reads, [0])
+    }
+
+    // [MCP-97]
+    func testTheMatchIgnoresCaseAndAccents() async throws {
+        let env = FakeWait()
+        env.trees = [tree([("e2", "Café")])]
+        let result = try answer(await MCPWaitRunner.run(.text("CAFE", gone: false), timeoutMs: 10000,
+                                                        observe: .tree, env: env))
+        XCTAssertEqual(result.until, "met")
+        XCTAssertEqual(result.match?["text"] as? String, "Café")
+        XCTAssertEqual(result.match?["ref"] as? String, "e2")
     }
 }
