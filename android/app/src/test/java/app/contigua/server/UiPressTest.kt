@@ -131,4 +131,39 @@ class UiPressTest {
                 UiTree.Node(role = "android.widget.TextView", text = "Shopping", box = UiTree.Box(0, 600, 1_080, 700))))
         assertEquals("Shopping", UiPress.label(row))
     }
+
+    @Test
+    fun testAPasswordFieldIsLabelledByItsId() { // [MCP-86]
+        // Its row carries neither text nor desc (item 2), so the Mac labels it
+        // by its id: the phone must too.
+        val pw = UiTree.Node(role = "android.widget.EditText", text = "hunter2", desc = "Password",
+            viewId = "com.x:id/pw", box = UiTree.Box(0, 500, 1_080, 600), editable = true, password = true)
+        assertEquals("pw", UiPress.label(pw))
+        assertTrue(UiPress.decide(Fake(true, pw), size, "pw", ::nobody) is UiPress.Decision.Press)
+    }
+
+    /** The Mac's label of a row (`UITree.labels()`, own label only): an `edit` row's desc, else its id; else text, else desc. */
+    private fun macLabel(row: Map<String, Any?>): String =
+        if (row["edit"] == true) (row["desc"] ?: row["id"] ?: "") as String
+        else (row["text"] ?: row["desc"] ?: "") as String
+
+    @Test
+    fun testTheMacsLabelOfAFieldsRowIsThePhones() { // [MCP-86]
+        val fields = listOf(
+            UiTree.Node(role = "android.widget.EditText", text = "Search", desc = "Search",
+                viewId = "com.x:id/q", box = UiTree.Box(0, 500, 1_080, 600), editable = true),
+            UiTree.Node(role = "android.widget.EditText", text = "milk", desc = "Search",
+                viewId = "com.x:id/q", box = UiTree.Box(0, 500, 1_080, 600), editable = true),
+            UiTree.Node(role = "android.widget.EditText", text = "milk",
+                viewId = "com.x:id/q", box = UiTree.Box(0, 500, 1_080, 600), editable = true),
+            UiTree.Node(role = "android.widget.EditText", text = "hunter2", desc = "Password",
+                viewId = "com.x:id/pw", box = UiTree.Box(0, 500, 1_080, 600), editable = true, password = true),
+        )
+        for (field in fields) {
+            val layer = UiTree.Layer(title = "App", type = "app", focused = true, active = true, nodes = listOf(field))
+            @Suppress("UNCHECKED_CAST")
+            val row = (UiTree.reply(1, size, listOf(layer))["nodes"] as List<Map<String, Any?>>).single()
+            assertEquals("$field", UiPress.label(field), macLabel(row))
+        }
+    }
 }
