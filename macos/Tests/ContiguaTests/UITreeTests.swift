@@ -521,18 +521,33 @@ final class UITreeTests: XCTestCase {
                size: nil, truncated: false, layers: [], nodes: nodes, note: nil)
     }
 
+    /// One deep chain of [count] rows in pre-order: the first [keyed] are
+    /// keyed containers with no label, the last row is the only labelled one.
+    private func chain(_ count: Int, keyed: Int) -> UITree {
+        tree((0..<count).map { i in
+            row(i, k: i < keyed ? i + 1 : nil, p: i == 0 ? nil : i - 1,
+                text: i == count - 1 ? "Leaf" : nil)
+        })
+    }
+
     func testLabelsOfALargeTreeAreFast() {
-        // One deep chain of 1200 rows in pre-order: the first 400 are keyed
-        // containers with no label, the last row is the only labelled one.
-        var nodes: [UITree.Node] = []
-        for i in 0..<1200 {
-            nodes.append(row(i, k: i < 400 ? i + 1 : nil, p: i == 0 ? nil : i - 1,
-                             text: i == 1199 ? "Leaf" : nil))
-        }
-        let big = tree(nodes)
-        let started = Date()
+        // A small chain first, against a tight bound: a quadratic labels()
+        // fails here in seconds instead of holding the run on the big tree.
+        let small = chain(150, keyed: 50)
+        var started = Date()
+        let smallLabels = small.labels()
+        let smallSeconds = Date().timeIntervalSince(started)
+        print("labels(): 150 rows in \(smallSeconds) s")
+        XCTAssertLessThan(smallSeconds, 0.25)
+        XCTAssertEqual(smallLabels.count, 50)
+        guard smallSeconds < 0.25 else { return }
+        // 1200 rows, 400 unlabelled keyed containers over one labelled leaf.
+        let big = chain(1200, keyed: 400)
+        started = Date()
         let labels = big.labels()
-        XCTAssertLessThan(Date().timeIntervalSince(started), 1.0)
+        let bigSeconds = Date().timeIntervalSince(started)
+        print("labels(): 1200 rows in \(bigSeconds) s")
+        XCTAssertLessThan(bigSeconds, 1.0)
         XCTAssertEqual(labels.count, 400)
         XCTAssertEqual(Set(labels.values), ["Leaf"])
     }
