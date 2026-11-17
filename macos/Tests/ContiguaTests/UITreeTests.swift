@@ -469,4 +469,49 @@ final class UITreeTests: XCTestCase {
         XCTAssertTrue(sentence.contains("s9"), sentence)
         XCTAssertTrue(sentence.contains("ui_tree"), sentence)
     }
+
+    // MARK: T10 — keys, heading, covered (MCP-71, MCP-72, MCP-73)
+
+    func testHeadingAndCoveredPassThrough() throws {
+        let raw: [String: Any] = [
+            "t": "ui.tree", "stream": 3, "seq": 4, "ok": true,
+            "nodes": [
+                ["i": 0, "k": 8, "l": 0, "role": "TextView", "text": "Settings",
+                 "box": [0, 0, 10, 10], "at": [0.5, 0.1], "heading": true, "covered": 9],
+                ["i": 1, "k": 10, "l": 0, "role": "Button", "text": "Plain",
+                 "box": [0, 20, 10, 30], "at": [0.5, 0.3]],
+            ],
+        ]
+        let tree = try XCTUnwrap(UITree(message: message(raw))).assigning(snapshot: 1)
+        let object = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(tree.encoded().utf8)) as? [String: Any])
+        let nodes = try XCTUnwrap(object["nodes"] as? [[String: Any]])
+        XCTAssertEqual(nodes[0]["heading"] as? Bool, true)
+        XCTAssertEqual(nodes[0]["covered"] as? String, "e9")
+        XCTAssertNil(nodes[1]["heading"])
+        XCTAssertNil(nodes[1]["covered"])
+    }
+
+    func testRefsAreTheKeys() throws {
+        let raw: [String: Any] = [
+            "t": "ui.tree", "stream": 3, "seq": 4, "ok": true,
+            "nodes": [
+                ["i": 0, "k": 12, "l": 0, "role": "Button", "text": "Pay",
+                 "box": [0, 0, 10, 10], "at": [0.5, 0.1], "covered": 31],
+                ["i": 1, "k": 31, "l": 0, "role": "ImageButton", "desc": "Close",
+                 "box": [0, 0, 10, 10], "at": [0.5, 0.1]],
+            ],
+        ]
+        let tree = try XCTUnwrap(UITree(message: message(raw))).assigning(snapshot: 6)
+        XCTAssertEqual(tree.nodes.map(\.ref), ["e12", "e31"])
+        let object = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(tree.encoded().utf8)) as? [String: Any])
+        let nodes = try XCTUnwrap(object["nodes"] as? [[String: Any]])
+        XCTAssertEqual(nodes[0]["ref"] as? String, "e12")
+        XCTAssertEqual(nodes[0]["covered"] as? String, "e31")
+        for node in nodes {
+            let ref = node["ref"] as? String ?? ""
+            XCTAssertNil(ref.range(of: #"^s\d+e\d+$"#, options: .regularExpression), ref)
+        }
+    }
 }

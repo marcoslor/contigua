@@ -454,6 +454,21 @@ final class MCPCoreTests: XCTestCase {
         let data = await MCPDispatcher.handle(line: oversized, client: MCPClientID(1), perform: { _, _ in .answer([:]) })
         XCTAssertEqual(try errorCode(data), -32600)
     }
+    // [MCP-71] T10: the tap and ui_tree descriptions state the key rule.
+    func testTheRefRuleIsOneSentence() async throws {
+        let target = "A ref names one element for as long as it is on screen, across reads; a ref whose element is gone is refused."
+        let s1 = "A ref works only from the window's latest tree; an older one is refused."
+        let response = try decode(await MCPDispatcher.handle(
+            line: request(2, "tools/list", [:]),
+            client: MCPClientID(1), perform: { _, _ in .answer([:]) }))
+        let tools = try XCTUnwrap((response["result"] as? [String: Any])?["tools"] as? [[String: Any]])
+        for name in ["tap", "ui_tree"] {
+            let tool = try XCTUnwrap(tools.first { $0["name"] as? String == name })
+            let text = MCPJSON.string(tool)
+            XCTAssertTrue(text.contains(target), name)
+            XCTAssertFalse(text.contains(s1), name)
+        }
+    }
 }
 
 // MARK: - T5: wait and observe on every action (MCP-64, MCP-80, MCP-82)
@@ -501,4 +516,5 @@ final class MCPActArgumentTests: XCTestCase {
             }
         }
     }
+
 }
