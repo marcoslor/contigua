@@ -557,5 +557,7 @@ final class MCPActMachineTests: XCTestCase {
         XCTAssertTrue(UIPressResult.failed("timeout").mayHaveActed)
         XCTAssertTrue(UIPressResult.failed("phone_offline").mayHaveActed)
         XCTAssertFalse(UIPressResult.failed("failed").mayHaveActed)
+        // Review C: a client that left while its press was out may have pressed.
+        XCTAssertTrue(UIPressResult.failed("cancelled").mayHaveActed)
     }
 }

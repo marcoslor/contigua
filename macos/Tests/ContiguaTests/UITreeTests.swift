@@ -597,5 +597,11 @@ final class UITreeTests: XCTestCase {
         XCTAssertEqual(labels[2], "Search")
         XCTAssertNil(labels[3])
         XCTAssertEqual(labels[4], "Shopping")
+        // Review A: a password field's row has no text or desc: its id labels it.
+        var pw = field(0, k: 9, p: nil, desc: nil, id: "pw")
+        pw = UITree.Node(index: 0, ref: "e9", parent: nil, layer: 0, role: "EditText", text: nil, desc: nil,
+                         id: "pw", box: nil, at: nil, off: false, click: true, edit: true, scroll: false,
+                         check: nil, selected: false, focused: false, disabled: false, password: true, k: 9)
+        XCTAssertEqual(tree([pw]).labels()[9], "pw")
     }
 }
