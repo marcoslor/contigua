@@ -526,4 +526,17 @@ final class MCPActMachineTests: XCTestCase {
         XCTAssertEqual(state2, .done)
         XCTAssertEqual(actions2, [.fail("phone_offline")])
     }
+
+    // [MCP-86] T10: the phone answers `ui.press` gone → stale_ref, and no
+    // input frame went out.
+    @MainActor
+    func testAGonePressIsStaleRefAndPressesNothing() async {
+        let env = FakeActEnvironment(name: "a")
+        env.pressEvent = .pressFailed("gone")
+        let outcome = await MCPActRunner.run(MCPActMachine(path: .press, wait: .settle, observe: .tree),
+                                             window: 3, queue: WindowActQueue(),
+                                             deadline: .seconds(5), env: env, ref: true)
+        XCTAssertEqual(outcome, .fail("stale_ref"))
+        XCTAssertEqual(env.log, ["a.press"], "a gone ref sends no TOUCH and no settle")
+    }
 }
