@@ -81,7 +81,8 @@ enum MCPKey: String, CaseIterable {
 enum MCPCall: Equatable {
     case phoneStatus
     case listApps
-    case openApp(String, newWindow: Bool)
+    /// An open answers like an action: first frame, settle, tree (MCP-41).
+    case openApp(String, newWindow: Bool, wait: MCPWait = .settle, observe: MCPObserve = .tree)
     case listWindows
     /// `wait: settle` settles the window first (MCP-64).
     case screenshot(window: Int, ref: String?, wait: MCPWait = .none)
@@ -101,7 +102,7 @@ enum MCPCall: Equatable {
     /// P0 (pmaxx): tap, then time the first displayed frame that changed.
     case inputProbe(window: Int, x: Double, y: Double, width: Double?, height: Double?)
     case closeWindow(window: Int)
-    case sendLink(String)
+    case sendLink(String, wait: MCPWait = .settle, observe: MCPObserve = .tree)
     case sendFile(String)
 }
 
@@ -212,12 +213,13 @@ enum MCPTools {
                 description: "Every app the phone reports, with its label and package name.",
                 schema: object([:], required: [])),
         MCPTool(name: .openApp,
-                description: "Open a phone app in a Contigua window; returns that window's id. Without newWindow it raises the app's window when it has one.",
+                description: "Open a phone app in a Contigua window, or raise the app's window when it has one (unless newWindow). The answer names the window, whether it is new or raised, who opened it and its size; by default the call waits for the window's first frame (at most 10 s), then for the screen to settle, and returns the tree. A window still without a picture at 10 s answers state opening and settle not_ready.",
                 schema: object([
                     "app": ["type": "string", "minLength": 1, "maxLength": 200,
                             "description": "Package name or app label (or a unique prefix)."],
                     "newWindow": ["type": "boolean",
                                   "description": "Open another window of an app that opens several at a time, instead of raising its window."],
+                    "wait": wait, "observe": observe,
                 ], required: ["app"])),
         MCPTool(name: .listWindows,
                 description: "The open stream windows: id, package, size ([w, h] in the display pixels ui_tree's box uses), state (opening, live, paused, stalled, offline) and frame (seq, ageMs: how fresh its picture is).",
@@ -282,13 +284,14 @@ enum MCPTools {
                 description: "Close the Phone Mirror the way its close button does.",
                 schema: object(["window": window], required: ["window"])),
         MCPTool(name: .sendLink,
-                description: "Send a link to the phone (http, https, geo, tel or mailto).",
+                description: "Open a link on the phone (http, https, geo, tel or mailto) in a new Contigua window. The answer is that window, as open_app answers it: kind link, with package and label once the phone names the app.",
                 schema: object([
                     "url": ["type": "string", "minLength": 1, "maxLength": 8192,
                             "description": "The link to open on the phone."],
+                    "wait": wait, "observe": observe,
                 ], required: ["url"])),
         MCPTool(name: .sendFile,
-                description: "Send one local file to the phone's Download/Contigua folder.",
+                description: "Send one local file to the phone's Download/Contigua folder. Waits up to 30 s for the phone to confirm it: state delivered, or sending while it is still on its way.",
                 schema: object([
                     "path": ["type": "string", "minLength": 1, "maxLength": 4096,
                              "description": "Absolute path of a regular, readable file."],
@@ -349,6 +352,16 @@ enum MCPOutputSchemas {
         "treeError": string,
     ], required: ["window", "did", "on", "settle", "state", "frame"])
 
+    /// MCP-41: `open_app` and `send_link`'s answer.
+    private static let openedWindow = object([
+        "window": integer, "kind": ["type": "string", "enum": ["app", "link"]],
+        "package": nullable("string"), "label": nullable("string"),
+        "opened": ["type": "string", "enum": ["new", "raised"]], "openedBy": string,
+        "size": array(integer), "settle": settleObject, "state": stateToken, "frame": frameObject,
+        "tree": ["type": "object"], "treeError": string,
+    ], required: ["window", "kind", "package", "label", "opened", "openedBy", "size", "settle",
+                  "state", "frame"])
+
     static func schema(for tool: MCPToolName) -> [String: Any] {
         switch tool {
         case .phoneStatus:
@@ -365,9 +378,8 @@ enum MCPOutputSchemas {
             return object(["apps": array(object(["label": string, "package": string],
                                                 required: ["label", "package"]))],
                           required: ["apps"])
-        case .openApp:
-            return object(["window": integer, "package": string, "label": string],
-                          required: ["window", "package", "label"])
+        case .openApp, .sendLink:
+            return openedWindow
         case .listWindows:
             return object(["windows": array(object(["id": integer, "package": nullable("string"),
                                                     "size": array(integer), "state": stateToken,
@@ -407,8 +419,9 @@ enum MCPOutputSchemas {
                            "closed": object(["reason": string, "closedBy": string],
                                             required: ["reason", "closedBy"])],
                           required: ["window", "closed"])
-        case .sendLink, .sendFile:
-            return object(["message": string], required: ["message"])
+        case .sendFile:
+            return object(["bytes": integer, "state": ["type": "string", "enum": ["delivered", "sending"]]],
+                          required: ["bytes", "state"])
         }
     }
 }
@@ -518,7 +531,8 @@ enum MCPArguments {
             return .listApps
         case .openApp:
             return .openApp(try string(args, "app", maximum: 200),
-                            newWindow: try boolean(args, "newWindow", default: false))
+                            newWindow: try boolean(args, "newWindow", default: false),
+                            wait: try wait(args), observe: try observe(args))
         case .listWindows:
             return .listWindows
         case .screenshot:
@@ -567,7 +581,8 @@ enum MCPArguments {
         case .closeWindow:
             return .closeWindow(window: try integer(args, "window", minimum: 1, maximum: 1_000_000))
         case .sendLink:
-            return .sendLink(try string(args, "url", maximum: 8192))
+            return .sendLink(try string(args, "url", maximum: 8192),
+                             wait: try wait(args), observe: try observe(args))
         case .sendFile:
             return .sendFile(try string(args, "path", maximum: 4096))
         }

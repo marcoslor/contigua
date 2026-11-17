@@ -10,21 +10,26 @@ enum IntentsBridge {
     private static var controller: ConnectionController { AppEnvironment.shared.controller }
 
     /// The paired phones, named as the Deck names them (nickname first).
-    static func phones() -> [IntentPhone] {
-        let controller = self.controller
-        return controller.rememberedPhones.map { phone in
+    static func phones(in given: ConnectionController? = nil) -> [IntentPhone] {
+        let controller = given ?? self.controller
+        // The store itself, not its published copy: a phone remembered this
+        // turn is already one an intent or an MCP call can name.
+        return controller.remembered.all.map { phone in
             IntentPhone(id: phone.id, name: controller.displayName(for: phone.ref), model: phone.model)
         }
     }
 
     /// The connected phone, only while the session is online.
-    static func connectedId() -> String? {
-        let link = controller.link
+    static func connectedId(in given: ConnectionController? = nil) -> String? {
+        let link = (given ?? controller).link
         return link.isOnline ? link.phone?.id : nil
     }
 
-    static func resolve(_ requested: String?) throws -> IntentPhone {
-        switch IntentPhoneResolver.resolve(requested: requested, phones: phones(), connectedId: connectedId()) {
+    /// `given`: the controller to ask; the app's own when nil (an MCP host
+    /// passes its own, so a test never reaches the app's).
+    static func resolve(_ requested: String?, in given: ConnectionController? = nil) throws -> IntentPhone {
+        switch IntentPhoneResolver.resolve(requested: requested, phones: phones(in: given),
+                                           connectedId: connectedId(in: given)) {
         case .phone(let phone):
             return phone
         case .ambiguous(let phones):
@@ -40,8 +45,8 @@ enum IntentsBridge {
 
     /// The app list the Deck shows for that phone: live when it is connected,
     /// the cached one otherwise — the same list Spotlight indexes.
-    static func apps(for phone: IntentPhone) -> [AppInfo] {
-        let controller = self.controller
+    static func apps(for phone: IntentPhone, in given: ConnectionController? = nil) -> [AppInfo] {
+        let controller = given ?? self.controller
         if controller.link.isOnline, controller.link.phone?.id == phone.id, controller.appsLoaded {
             return controller.apps
         }
@@ -86,6 +91,13 @@ enum IntentsBridge {
             return "Sent the link to \(phone.name)."
         }
         return "Connecting to \(phone.name); the link opens when it's ready."
+    }
+
+    /// MCP-43: an MCP link opens on the live link path at once and names the
+    /// window `WindowManager.openLink` made; a refused URL opens nothing.
+    static func openLinkWindow(_ raw: String, controller: ConnectionController) throws -> UInt32 {
+        let url = try IntentLink.validate(raw)
+        return controller.windows.openLink(url).stream
     }
 
     /// Files go through the same drop path as a Finder drag (Download/Contigua).

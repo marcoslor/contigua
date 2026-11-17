@@ -534,7 +534,7 @@ final class ConnectionController {
     private var launchAt = Date()
     private var didAutoOpen = false
     private var everOnline = false
-    private var pendingOpen: SpotlightOpenRequest?
+    private(set) var pendingOpen: SpotlightOpenRequest?
     /// A Dock app asked for its window before its phone was ready.
     private var pendingDockOpen: (deviceId: String, pkg: String, pid: Int)?
     /// `--dock-add` / `--dock-remove` still to run (e2e).
@@ -550,7 +550,7 @@ final class ConnectionController {
     /// app the phone no longer lists), so the Deck redraws its Pinned row.
     private(set) var deckPinsRevision = 0
     /// A link waiting for its phone to become ready (nil phone = whichever comes first).
-    private var pendingLink: (request: OpenLinkRequest, until: Date)?
+    private(set) var pendingLink: (request: OpenLinkRequest, until: Date)?
     /// An app file waiting for its phone to become ready (nil phone = whichever comes first).
     private var pendingApk: (file: URL, deviceId: String?, until: Date)?
     /// The 120 s wait's clock (FILES-16).
@@ -558,7 +558,7 @@ final class ConnectionController {
     /// An intent's whole-phone window waiting for its phone (docs/design/intents.md).
     private var pendingPhoneWindow: (deviceId: String, until: Date)?
     /// An intent's files waiting for their phone.
-    private var pendingDrop: (urls: [URL], deviceId: String, until: Date)?
+    private(set) var pendingDrop: (urls: [URL], deviceId: String, until: Date)?
     /// `--debug-intent`: parsed lines still to run, in flag order.
     private var pendingDebugIntents: [DebugIntent] = []
     private var debugInput: DebugInputDriver?
@@ -2120,6 +2120,13 @@ final class ConnectionController {
 
     func intentsSendLink(_ url: String, on deviceId: String) {
         openLink(url, on: deviceId)
+    }
+
+    /// MCP-42/44: an MCP drop goes now on the live session or not at all.
+    func mcpSendFile(_ url: URL) -> Bool {
+        guard link.isOnline, let session else { return false }
+        dropSender.send([url], session: session)
+        return true
     }
 
     func intentsSendFiles(_ urls: [URL], on deviceId: String) {
