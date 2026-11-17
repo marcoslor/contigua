@@ -167,13 +167,13 @@ def suite(args):
         except RuntimeError as error:
             report("off screen" in str(error), "MCP tap by an off-screen ref is refused")
         # [MCP-71] T10: a ref from an older read is no longer refused by the
-        # Mac (suite_refs presses one); a ref that is no key at all still is.
+        # Mac (suite_refs presses one); a ref that is no key is an argument error.
         try:
             client.text("tap", {"window": window, "ref": "s%se1" % tree.get("snapshot")})
             report(False, "MCP tap by a ref that is no key must fail")
         except RuntimeError as error:
-            report("stale_ref" in str(error) and "latest tree" in str(error),
-                   "[MCP-71] MCP tap by a ref that is no key is refused stale_ref")
+            report("-32602" in str(error) and "ref must look like e12" in str(error),
+                   "[MCP-71] MCP tap by a ref that is no key fails -32602")
         # [MCP-6] A failure is a closed code a program switches on, with the
         # sentence for a model beside it.
         missing = client.tool("ui_tree", {"window": 999})

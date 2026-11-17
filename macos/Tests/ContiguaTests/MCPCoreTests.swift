@@ -454,6 +454,27 @@ final class MCPCoreTests: XCTestCase {
         let data = await MCPDispatcher.handle(line: oversized, client: MCPClientID(1), perform: { _, _ in .answer([:]) })
         XCTAssertEqual(try errorCode(data), -32600)
     }
+    // [MCP-71] Review: a ref that is not a key is an argument error.
+    func testARefMustBeAKey() async throws {
+        for (tool, ref) in [("tap", "s3e1"), ("tap", "x"), ("screenshot", "s3e1"), ("screenshot", "x")] {
+            let data = await MCPDispatcher.handle(
+                line: callRequest(tool, ["window": 3, "ref": ref]),
+                client: MCPClientID(1), perform: { _, _ in .answer([:]) })
+            XCTAssertEqual(try errorCode(data), -32602, "\(tool) \(ref)")
+            let message = try XCTUnwrap((try decode(data)["error"] as? [String: Any])?["message"] as? String)
+            XCTAssertTrue(message.contains("ref must look like e12: use a ref from ui_tree"), message)
+        }
+        let response = try decode(await MCPDispatcher.handle(
+            line: request(2, "tools/list", [:]),
+            client: MCPClientID(1), perform: { _, _ in .answer([:]) }))
+        let tools = try XCTUnwrap((response["result"] as? [String: Any])?["tools"] as? [[String: Any]])
+        for name in ["tap", "screenshot"] {
+            let tool = try XCTUnwrap(tools.first { $0["name"] as? String == name })
+            let ref = ((tool["inputSchema"] as? [String: Any])?["properties"] as? [String: Any])?["ref"] as? [String: Any]
+            XCTAssertEqual(ref?["pattern"] as? String, "^e[0-9]+$", name)
+        }
+    }
+
     // [MCP-71] T10: the tap and ui_tree descriptions state the key rule.
     func testTheRefRuleIsOneSentence() async throws {
         let target = "A ref names one element for as long as it is on screen, across reads; a ref whose element is gone is refused."
