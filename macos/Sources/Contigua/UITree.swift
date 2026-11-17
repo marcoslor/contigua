@@ -436,29 +436,6 @@ enum UITreeError: Error, Equatable {
     }
 }
 
-/// What `tap` by ref does with a resolution (WIN-79): press one point, or
-/// refuse with a sentence and press nothing. Pure, so the tests prove that a
-/// stale, closed or off-screen ref never becomes a TOUCH.
-enum UITreeTapPlan: Equatable {
-    case press(point: UITree.Point, snapshot: Int, box: [Int]?)
-    case refuse(String)
-
-    init(_ resolution: UITreeResolution, ref: String) {
-        switch resolution {
-        case .placed(let snapshot, let placed):
-            if let point = placed.point, !placed.off {
-                self = .press(point: point, snapshot: snapshot, box: placed.box)
-            } else {
-                self = .refuse(UITreeRefusal.offScreen(ref))  // F9
-            }
-        case .stale(let ref, let snapshot, let latest):
-            self = .refuse(UITreeRefusal.stale(ref: ref, snapshot: snapshot, latest: latest))  // F1
-        case .noTree:
-            self = .refuse(UITreeRefusal.noTree(ref))  // F4, and a reconnect
-        }
-    }
-}
-
 /// The `tap` tool's refusals as human sentences (WIN-79). Kept here, not in the
 /// tool layer, so the unit tests assert the exact words.
 enum UITreeRefusal {

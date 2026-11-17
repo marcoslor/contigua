@@ -378,20 +378,6 @@ final class MCPActMachineTests: XCTestCase {
         XCTAssertNil(MCPActDid.tap(x: 0.5, y: 0.5, holdMs: nil, latest: nil).snapshot)
     }
 
-    func testATapByRefNamesItsNode_MCP108() throws {
-        let latest = tree(snapshot: 4, nodes: [
-            node(5, ref: "s4e5", role: "Button", text: "Add to cart",
-                 box: [100, 200, 300, 400], at: UITree.Point(x: 0.2, y: 0.125), click: true),
-        ])
-        let did = try XCTUnwrap(MCPActDid.tap(ref: "s4e5", holdMs: nil, latest: latest))
-        XCTAssertEqual(did.object["ref"] as? String, "s4e5")
-        XCTAssertEqual(did.object["at"] as? [Double], [0.2, 0.125])
-        XCTAssertEqual(did.object["box"] as? [Int], [100, 200, 300, 400])
-        let named = try XCTUnwrap(did.object["node"] as? [String: String])
-        XCTAssertEqual(named, ["role": "Button", "text": "Add to cart"])
-        XCTAssertEqual(did.snapshot, 4)
-    }
-
     func testTheEnvelopeNamesWhatWasPressedAndWhatItActedOn_MCP80() throws {
         let did = MCPActDid.key("back")
         let answer = MCPActEnvelope.answer(
