@@ -116,6 +116,11 @@ final class AudioEngine {
 
     private var machine = AudioPlayerMachine()
     private let lock = NSLock()
+    /// Serializes flush's start (check -> play()) against the device-change
+    /// stop (MEDIA-12). Separate from `lock`: the player's stop can wait on
+    /// completion handlers that take `lock`. Flush only tries it, never waits,
+    /// so a completion handler that flushes cannot deadlock the stop.
+    private let startLock = NSLock()
     private var pendingPCM: [AVAudioPCMBuffer] = []
     private var started = false
     /// Frames scheduled on the player whose playback has not completed yet.
@@ -173,8 +178,11 @@ final class AudioEngine {
     /// cycle is gone, and any later play() on it would abort the process.
     /// Stop cleanly, forget the pre-buffer, and let the next flush start again
     /// on the new device. The device-change notification arrives on whatever
-    /// thread posts it; the state is kept consistent under the lock.
+    /// thread posts it; the state is kept consistent under the lock. It holds
+    /// `startLock`, so it cannot land between flush's check and play().
     private func configurationChanged() {
+        startLock.lock()
+        defer { startLock.unlock() }
         output.stopPlayer()
         output.stop()
         lock.lock()
@@ -372,9 +380,20 @@ final class AudioEngine {
     private func flush() {
         lock.lock()
         let playing = started || machine.state == .playing
+        let needsStart = !started
         lock.unlock()
         guard playing else { return }
-        if !started {
+        if needsStart {
+            // A device change in progress holds the lock: drop this burst and
+            // start on the next frame, after it. The lock covers this whole
+            // flush, so the change's reset also covers what it schedules.
+            guard startLock.try() else {
+                dropPending()
+                return
+            }
+        }
+        defer { if needsStart { startLock.unlock() } }
+        if needsStart {
             if !output.isRunning {
                 do {
                     try output.start()
@@ -393,7 +412,9 @@ final class AudioEngine {
                 return
             }
             output.play()
+            lock.lock()
             started = true
+            lock.unlock()
         }
         lock.lock()
         let buffers = pendingPCM
