@@ -384,7 +384,8 @@ final class MCPActMachineTests: XCTestCase {
     }
 
     func testAnOpenThatGotItsFirstFrameSettles() {
-        let (state, actions, _) = step(machine(.opening), .opened)
+        let (_, _, opened) = step(machine(.opening), .windowOpened)
+        let (state, actions, _) = step(opened, .firstFrame)
         XCTAssertEqual(state, .settling(1))
         XCTAssertEqual(actions, [.sendSettle(req: 1, quietMs: 300, timeoutMs: 2000)])
     }
