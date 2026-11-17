@@ -54,7 +54,7 @@ enum MCPWaitOutcome {
 @MainActor
 protocol MCPWaitEnvironment: AnyObject {
     func nowMs() -> Int
-    func sleep(untilMs: Int) async
+    func pause(untilMs: Int) async
     func readTree(untilMs: Int) async -> MCPWaitRead
     func settle(quietMs: Int, timeoutMs: Int, untilMs: Int) async -> MCPSettleResult
 }
@@ -124,7 +124,7 @@ enum MCPWaitRunner {
         let until = start + boundMs(mode, timeoutMs: timeoutMs)
         switch mode {
         case .clock(let ms):
-            await env.sleep(untilMs: start + ms)
+            await env.pause(untilMs: start + ms)
             var answer = MCPWaitAnswer(waitedMs: env.nowMs() - start)
             await observeRead(&answer, observe: observe, env: env, until: until)
             return .answer(answer)
@@ -139,12 +139,12 @@ enum MCPWaitRunner {
                 if lastReadAt != nil && next > end {
                     // A timeout means the screen was read and did not match.
                     if let lastBusy { return .fail(lastBusy) }
-                    await env.sleep(untilMs: end)
+                    await env.pause(untilMs: end)
                     var answer = MCPWaitAnswer(waitedMs: env.nowMs() - start, until: "timeout")
                     if observe == .tree { answer.tree = lastTree }
                     return .answer(answer)
                 }
-                await env.sleep(untilMs: next)
+                await env.pause(untilMs: next)
                 lastReadAt = env.nowMs()
                 switch await env.readTree(untilMs: until) {
                 case .failed(let code):

@@ -22,7 +22,7 @@ final class MCPWaitTests: XCTestCase {
         var readScript: [MCPWaitRead] = []
 
         func nowMs() -> Int { now }
-        func sleep(untilMs: Int) async { now = max(now, untilMs) }
+        func pause(untilMs: Int) async { now = max(now, untilMs) }
         func readTree(untilMs: Int) async -> MCPWaitRead {
             reads.append(now)
             readUntil.append(untilMs)

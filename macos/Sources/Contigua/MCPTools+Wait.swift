@@ -51,7 +51,7 @@ final class MCPHostWaitEnvironment: MCPWaitEnvironment {
         return Int(elapsed.components.seconds * 1000 + elapsed.components.attoseconds / 1_000_000_000_000_000)
     }
 
-    func sleep(untilMs: Int) async {
+    func pause(untilMs: Int) async {
         try? await Task.sleep(until: instant(untilMs), clock: .continuous)
     }
 
