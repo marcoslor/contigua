@@ -2170,6 +2170,8 @@ class Session(
         // A key the phone never issued is `gone` (item 8), and so is a request without one.
         val k = Json.int(obj["k"]) ?: -1
         val expect = obj["expect"] as? String
+        // Whether the Mac sent a label to compare, never the label (logs carry no text).
+        val sent = if (expect != null) "yes" else "no"
         val holdMs = (obj["holdMs"] as? Number)?.toLong()?.coerceIn(0L, UiPress.MAX_HOLD_MS) ?: 0L
         val source = uiTree as? UiPressSource
         if (source == null) {
@@ -2192,11 +2194,11 @@ class Session(
                 when (decision) {
                     is UiPress.Decision.Press -> {
                         injectPress(state, decision.x, decision.y, size, holdMs)
-                        log("ui.press stream=$stream pressed hold_ms=$holdMs took_ms=${now() - started}")
+                        log("ui.press stream=$stream pressed expect=$sent hold_ms=$holdMs took_ms=${now() - started}")
                         sendUiPress(stream, seq, decision.reply)
                     }
                     is UiPress.Decision.Refuse -> {
-                        log("ui.press stream=$stream failed=${decision.code} took_ms=${now() - started}")
+                        log("ui.press stream=$stream failed=${decision.code} expect=$sent took_ms=${now() - started}")
                         sendUiPress(stream, seq, decision.reply)
                     }
                 }
