@@ -331,13 +331,10 @@ final class MCPHostActEnvironment: MCPActEnvironment {
 struct MCPActDid {
     var object: [String: Any]
     var snapshot: Int?
-    /// Where a ref tap presses (S1): the node's `at`.
-    var point: UITree.Point?
 
-    init(object: [String: Any], snapshot: Int?, point: UITree.Point? = nil) {
+    init(object: [String: Any], snapshot: Int?) {
         self.object = object
         self.snapshot = snapshot
-        self.point = point
     }
 
     /// A point tap names the smallest clickable node of the latest tree whose
@@ -362,20 +359,6 @@ struct MCPActDid {
             object["hit"] = named
         }
         return MCPActDid(object: object, snapshot: latest.snapshot)
-    }
-
-    /// A ref tap names the node it pressed, from the tree the ref came from
-    /// (MCP-108, S1); nil when the latest tree has no on-screen row for it.
-    static func tap(ref: String, holdMs: Int?, latest: UITree?) -> MCPActDid? {
-        guard let latest, let node = latest.nodes.first(where: { $0.ref == ref }),
-              let at = node.at, !node.off else { return nil }
-        var named: [String: String] = ["role": node.role]
-        if let text = node.text { named["text"] = text }
-        if let desc = node.desc { named["desc"] = desc }
-        var object: [String: Any] = ["action": "tap", "ref": ref, "at": [at.x, at.y], "node": named]
-        if let box = node.box { object["box"] = box }
-        if let holdMs { object["holdMs"] = holdMs }
-        return MCPActDid(object: object, snapshot: latest.snapshot, point: at)
     }
 
     /// A press by key names what the phone pressed, as it read the node at

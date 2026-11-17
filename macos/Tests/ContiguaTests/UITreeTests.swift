@@ -250,19 +250,29 @@ final class UITreeTests: XCTestCase {
             broker.reply(try XCTUnwrap(UITree(message: phoneReply(seq: seq))))
             _ = try await read.value
         }
-        guard case .press(_, let snapshot, _) = UITreeTapPlan(broker.resolved(ref: "e1", stream: 3), ref: "e1") else {
-            return XCTFail("the latest ref must press")
-        }
-        XCTAssertEqual(snapshot, 2)
+        // What `tap` reads: the key, the latest snapshot, the row by key.
+        XCTAssertEqual(MCPHostActEnvironment.key("e1"), 1)
+        XCTAssertEqual(broker.latestSnapshot(stream: 3), 2)
+        let row = try XCTUnwrap(broker.latestTree(stream: 3)?.nodes.first { $0.k == 1 })
+        XCTAssertEqual(row.ref, "e1")
+        XCTAssertNotNil(row.at, "the latest read places the key on screen")
     }
 
-    func test_WIN79_refsForgottenWhenWindowCloses() throws {
-        var refs = UITreeRefs()
-        refs.remember(try XCTUnwrap(UITree(message: phoneReply())).assigning(snapshot: 1))
-        refs.forget(stream: 3) // window.closed
-        XCTAssertEqual(refs.resolved(ref: "e1", stream: 3), .noTree)
-        XCTAssertEqual(UITreeTapPlan(refs.resolved(ref: "e1", stream: 3), ref: "e1"),
-                       .refuse(UITreeRefusal.noTree("e1")))
+    @MainActor
+    func test_WIN79_refsForgottenWhenWindowCloses() async throws {
+        let broker = UITreeBroker()
+        let client = MCPClientID(1)
+        var seq = 0
+        let read = Task { try await broker.read(stream: 3, timeout: 5, send: { seq = $0 }) }
+        await waitUntil { seq != 0 }
+        broker.reply(try XCTUnwrap(UITree(message: phoneReply(seq: seq))))
+        broker.answered(try await read.value, client: client)
+        XCTAssertEqual(broker.expect(client: client, stream: 3, k: 1), "Equals")
+        broker.forget(stream: 3) // window.closed
+        // What `refusal()` and the press read: no snapshot, no tree, no label.
+        XCTAssertNil(broker.latestSnapshot(stream: 3))
+        XCTAssertNil(broker.latestTree(stream: 3))
+        XCTAssertNil(broker.expect(client: client, stream: 3, k: 1))
         // The sentence names the ref and the next step (the tool answers "no
         // such window" before this for a window that is really gone).
         XCTAssertTrue(UITreeRefusal.noTree("e1").contains("e1"))
@@ -282,8 +292,9 @@ final class UITreeTests: XCTestCase {
         fixture.manager.onStreamAllocated = { refs.forget(stream: $0) }
         fixture.manager.resetForNextCheck(forgetPrefs: true)
         XCTAssertEqual(fixture.open().stream, stream, "the id is handed out again")
-        let plan = UITreeTapPlan(refs.resolved(ref: "e1", stream: stream), ref: "e1")
-        XCTAssertEqual(plan, .refuse(UITreeRefusal.noTree("e1")))
+        // What `refusal()` reads: no snapshot and no tree, so it refuses with noTree.
+        XCTAssertNil(refs.latestSnapshot(for: stream))
+        XCTAssertNil(refs.latestTree(for: stream))
         XCTAssertEqual(refs.nextSnapshot(for: stream), 1, "a reused id starts its read count at 1")
     }
 
@@ -304,8 +315,14 @@ final class UITreeTests: XCTestCase {
             "nodes": [["i": 12, "k": 12, "l": 0, "role": "Button", "text": "Checkout", "off": true]],
         ]
         refs.remember(try XCTUnwrap(UITree(message: message(raw))).assigning(snapshot: 4))
-        XCTAssertEqual(UITreeTapPlan(refs.resolved(ref: "e12", stream: 3), ref: "e12"),
-                       .refuse("e12 is off screen: scroll it into view and read the tree again."))
+        let row = try XCTUnwrap(refs.latestTree(for: 3)?.nodes.first { $0.k == 12 })
+        XCTAssertTrue(row.off)
+        XCTAssertNil(row.at)
+        // The phone answers `off_screen` for it; the Mac's answer is F9's sentence.
+        let error = MCPToolError.pressRefusal(code: "off_screen", ref: "e12", window: 3, latestSnapshot: 4,
+                                              expect: nil, now: nil, coveredBy: nil)
+        XCTAssertEqual(error.code, .offScreen)
+        XCTAssertEqual(error.message, "e12 is off screen: scroll it into view and read the tree again.")
     }
 
     func testRefsAreRememberedUntilTheNextTree() throws {
@@ -350,11 +367,12 @@ final class UITreeTests: XCTestCase {
         let read = Task { try await broker.read(stream: 3, timeout: 5, send: { seq = $0 }) }
         await waitUntil { seq != 0 }
         broker.reply(try XCTUnwrap(UITree(message: phoneReply(seq: seq))))
-        _ = try await read.value
+        broker.answered(try await read.value, client: MCPClientID(1))
         broker.fail(.notConnected) // the session ended; the window stays open
-        guard case .refuse(let sentence) = UITreeTapPlan(broker.resolved(ref: "e1", stream: 3), ref: "e1") else {
-            return XCTFail("a ref from before the reconnect must press nothing")
-        }
+        // What `refusal()` reads: no snapshot, so it refuses with noTree.
+        XCTAssertNil(broker.latestSnapshot(stream: 3), "a ref from before the reconnect must press nothing")
+        XCTAssertNil(broker.expect(client: MCPClientID(1), stream: 3, k: 1))
+        let sentence = UITreeRefusal.noTree("e1")
         XCTAssertTrue(sentence.contains("since the phone reconnected"), sentence)
         XCTAssertFalse(sentence.contains("closed"), sentence)
     }
