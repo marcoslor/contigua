@@ -295,13 +295,17 @@ enum UIPressResult {
     case reply(UIPressReply)
     case failed(String)
 
+    /// Internal: the call was cancelled (its client left) after the press may
+    /// have gone out. The machine sees it as `failed`.
+    static let cancelled = "cancelled"
+
     /// MCP-84: whether the window may have taken input from the call. A
     /// refusal pressed nothing; a press with no answer (`timeout`, a link
     /// that dropped) may have.
     var mayHaveActed: Bool {
         switch self {
         case .reply(let reply): return reply.ok
-        case .failed(let code): return code == "timeout" || code == "phone_offline"
+        case .failed(let code): return code == "timeout" || code == "phone_offline" || code == Self.cancelled
         }
     }
 }
