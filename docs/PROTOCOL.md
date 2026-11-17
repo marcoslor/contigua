@@ -1648,8 +1648,8 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
    now — a list reused the row's node for another item, or the node relabelled itself; #188),
    `no_window`, `busy` or `failed`. A key the phone never issued is `gone`. The checks run in
    that order — `gone`, `not_visible`, `off_screen`, `changed`, `covered` — and the first that
-   fails answers. A phone that cannot press by element answers `failed`. The phone logs the stream, the outcome and the duration,
-   never the node's text.
+   fails answers. A phone that cannot press by element answers `failed`. The phone logs the stream, the outcome,
+   whether `expect` came (`expect=yes|no`) and the duration, never the node's text or `expect`.
 9. **Row and reply fields of #171**, added to item 2's reply:
    - **`loading` (B1).** A row is kept and marked `loading: true` when it is visible to the
      user and is a `android.widget.ProgressBar` (or a class whose name ends in `ProgressBar`)
