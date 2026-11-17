@@ -448,7 +448,7 @@ The task sections below are grouped by area; the schedule above is the order.
   new `MCPTools+Wait.swift`, tests, new `macos/scripts/mcp/suite_wait.py`.
 - **Tests**
   - K2 `MCPCoreTests.testWaitNeedsMsOrText` `[MCP-96]`: `{window: 3}` →
-    `-32602` "wait needs ms or text"; `{window:3, ms: 30001}` → `-32602`.
+    `-32602` "wait needs ms, text or settle"; `{window:3, ms: 30001}` → `-32602`.
   - K2 `MCPWaitTests.testAPlainWaitReturnsAfterMs` `[MCP-96]`: injected clock;
     `ms: 5000` → answer at 5000, `waitedMs: 5000`, no `until`.
   - K2 `MCPWaitTests.testWaitForTextPollsAtMostTwiceASecond` `[MCP-97]`:

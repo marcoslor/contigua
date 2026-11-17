@@ -578,7 +578,7 @@ enum MCPArguments {
             mode = .text(try string(args, "text", maximum: 200),
                          gone: try boolean(args, "gone", default: false))
         } else {
-            throw MCPArgumentError(message: "wait needs ms or text")
+            throw MCPArgumentError(message: "wait needs ms, text or settle")
         }
         return .wait(window: window, mode: mode, timeoutMs: timeoutMs, observe: try observe(args))
     }
