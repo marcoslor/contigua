@@ -622,4 +622,89 @@ final class UITreeTests: XCTestCase {
                          check: nil, selected: false, focused: false, disabled: false, password: true, k: 9)
         XCTAssertEqual(tree([pw]).labels()[9], "pw")
     }
+
+    // MARK: B6, the tree says what it does not show (MCP-104…106)
+
+    private func encodedObject(_ raw: [String: Any]) throws -> [String: Any] {
+        let tree = try XCTUnwrap(UITree(message: message(raw))).assigning(snapshot: 1)
+        return try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(tree.encoded().utf8)) as? [String: Any])
+    }
+
+    // [MCP-104]
+    func testHintPassesThrough() throws {
+        let object = try encodedObject([
+            "t": "ui.tree", "stream": 3, "seq": 4, "ok": true,
+            "nodes": [
+                ["i": 0, "k": 2, "l": 0, "role": "EditText", "hint": true, "hintText": "Search products",
+                 "box": [0, 0, 10, 10], "at": [0.5, 0.1], "edit": true],
+                ["i": 1, "k": 3, "l": 0, "role": "EditText", "text": "milk",
+                 "box": [0, 20, 10, 30], "at": [0.5, 0.3], "edit": true],
+            ],
+        ])
+        let nodes = try XCTUnwrap(object["nodes"] as? [[String: Any]])
+        XCTAssertEqual(nodes[0]["hint"] as? Bool, true)
+        XCTAssertEqual(nodes[0]["hintText"] as? String, "Search products")
+        XCTAssertNil(nodes[0]["text"])
+        XCTAssertEqual(nodes[1]["text"] as? String, "milk")
+        XCTAssertNil(nodes[1]["hint"])
+        XCTAssertNil(nodes[1]["hintText"])
+    }
+
+    // [MCP-105]
+    func testActivePassesThroughAndFocusedIsGone() throws {
+        let object = try encodedObject([
+            "t": "ui.tree", "stream": 3, "seq": 4, "ok": true,
+            "layers": [
+                // An old fake still sends `focused`: it is dropped.
+                ["i": 0, "title": "Shop", "type": "app", "focused": true],
+                ["i": 1, "title": "Keyboard", "type": "ime", "active": true],
+            ],
+            "nodes": [
+                ["i": 0, "k": 2, "l": 1, "role": "EditText", "text": "milk",
+                 "box": [0, 0, 10, 10], "at": [0.5, 0.1], "edit": true, "focus": true],
+            ],
+        ])
+        let layers = try XCTUnwrap(object["layers"] as? [[String: Any]])
+        XCTAssertEqual(layers.count, 2)
+        XCTAssertTrue(layers.allSatisfy { $0["focused"] == nil })
+        XCTAssertNil(layers[0]["active"])
+        XCTAssertEqual(layers[1]["active"] as? Bool, true)
+        let nodes = try XCTUnwrap(object["nodes"] as? [[String: Any]])
+        XCTAssertEqual(nodes[0]["focus"] as? Bool, true)
+    }
+
+    // [MCP-106]
+    func testHiddenAndOmittedPassThrough() throws {
+        let object = try encodedObject([
+            "t": "ui.tree", "stream": 3, "seq": 4, "ok": true, "omitted": 115,
+            "nodes": [
+                ["i": 0, "k": 2, "l": 0, "role": "RecyclerView", "scroll": true,
+                 "box": [0, 0, 10, 10], "at": [0.5, 0.5], "hidden": [3, 112]],
+                ["i": 1, "k": 3, "p": 0, "l": 0, "role": "TextView", "text": "Item 4",
+                 "box": [0, 0, 10, 2], "at": [0.5, 0.1]],
+            ],
+        ])
+        XCTAssertEqual(object["omitted"] as? Int, 115)
+        let nodes = try XCTUnwrap(object["nodes"] as? [[String: Any]])
+        XCTAssertEqual(nodes[0]["hidden"] as? [Int], [3, 112])
+        XCTAssertNil(nodes[1]["hidden"])
+        let none = try encodedObject(["t": "ui.tree", "stream": 3, "seq": 4, "ok": true, "omitted": 0, "nodes": []])
+        XCTAssertEqual(none["omitted"] as? Int, 0)
+    }
+
+    // [MCP-86] The label skips an off row: the phone, reading live nodes, does too.
+    func testAnOffRowGivesNoLabel() {
+        let item3 = UITree.Node(index: 1, ref: "e2", parent: 0, layer: 0,
+                                role: "TextView", text: "Item 3", desc: nil, id: nil, box: nil, at: nil,
+                                off: true, click: false, edit: false, scroll: false, check: nil,
+                                selected: false, focused: false, disabled: false, password: false, k: 2)
+        let labels = tree([
+            row(0, k: 1, p: nil),
+            item3,
+            row(2, k: 3, p: 0, text: "Item 4"),
+        ]).labels()
+        XCTAssertEqual(labels[1], "Item 4")
+        XCTAssertEqual(labels[3], "Item 4")
+    }
 }

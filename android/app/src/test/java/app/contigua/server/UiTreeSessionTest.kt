@@ -24,7 +24,7 @@ class UiTreeSessionTest : SessionFixture() {
         // The mirror stream is 590×1280 but the input space (display 0's real
         // pixels) is 1440×3120: `box` lives there, so `at` must too (F2).
         val source = UiTreeSource { _, _ ->
-            UiTree.Answer.Tree(listOf(UiTree.Layer("Mirror", "app", true, true, listOf(
+            UiTree.Answer.Tree(listOf(UiTree.Layer("Mirror", "app", true, listOf(
                 UiTree.Node(role = "android.widget.Button", text = "Buy",
                     box = UiTree.Box(620, 1_460, 820, 1_660), clickable = true),
             ))))
