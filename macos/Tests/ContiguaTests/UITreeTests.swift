@@ -44,7 +44,7 @@ final class UITreeTests: XCTestCase {
     private func okTree(stream: UInt32, seq: Int) -> UITree {
         UITree(seq: seq, stream: stream, ok: true, code: nil, message: nil,
                displayId: 47, snapshot: nil, size: nil, truncated: false,
-               layers: [UITree.Layer(index: 0, title: "App", type: "app", focused: true, active: true)],
+               layers: [UITree.Layer(index: 0, title: "App", type: "app", active: true)],
                nodes: [UITree.Node(index: 0, ref: "", parent: nil, layer: 0, role: "Button",
                                    text: "X", desc: nil, id: nil, box: [0, 0, 10, 10],
                                    at: UITree.Point(x: 0.5, y: 0.5), off: false,
