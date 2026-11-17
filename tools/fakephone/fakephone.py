@@ -5318,7 +5318,7 @@ class Session(object):
         """Answer the app in front, or null. `--foreground-pkg none` and
         `--handoff-mode nothing` both mean nothing continuable;
         `--ignore-task-front` models a phone that never answers the read."""
-        if self.phone.args.ignore_task_front:
+        if mode_on(self.phone.args, "ignore_task_front"):
             return
         mode = self.phone.args.handoff_mode
         pkg = self.phone.args.foreground_pkg
