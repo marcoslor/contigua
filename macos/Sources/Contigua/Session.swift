@@ -50,6 +50,14 @@ struct LanPathProvider: PathProvider {
     let availability = PathAvailability.ready
 }
 
+/// `state.lockSource` (PROTOCOL.md, MCP-31): which phone source gave `locked`.
+enum PhoneLockSource: String, Equatable {
+    case keyguardListener = "keyguard_listener"
+    case broadcast
+    case appRelay = "app_relay"
+    case initialRead = "initial_read"
+}
+
 struct PhoneInfo: Equatable {
     var id: String
     var name: String
@@ -168,7 +176,8 @@ enum SessionEvent {
     /// window (nil fields when the phone or its codec has none).
     case phoneStats(stream: UInt32, stats: PhoneStreamStats)
     case phoneState(locked: Bool, battery: Int, charging: Bool, dnd: PhoneDndMode?, ringer: PhoneRingerMode?,
-                    volume: Int?, volumeMax: Int?, screen: PhoneScreen?, secure: Bool?, panel: PhonePanel?)
+                    volume: Int?, volumeMax: Int?, screen: PhoneScreen?, secure: Bool?, panel: PhonePanel?,
+                    lockSource: PhoneLockSource? = nil)
     /// `task.front`: the app in front on the phone's own screen, as one read
     /// (docs/PROTOCOL.md "Foreground app"). `seq` echoes the request; `pkg` is
     /// nil when nothing continuable was in front.
@@ -1833,7 +1842,8 @@ final class Session {
                              volumeMax: message.int("volumeMax"),
                              screen: message.string("screen").flatMap(PhoneScreen.init(rawValue:)),
                              secure: message.bool("secure"),
-                             panel: message.string("panel").flatMap(PhonePanel.init(rawValue:))))
+                             panel: message.string("panel").flatMap(PhonePanel.init(rawValue:)),
+                             lockSource: message.string("lockSource").flatMap(PhoneLockSource.init(rawValue:))))
         case "ring.state":
             emit(.ringState(ringing: message.bool("ringing") ?? false))
         case "power.locked":
