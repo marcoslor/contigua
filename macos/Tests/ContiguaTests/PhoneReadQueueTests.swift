@@ -113,22 +113,22 @@ final class PhoneReadQueueTests: XCTestCase {
         XCTAssertFalse(failed.ok)
     }
 
-    /// MCP-9: a read queued past its caller's bound leaves the queue and fails
-    /// `timeout`; the body gets only the time left.
+    /// MCP-9: a read queued past its caller's bound leaves the queue unsent
+    /// and fails `timeout`.
     func testAQueuedReadTimesOutAtTheCallersBound_MCP9() async throws {
         let queue = PhoneReadQueue()
         let broker = UITreeBroker()
         var sent: [Int] = []
         let first = Task {
-            try await queue.run(until: .now + .seconds(5)) { left in
-                try await broker.read(stream: 3, timeout: left.seconds) { sent.append($0) }
+            try await queue.run(until: .now + .seconds(5)) {
+                try await broker.read(stream: 3, timeout: 5) { sent.append($0) }
             }
         }
         await yieldALot()
         let started = ContinuousClock.now
         do {
-            _ = try await queue.run(until: .now + .milliseconds(100)) { left in
-                try await broker.read(stream: 3, timeout: left.seconds) { sent.append($0) }
+            _ = try await queue.run(until: .now + .milliseconds(100)) {
+                try await broker.read(stream: 3, timeout: 5) { sent.append($0) }
             }
             XCTFail("the queued read must time out")
         } catch {
@@ -136,12 +136,43 @@ final class PhoneReadQueueTests: XCTestCase {
         }
         XCTAssertLessThan(ContinuousClock.now - started, .seconds(1))
         XCTAssertEqual(sent, [1], "the timed-out read is never sent")
-        var lefts: [Duration] = []
         broker.reply(reply(seq: 1))
         _ = try await first.value
-        _ = try await queue.run(until: .now + .seconds(2)) { left in lefts.append(left) }
-        XCTAssertLessThanOrEqual(lefts.first ?? .zero, .seconds(2))
-        XCTAssertGreaterThan(lefts.first ?? .zero, .seconds(1))
+    }
+
+    /// MCP-9: a caller past its bound is answered `timeout` at its bound, but
+    /// its request keeps the queue until the phone answers it, so the next
+    /// request goes out only then and never meets the phone's `busy`.
+    func testARequestPastItsCallersBoundKeepsTheQueueUntilThePhoneAnswers_MCP9() async throws {
+        let queue = PhoneReadQueue()
+        let broker = UITreeBroker()
+        var sent: [Int] = []
+        let started = ContinuousClock.now
+        let first = Task {
+            try await queue.run(until: .now + .milliseconds(100)) {
+                try await broker.read(stream: 3, timeout: 5) { sent.append($0) }
+            }
+        }
+        await yieldALot()
+        let second = Task {
+            try await queue.run(until: .now + .seconds(5)) {
+                try await broker.read(stream: 3, timeout: 5) { sent.append($0) }
+            }
+        }
+        do {
+            _ = try await first.value
+            XCTFail("the caller is answered at its bound")
+        } catch {
+            XCTAssertEqual(error as? UITreeError, .timedOut)
+        }
+        XCTAssertLessThan(ContinuousClock.now - started, .seconds(1))
+        await yieldALot()
+        XCTAssertEqual(sent, [1], "the next request waits for the phone to answer the first")
+        broker.reply(reply(seq: 1))  // the phone answers the read its caller gave up on
+        await yieldALot()
+        XCTAssertEqual(sent, [1, 2])
+        broker.reply(reply(seq: 2))
+        _ = try await second.value
     }
 
     func testTheSettleGraceIsThePhonesPlusThree_MCP9() {
