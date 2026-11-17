@@ -107,7 +107,7 @@ final class MCPToolHostTests: XCTestCase {
 
         let delivered = MCPDropWait()
         Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(200))
+            try? await Task.sleep(for: .milliseconds(200)) // real-time: the phone's drop.result lands 200 ms after the wait starts
             delivered.ended(ok: true, sentence: nil)
         }
         let outcome = await delivered.wait(bound: .seconds(30))
