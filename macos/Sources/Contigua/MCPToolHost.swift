@@ -128,9 +128,17 @@ struct MCPToolHost {
 
     func requireWindow(_ id: Int) throws -> StreamWindowController {
         guard let window = controller.windows.controller(for: UInt32(id)) else {
-            throw MCPToolError.noWindow(id)
+            throw noWindow(id)
         }
         return window
+    }
+
+    /// MCP-53: `no_window`, with the close record when the window is in
+    /// `recentlyClosed`.
+    func noWindow(_ id: Int) -> MCPToolError {
+        let closed = controller.windows.ledger.closeRecord(UInt32(id), asker: client,
+                                                           now: ProcessInfo.processInfo.systemUptime)
+        return MCPToolError.noWindow(id, closed: closed)
     }
 
     func requireInputWindow(_ id: Int) throws -> StreamWindowController {

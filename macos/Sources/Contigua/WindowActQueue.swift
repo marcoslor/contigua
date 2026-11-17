@@ -79,6 +79,14 @@ final class WindowActQueue {
         holders[window]?.listener?(.windowClosed(reason: reason, by: by))
     }
 
+    /// The Mac closed the window itself (MCP-52): `you` or `another_agent`
+    /// as the holder's connection sees the closer, `person` for no connection.
+    func macClosed(window: UInt32, by closer: MCPClientID?) {
+        guard let holder = holders[window] else { return }
+        let closed = MCPCloseReason.mac(closer: closer, asker: holder.client)
+        holder.listener?(.windowClosed(reason: closed.reason, by: closed.by))
+    }
+
     /// The link went down: every call holding a turn answers or fails.
     func linkLost() {
         for listener in holders.values.compactMap(\.listener) { listener(.linkLost) }
@@ -116,10 +124,11 @@ enum MCPCloseReason {
     }
 
     /// The Mac closed the stream itself: ⌘W, the close light, Close All
-    /// (`person`) or `close_window` (`agent`). Which connection asked is T7's
-    /// ledger (MCP-52).
-    static func mac(byAgent: Bool) -> MCPActMachine.Closed {
-        MCPActMachine.Closed(reason: "closed", by: byAgent ? "agent" : "person")
+    /// (`person`) or a connection's `close_window` (`you` to that connection,
+    /// `another_agent` to every other; MCP-52).
+    static func mac(closer: MCPClientID?, asker: MCPClientID?) -> MCPActMachine.Closed {
+        guard let closer else { return MCPActMachine.Closed(reason: "closed", by: "person") }
+        return MCPActMachine.Closed(reason: "closed", by: closer == asker ? "you" : "another_agent")
     }
 }
 
