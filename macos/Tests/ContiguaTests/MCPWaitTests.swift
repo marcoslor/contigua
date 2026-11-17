@@ -211,4 +211,15 @@ final class MCPWaitTests: XCTestCase {
         XCTAssertEqual(result.match?["text"] as? String, "Café")
         XCTAssertEqual(result.match?["ref"] as? String, "e2")
     }
+
+    // [MCP-111] the first settle is always sent, even under the 200 ms floor.
+    func testATinyTimeoutStillAsksThePhone() async throws {
+        let env = FakeWait()
+        env.trees = [tree([("e1", "Hello")])]
+        env.settleReplies = [.reply(settled: false, waitedMs: 150, reason: "loading")]
+        let result = try answer(await MCPWaitRunner.run(.settle, timeoutMs: 150, observe: .tree, env: env))
+        XCTAssertEqual(env.settles.map(\.timeoutMs), [150])
+        XCTAssertEqual(result.until, "timeout")
+        XCTAssertEqual(result.reason, "loading")
+    }
 }
