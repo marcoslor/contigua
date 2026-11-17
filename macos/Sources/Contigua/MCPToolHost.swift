@@ -39,7 +39,7 @@ struct MCPToolHost {
             return .answer(MCPFreshness.stamp(answer, state: stateToken(for: window),
                                               frame: frameObject(for: window)))
         case .phoneStatus, .listApps, .openApp, .listWindows, .screenshot, .closeWindow,
-             .sendLink, .sendFile:
+             .sendLink, .sendFile, .wait:
             return result
         case .tap, .tapRef, .longPress, .swipe, .typeText, .pressKey:
             // The envelope stamps itself: a window that closed during the call
@@ -63,6 +63,9 @@ struct MCPToolHost {
                 return try await screenshot(window, ref: ref, wait: wait)
             case .uiTree(let window, let wait):
                 return .answer(try await uiTree(window, wait: wait))
+            case .wait(let window, let mode, let timeoutMs, let observe):
+                return .answer(try await wait(window: window, mode: mode, timeoutMs: timeoutMs,
+                                              observe: observe))
             case .tap(let window, let x, let y, let wait, let observe):
                 return .answer(try await tap(window: window, x: x, y: y, wait: wait, observe: observe))
             case .tapRef(let window, let ref, let wait, let observe):
