@@ -113,3 +113,95 @@ struct FrontAppRow: Equatable {
     static let nothingToOpen =
         "Nothing to move. Your phone is showing its home screen or Contigua."
 }
+
+/// One `task.front` read as an MCP `phone_status` call sees it (MCP-32).
+enum FrontRead: Equatable {
+    case pkg(String)
+    /// The phone answered `pkg: null`: nothing continuable in front.
+    case none
+    /// The phone answered `not_available`.
+    case notSupported
+    /// No answer within the call's 1 s.
+    case timeout
+}
+
+/// The shared 2 s budget on `task.front` (PROTOCOL.md "Foreground app" §3):
+/// the panel's card and every MCP client ask through it, and a request less
+/// than 2 s after the last one, from either, reuses that answer. Its states:
+/// no request; a request out (waiters queued); a request answered. A reply
+/// for an older seq is stale; `reset` (link loss, phone change) bumps the seq
+/// and answers every waiter `timeout`.
+@MainActor
+final class FrontReadGate {
+    static let budget: Duration = .seconds(2)
+    static let wait: Duration = .seconds(1)
+
+    /// Sends one `task.front` with this seq.
+    var send: ((Int) -> Void)?
+    private(set) var seq = 0
+    private let now: () -> ContinuousClock.Instant
+    private var askedAt: ContinuousClock.Instant?
+    private var answer: FrontRead?
+    private var waiters: [Int: (seq: Int, resume: CheckedContinuation<FrontRead, Never>)] = [:]
+    private var nextWaiter = 0
+
+    init(now: @escaping () -> ContinuousClock.Instant = { .now }) {
+        self.now = now
+    }
+
+    /// The panel's ask: sends unless a request went out less than 2 s ago.
+    @discardableResult
+    func ask() -> Bool {
+        if let askedAt, now() - askedAt < Self.budget { return false }
+        seq += 1
+        askedAt = now()
+        answer = nil
+        send?(seq)
+        return true
+    }
+
+    /// An MCP read: the answer of a request less than 2 s old, or a new one;
+    /// `timeout` when no answer comes within `wait`.
+    func read(wait: Duration = FrontReadGate.wait) async -> FrontRead {
+        ask()
+        if let answer { return answer }
+        let id = nextWaiter
+        nextWaiter += 1
+        let expected = seq
+        return await withCheckedContinuation { continuation in
+            waiters[id] = (expected, continuation)
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: wait)
+                self?.finish(id, .timeout)
+            }
+        }
+    }
+
+    func reply(seq: Int, pkg: String?) {
+        guard seq == self.seq, answer == nil else { return }
+        settle(pkg.map(FrontRead.pkg) ?? .none)
+    }
+
+    /// `not_available`, which carries no seq: it answers the newest request.
+    func unavailable() {
+        guard askedAt != nil, answer == nil else { return }
+        settle(.notSupported)
+    }
+
+    func reset() {
+        seq += 1
+        askedAt = nil
+        answer = nil
+        for id in Array(waiters.keys) { finish(id, .timeout) }
+    }
+
+    private func settle(_ read: FrontRead) {
+        answer = read
+        for (id, waiter) in waiters where waiter.seq == seq { finish(id, read) }
+    }
+
+    private func finish(_ id: Int, _ read: FrontRead) {
+        guard let waiter = waiters.removeValue(forKey: id) else { return }
+        waiter.resume.resume(returning: read)
+    }
+}
