@@ -23,7 +23,7 @@ struct UITree: Equatable {
         let index: Int
         let title: String?
         let type: String
-        let focused: Bool
+        /// The layer with input focus (MCP-105); the phone sends no `focused`.
         let active: Bool
     }
 
@@ -59,6 +59,11 @@ struct UITree: Equatable {
         var heading: Bool = false
         /// The covering node's ref (`e<k>`) or `"window"` (MCP-73).
         var covered: String? = nil
+        /// The node shows its hint, not content: no `text` (MCP-104).
+        var hint: Bool = false
+        var hintText: String? = nil
+        /// A scrollable's left-out rows `[before, after]` (MCP-106).
+        var hidden: [Int]? = nil
     }
 
     let seq: Int
@@ -77,6 +82,8 @@ struct UITree: Equatable {
     let note: String?
     /// True while any node is a loading signal (MCP-103).
     let loading: Bool
+    /// How many off-screen rows the phone left out (MCP-106); nil from an older phone.
+    var omitted: Int? = nil
 
     /// Nil when the message is not a usable `ui.tree` reply at all (an older
     /// phone, or a torn one); the caller ignores it as it ignores any unknown
@@ -96,12 +103,12 @@ struct UITree: Equatable {
         self.truncated = message.bool("truncated") ?? false
         self.note = message.string("note")
         self.loading = message.bool("loading") ?? false
+        self.omitted = message.int("omitted")
         self.layers = (message.array("layers") ?? []).enumerated().compactMap { index, raw in
             guard let type = raw["type"] as? String else { return nil }
             return Layer(index: raw["i"] as? Int ?? index,
                          title: raw["title"] as? String,
                          type: type,
-                         focused: raw["focused"] as? Bool ?? false,
                          active: raw["active"] as? Bool ?? false)
         }
         self.nodes = (message.array("nodes") ?? []).compactMap { raw in
@@ -136,7 +143,10 @@ struct UITree: Equatable {
                         loading: raw["loading"] as? Bool ?? false,
                         k: key,
                         heading: raw["heading"] as? Bool ?? false,
-                        covered: covered)
+                        covered: covered,
+                        hint: raw["hint"] as? Bool ?? false,
+                        hintText: raw["hintText"] as? String,
+                        hidden: (raw["hidden"] as? [NSNumber]).flatMap { $0.count == 2 ? $0.map(\.intValue) : nil })
         }
     }
 
@@ -162,17 +172,21 @@ struct UITree: Equatable {
     /// the phone's keys, `e<k>`, named at parse (MCP-71); a row with no key
     /// has no ref.
     func assigning(snapshot: Int) -> UITree {
-        UITree(seq: seq, stream: stream, ok: ok, code: code, message: message,
-               displayId: displayId, snapshot: snapshot, size: size,
-               truncated: truncated, layers: layers, nodes: nodes,
-               note: note, loading: loading)
+        var out = UITree(seq: seq, stream: stream, ok: ok, code: code, message: message,
+                         displayId: displayId, snapshot: snapshot, size: size,
+                         truncated: truncated, layers: layers, nodes: nodes,
+                         note: note, loading: loading)
+        out.omitted = omitted
+        return out
     }
 
     /// Each keyed row's label, as `expect` sends it (PROTOCOL.md "UI tree"
-    /// item 8): its text, else its desc, else the first row under it with
-    /// either, in reading order. An editable row's label is its desc, else
-    /// its id, never its text (its value); under another row an editable row
-    /// and its rows give none. A row with no label is left out: no `expect`.
+    /// item 8): its text, else its desc, else the first on-screen row under it
+    /// with either, in reading order (an `off` row gives none of its own: the
+    /// phone reads live nodes and skips what the tree marks `off`, MCP-106).
+    /// An editable row's label is its desc, else its id, never its text (its
+    /// value); under another row an editable row and its rows give none. A row
+    /// with no label is left out: no `expect`.
     ///
     /// Rows arrive in pre-order, so a row's subtree is the run of rows after
     /// it up to `ends[at]`; one pass finds every run.
@@ -206,7 +220,7 @@ struct UITree: Equatable {
                 next = ends[next]  // a field and its rows give no label
                 continue
             }
-            if let own = Self.own(nodes[next]) { return own }
+            if !nodes[next].off, let own = Self.own(nodes[next]) { return own }
             next += 1
         }
         return nil
@@ -238,8 +252,7 @@ struct UITree: Equatable {
                 let i: Int
                 let title: String?
                 let type: String
-                let focused: Bool
-                let active: Bool
+                let active: Bool?
             }
 
             struct Node: Encodable {
@@ -265,6 +278,9 @@ struct UITree: Equatable {
                 let loading: Bool?
                 let heading: Bool?
                 let covered: String?
+                let hint: Bool?
+                let hintText: String?
+                let hidden: [Int]?
             }
 
             let window: Int
@@ -277,6 +293,7 @@ struct UITree: Equatable {
             let nodes: [Node]
             let note: String?
             let loading: Bool?
+            let omitted: Int?
         }
 
         // `l` earns its bytes only when the display holds more than one layer:
@@ -291,7 +308,7 @@ struct UITree: Equatable {
             truncated: truncated,
             layers: layers.map {
                 Out.Layer(i: $0.index, title: $0.title, type: $0.type,
-                          focused: $0.focused, active: $0.active)
+                          active: $0.active ? true : nil)
             },
             nodes: nodes.map { node in
                 Out.Node(i: node.index, ref: node.ref.isEmpty ? nil : node.ref, p: node.parent,
@@ -309,10 +326,14 @@ struct UITree: Equatable {
                          pwd: node.password ? true : nil,
                          loading: node.loading ? true : nil,
                          heading: node.heading ? true : nil,
-                         covered: node.covered)
+                         covered: node.covered,
+                         hint: node.hint ? true : nil,
+                         hintText: node.hintText,
+                         hidden: node.hidden)
             },
             note: note,
-            loading: loading ? true : nil)
+            loading: loading ? true : nil,
+            omitted: omitted)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         guard let data = try? encoder.encode(out) else { return "{}" }

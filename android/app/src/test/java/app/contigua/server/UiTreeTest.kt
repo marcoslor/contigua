@@ -18,7 +18,8 @@ class UiTreeTest {
     private fun reply(
         layers: List<UiTree.Layer>,
         size: IntSize = IntSize(1_000, 2_000),
-    ): LinkedHashMap<String, Any?> = UiTree.reply(7, size, layers)
+        offscreen: Boolean = false,
+    ): LinkedHashMap<String, Any?> = UiTree.reply(7, size, layers, offscreen = offscreen)
 
     private fun nodes(body: Map<String, Any?>): List<Map<String, Any?>> =
         (body["nodes"] as? List<*>)?.filterIsInstance<Map<String, Any?>>().orEmpty()
@@ -27,7 +28,7 @@ class UiTreeTest {
         (body["layers"] as? List<*>)?.filterIsInstance<Map<String, Any?>>().orEmpty()
 
     private fun layer(vararg nodes: UiTree.Node, title: String? = "Calculator") =
-        UiTree.Layer(title = title, type = "app", focused = true, active = true, nodes = nodes.toList())
+        UiTree.Layer(title = title, type = "app", focused = true, nodes = nodes.toList())
 
     private fun node(
         role: String = "android.widget.TextView",
@@ -114,9 +115,9 @@ class UiTreeTest {
 
     @Test
     fun WIN79_nodeBelowTheDisplayIsOff() {
-        // Entirely below the display: kept with `off`, no tap point (F9).
+        // Entirely below the display: with `offscreen: true`, kept with `off`, no tap point (F9).
         val tree = node(text = "Checkout", box = UiTree.Box(0, 2_500, 100, 2_600), clickable = true)
-        val row = nodes(reply(listOf(layer(tree))))[0]
+        val row = nodes(reply(listOf(layer(tree)), offscreen = true))[0]
         assertEquals(true, row["off"])
         assertFalse(row.containsKey("at"))
         assertFalse(row.containsKey("box"))
@@ -124,9 +125,9 @@ class UiTreeTest {
 
     @Test
     fun WIN79_invisibleNodeIsOff() {
-        // Not visible to the user: kept with `off`, no tap point (F9).
+        // Not visible to the user: with `offscreen: true`, kept with `off`, no tap point (F9).
         val tree = node(text = "Behind", box = UiTree.Box(100, 100, 500, 900), clickable = true, visibleToUser = false)
-        val row = nodes(reply(listOf(layer(tree))))[0]
+        val row = nodes(reply(listOf(layer(tree)), offscreen = true))[0]
         assertEquals(true, row["off"])
         assertFalse(row.containsKey("at"))
     }
@@ -135,7 +136,7 @@ class UiTreeTest {
     fun WIN79_sliverIsOff() {
         // A 2 px sliver at the viewport edge is not a target (F9).
         val tree = node(text = "Sliver", box = UiTree.Box(0, 747, 1_104, 749), clickable = true)
-        val body = reply(listOf(layer(tree)), size = IntSize(1_104, 2_560))
+        val body = reply(listOf(layer(tree)), size = IntSize(1_104, 2_560), offscreen = true)
         val row = nodes(body)[0]
         assertEquals(true, row["off"])
         assertFalse(row.containsKey("at"))
@@ -147,7 +148,7 @@ class UiTreeTest {
         // A display with no size maps nothing: the node is off, never a bogus
         // point from a division by zero.
         val tree = node(box = UiTree.Box(10, 10, 20, 20), clickable = true)
-        val row = nodes(reply(listOf(layer(tree)), size = IntSize(0, 0)))[0]
+        val row = nodes(reply(listOf(layer(tree)), size = IntSize(0, 0), offscreen = true))[0]
         assertEquals(true, row["off"])
         assertFalse(row.containsKey("at"))
     }
@@ -279,7 +280,7 @@ class UiTreeTest {
     fun everyLayerIsNumberedAndNamed() {
         val body = reply(listOf(
             layer(node(text = "app"), title = "Calculator"),
-            UiTree.Layer("Keyboard", "ime", focused = false, active = false, nodes = listOf(node(text = "q"))),
+            UiTree.Layer("Keyboard", "ime", focused = false, nodes = listOf(node(text = "q"))),
         ))
         val rows = layers(body)
         assertEquals(2, rows.size)
@@ -418,21 +419,21 @@ class UiTreeTest {
     @Test
     fun testAWindowAboveCoversTheNode() { // [MCP-73]
         val button = UiTree.Node(role = "Button", text = "Pay", clickable = true, box = UiTree.Box(100, 900, 900, 1_100))
-        val app = UiTree.Layer("Shop", "app", false, false, listOf(button), windowLayer = 1)
+        val app = UiTree.Layer("Shop", "app", false, listOf(button), windowLayer = 1)
         val blank = UiTree.Node(role = "FrameLayout", box = UiTree.Box(0, 0, 1_000, 2_000))
-        val overlay = UiTree.Layer(null, "overlay", true, true, listOf(blank), windowLayer = 5,
+        val overlay = UiTree.Layer(null, "overlay", true, listOf(blank), windowLayer = 5,
             bounds = UiTree.Box(0, 0, 1_000, 2_000))
         val rows = nodes(reply(listOf(overlay, app)))
         assertEquals("window", rows.single { it["text"] == "Pay" }["covered"])
         // A readable node of the window above is named by its key instead.
         val ok = UiTree.Node(role = "Button", text = "OK", clickable = true, box = UiTree.Box(0, 800, 1_000, 1_200))
-        val dialog = UiTree.Layer(null, "system", true, true, listOf(ok), windowLayer = 5,
+        val dialog = UiTree.Layer(null, "system", true, listOf(ok), windowLayer = 5,
             bounds = UiTree.Box(0, 0, 1_000, 2_000))
         val both = nodes(reply(listOf(dialog, app)))
         assertEquals(both.single { it["text"] == "OK" }["k"], both.single { it["text"] == "Pay" }["covered"])
         assertFalse(both.single { it["text"] == "OK" }.containsKey("covered"))
         // A window above that does not reach the point covers nothing.
-        val strip = UiTree.Layer(null, "system", false, false, emptyList(), windowLayer = 5,
+        val strip = UiTree.Layer(null, "system", false, emptyList(), windowLayer = 5,
             bounds = UiTree.Box(0, 0, 1_000, 100))
         assertFalse(nodes(reply(listOf(strip, app))).single().containsKey("covered"))
     }
@@ -462,5 +463,86 @@ class UiTreeTest {
         assertEquals("Search", rows[0]["desc"])
         assertEquals("Go", rows[1]["text"])
         assertEquals(null, rows[1]["desc"])
+    }
+
+    // MARK: B6, the tree says what it does not show (MCP-104…106)
+
+    @Test
+    fun testAShownHintIsNotText() { // [MCP-104]
+        val empty = UiTree.Node(role = "android.widget.EditText", text = "Search products",
+            hintText = "Search products", showingHint = true, box = UiTree.Box(0, 0, 1_000, 100), editable = true)
+        val row = nodes(reply(listOf(layer(empty)))).single()
+        assertEquals(true, row["hint"])
+        assertEquals("Search products", row["hintText"])
+        assertFalse(row.containsKey("text"))
+        val filled = UiTree.Node(role = "android.widget.EditText", text = "milk",
+            hintText = "Search products", showingHint = false, box = UiTree.Box(0, 0, 1_000, 100), editable = true)
+        val milk = nodes(reply(listOf(layer(filled)))).single()
+        assertEquals("milk", milk["text"])
+        assertFalse(milk.containsKey("hint"))
+        assertFalse(milk.containsKey("hintText"))
+    }
+
+    @Test
+    fun testOnlyTheActiveLayersFocusIsSent() { // [MCP-105]
+        fun field(text: String) = node(role = "android.widget.EditText", text = text, editable = true, focused = true)
+        val app = UiTree.Layer(title = "Shop", type = "app", focused = false, nodes = listOf(field("milk")))
+        val dialog = UiTree.Layer(title = "Rename", type = "app", focused = true, nodes = listOf(field("list")))
+        val body = reply(listOf(app, dialog))
+        val rows = nodes(body)
+        assertEquals(listOf(null, true), rows.map { it["focus"] })
+        assertEquals("list", rows.single { it["focus"] == true }["text"])
+        val sent = layers(body)
+        assertEquals(listOf(0, 1), sent.map { it["i"] })
+        assertFalse(sent[0].containsKey("active"))
+        assertEquals(true, sent[1]["active"])
+        assertTrue(sent.none { it.containsKey("focused") })
+        // No layer has input focus: no `active`, no `focus`.
+        val none = reply(listOf(app, dialog.copy(focused = false)))
+        assertTrue(layers(none).none { it.containsKey("active") || it.containsKey("focused") })
+        assertTrue(nodes(none).none { it.containsKey("focus") })
+    }
+
+    /** A list on a 1000×2000 display: [above] rows over it, [on] on it, [below] under it, 400 px each. */
+    private fun list(above: Int, on: Int, below: Int): UiTree.Node {
+        val rows = ArrayList<UiTree.Node>()
+        var n = 1
+        for (i in above downTo 1) rows += node(text = "Item ${n++}", clickable = true,
+            box = UiTree.Box(0, -400 * i, 1_000, -400 * i + 400))
+        for (i in 0 until on) rows += node(text = "Item ${n++}", clickable = true,
+            box = UiTree.Box(0, 400 * i, 1_000, 400 * i + 400))
+        for (i in 0 until below) rows += node(text = "Item ${n++}", clickable = true,
+            box = UiTree.Box(0, 2_000 + 400 * i, 1_000, 2_400 + 400 * i))
+        return node(role = "androidx.recyclerview.widget.RecyclerView", scrollable = true,
+            box = UiTree.Box(0, 0, 1_000, 2_000), children = rows)
+    }
+
+    @Test
+    fun testOffScreenNodesAreCountedNotSent() { // [MCP-106]
+        val body = reply(listOf(layer(list(3, 4, 112))))
+        val rows = nodes(body)
+        val listRow = rows.single { it["scroll"] == true }
+        val items = rows.filter { it["p"] == listRow["i"] }
+        assertEquals(listOf("Item 4", "Item 5", "Item 6", "Item 7"), items.map { it["text"] })
+        assertEquals(5, rows.size)
+        assertTrue(rows.none { it["off"] == true })
+        assertEquals(listOf(3, 112), listRow["hidden"])
+        assertEquals(115, body["omitted"])
+        // Nothing off screen: no `hidden`, and `omitted` is 0.
+        val whole = reply(listOf(layer(list(0, 4, 0))))
+        assertTrue(nodes(whole).none { it.containsKey("hidden") })
+        assertEquals(0, whole["omitted"])
+    }
+
+    @Test
+    fun testOffscreenTrueSendsThemMarked() { // [MCP-106]
+        val body = UiTree.reply(7, IntSize(1_000, 2_000), listOf(layer(list(3, 4, 112))), offscreen = true)
+        val rows = nodes(body)
+        val items = rows.filter { it["scroll"] != true }
+        assertEquals(119, items.size)
+        val off = items.filter { it["off"] == true }
+        assertEquals(115, off.size)
+        assertTrue(off.none { it.containsKey("at") })
+        assertEquals(0, body["omitted"])
     }
 }
