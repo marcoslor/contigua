@@ -216,8 +216,8 @@ class Session(
 
         /** contigua-watch only. */
         var hadTask = false
-        var gestureDownTime = 0L
-        var lastEventTime = 0L
+        @Volatile var gestureDownTime = 0L
+        @Volatile var lastEventTime = 0L
         var keyDownTime = 0L
     }
 
@@ -1733,6 +1733,7 @@ class Session(
                 "task.front" -> onTaskFront(obj)
                 "ui.tree" -> onUiTree(obj)
                 "ui.settle" -> onUiSettle(obj)
+                "ui.press" -> onUiPress(obj)
                 "nav" -> onNav(obj, frame)
                 "text" -> onText(obj, frame)
                 "clip.set" -> onClipSet(obj)
@@ -2143,6 +2144,98 @@ class Session(
                 SettleAnswer.Cancelled -> log("ui.settle stream=$stream display=$displayId cancelled")
             }
         }, "ui-settle-$stream").start()
+    }
+
+    /**
+     * `ui.press` (docs/PROTOCOL.md "UI tree" item 8, MCP-86/MCP-89/MCP-108):
+     * press the node the key `k` names in the latest read of the stream's
+     * display, at its bounds now. The source decides off the reader thread;
+     * the press goes through the same injector and timestamps as a TOUCH frame
+     * from the Mac, and the reply follows the up. The log line carries the
+     * stream, the outcome and the duration, never the node's text.
+     */
+    private fun onUiPress(obj: Map<String, Any?>) {
+        val seq = Json.int(obj["seq"])
+        val stream = Json.int(obj["stream"]) ?: run {
+            sendUiPress(0, seq, UiTree.failure(UiCodes.NO_WINDOW, "There is no window to press in."))
+            return
+        }
+        val state = synchronized(streams) { streams[stream] }
+        if (state == null) {
+            sendUiPress(stream, seq, UiTree.failure(UiCodes.NO_WINDOW, "There is no window $stream."))
+            return
+        }
+        // A key the phone never issued is `gone` (item 8), and so is a request without one.
+        val k = Json.int(obj["k"]) ?: -1
+        val expect = obj["expect"] as? String
+        val holdMs = (obj["holdMs"] as? Number)?.toLong()?.coerceIn(0L, UiPress.MAX_HOLD_MS) ?: 0L
+        val source = uiTree as? UiPressSource
+        if (source == null) {
+            sendUiPress(stream, seq, UiTree.failure(UiCodes.FAILED, "This phone cannot press by element."))
+            return
+        }
+        if (!uiBusy.compareAndSet(false, true)) {
+            sendUiPress(stream, seq, UiTree.failure(UiCodes.BUSY, "The last accessibility request is still running."))
+            return
+        }
+        val size = display.size(stream)
+        val started = now()
+        Thread({
+            try {
+                val decision = try {
+                    source.press(state.displayId, size, k, expect)
+                } catch (t: Throwable) {
+                    UiPress.Decision.Refuse(UiCodes.FAILED, UiTree.failure(UiCodes.FAILED, "The element could not be pressed."))
+                }
+                when (decision) {
+                    is UiPress.Decision.Press -> {
+                        injectPress(state, decision.x, decision.y, size, holdMs)
+                        log("ui.press stream=$stream pressed hold_ms=$holdMs took_ms=${now() - started}")
+                        sendUiPress(stream, seq, decision.reply)
+                    }
+                    is UiPress.Decision.Refuse -> {
+                        log("ui.press stream=$stream failed=${decision.code} took_ms=${now() - started}")
+                        sendUiPress(stream, seq, decision.reply)
+                    }
+                }
+            } finally {
+                uiBusy.set(false)
+            }
+        }, "ui-press-$stream").start()
+    }
+
+    /**
+     * TOUCH down at ([x], [y]) display pixels and up after [holdMs], stamped as
+     * [handleInput] stamps the Mac's TOUCH frames: one gesture's down time,
+     * event times that never go backwards.
+     */
+    private fun injectPress(state: StreamState, x: Int, y: Int, size: IntSize, holdMs: Long) {
+        val nx = if (size.w > 0) x.toFloat() / size.w else 0f
+        val ny = if (size.h > 0) y.toFloat() / size.h else 0f
+        val down = bumpTime(state)
+        state.gestureDownTime = down
+        injector.touch(state.displayId, Frames.TOUCH_DOWN, 0, nx, ny, size, down, down)
+        if (holdMs > 0) {
+            try {
+                Thread.sleep(holdMs)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        }
+        val up = maxOf(bumpTime(state), down + maxOf(holdMs, 1L))
+        state.lastEventTime = up
+        injector.touch(state.displayId, Frames.TOUCH_UP, 0, nx, ny, size, down, up)
+        if (state.content != WindowContent.Phone) power.onInput(state.displayId)
+    }
+
+    /** One `ui.press` reply: the body, then what every reply carries. */
+    private fun sendUiPress(stream: Int, seq: Int?, body: Map<String, Any?>) {
+        val reply = LinkedHashMap<String, Any?>()
+        reply["t"] = "ui.press"
+        reply["stream"] = stream
+        if (seq != null) reply["seq"] = seq
+        reply.putAll(body)
+        sendJson(reply)
     }
 
     /** One `ui.settle` reply: the body, then what every reply carries. */
