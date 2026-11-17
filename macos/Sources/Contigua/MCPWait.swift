@@ -76,16 +76,32 @@ enum MCPWaitPlan {
         return max(now, lastReadAt + pollMs)
     }
 
-    /// The first node whose text or description contains `text`, as `match`.
+    /// A settle with less than this left is not sent (MCP-111).
+    static let settleFloorMs = 200
+
+    /// MCP-111: the next settle's timeout, or nil when the wait is over.
+    static func nextSettle(remainingMs: Int) -> Int? {
+        remainingMs < settleFloorMs ? nil : min(remainingMs, settleCapMs)
+    }
+
+    /// MCP-97: a `busy` read is retried at the next poll; any other failure
+    /// ends the call.
+    static func retries(_ code: String) -> Bool { code == "busy" }
+
+    /// The first node whose text or description contains `text`, ignoring
+    /// case and accents as `find` does (MCP-75), as `match`: its ref and its
+    /// own text.
     static func match(_ text: String, in tree: [String: Any]) -> [String: Any]? {
         let nodes = tree["nodes"] as? [[String: Any]] ?? []
+        func has(_ value: String?) -> Bool {
+            value?.range(of: text, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+        }
         for node in nodes {
             let label = node["text"] as? String
-            let desc = node["desc"] as? String
-            guard label?.contains(text) == true || desc?.contains(text) == true else { continue }
+            guard has(label) || has(node["desc"] as? String) else { continue }
             var found: [String: Any] = [:]
             if let ref = node["ref"] { found["ref"] = ref }
-            if let shown = label ?? desc { found["text"] = shown }
+            if let label { found["text"] = label }
             return found
         }
         return nil
@@ -117,9 +133,12 @@ enum MCPWaitRunner {
             let end = start + timeoutMs
             var lastReadAt: Int?
             var lastTree: [String: Any]?
+            var lastBusy: String?
             while true {
                 let next = MCPWaitPlan.nextRead(lastReadAt: lastReadAt, now: env.nowMs())
                 if lastReadAt != nil && next > end {
+                    // A timeout means the screen was read and did not match.
+                    if let lastBusy { return .fail(lastBusy) }
                     await env.sleep(untilMs: end)
                     var answer = MCPWaitAnswer(waitedMs: env.nowMs() - start, until: "timeout")
                     if observe == .tree { answer.tree = lastTree }
@@ -129,8 +148,10 @@ enum MCPWaitRunner {
                 lastReadAt = env.nowMs()
                 switch await env.readTree(untilMs: until) {
                 case .failed(let code):
-                    return .fail(code)
+                    guard MCPWaitPlan.retries(code) else { return .fail(code) }
+                    lastBusy = code
                 case .tree(let tree):
+                    lastBusy = nil
                     lastTree = tree
                     let found = MCPWaitPlan.match(text, in: tree)
                     if gone ? found == nil : found != nil {
@@ -143,19 +164,25 @@ enum MCPWaitRunner {
             }
 
         case .settle:
-            // PROTOCOL.md "UI tree" §7 clamps a settle to 10 s; MCP-111 allows
-            // 30 s ([NEEDS CLARIFICATION] in the row): one settle, at the wire's cap.
-            let result = await env.settle(quietMs: MCPActMachine.quietMs,
-                                          timeoutMs: min(timeoutMs, MCPWaitPlan.settleCapMs),
-                                          untilMs: until)
-            var answer: MCPWaitAnswer
-            switch result {
-            case .reply(let settled, _, let reason):
-                answer = MCPWaitAnswer(waitedMs: env.nowMs() - start, until: settled ? "met" : "timeout",
-                                       reason: settled ? nil : (reason ?? "changes"))
-            case .failed(let code):
-                return .fail(code)
+            // PROTOCOL.md "UI tree" §7 caps one settle at 10 s: chain them,
+            // each its own turn in the read queue, until one settles or less
+            // than 200 ms of timeoutMs is left (MCP-111).
+            let end = start + timeoutMs
+            var reason = "changes"
+            var settled = false
+            while let next = MCPWaitPlan.nextSettle(remainingMs: end - env.nowMs()) {
+                switch await env.settle(quietMs: MCPActMachine.quietMs, timeoutMs: next, untilMs: until) {
+                case .reply(true, _, _):
+                    settled = true
+                case .reply(false, _, let last):
+                    reason = last ?? "changes"
+                case .failed(let code):
+                    return .fail(code)
+                }
+                if settled { break }
             }
+            var answer = MCPWaitAnswer(waitedMs: env.nowMs() - start, until: settled ? "met" : "timeout",
+                                       reason: settled ? nil : reason)
             await observeRead(&answer, observe: observe, env: env, until: until)
             return .answer(answer)
         }
