@@ -153,10 +153,9 @@ def suite(args):
         report(isinstance(pressed[0], (int, float))
                and len(str(pressed[0]).split(".")[-1]) <= 3,
                "MCP tap by ref prints its point to three decimals")
-        # [WIN-79 S1] The Mac names refs s<snapshot>e<row> from its own count.
-        report(bool(nodes) and all(re.match(r"^s%se\d+$" % tree.get("snapshot"), n.get("ref") or "")
-                                   for n in nodes),
-               "MCP ui_tree's refs carry the answer's snapshot")
+        # [MCP-71] T10: a ref is the phone's key, e<k>, with no snapshot in it.
+        report(bool(nodes) and all(re.match(r"^e\d+$", n.get("ref") or "") for n in nodes),
+               "[MCP-71] MCP ui_tree's refs are the phone's keys")
         # [WIN-79 F9] An off-screen node keeps its text, has no tap point, and
         # a tap by its ref is refused.
         below = next((n for n in nodes if n.get("text") == "Below the fold"), None)
@@ -167,15 +166,14 @@ def suite(args):
             report(False, "MCP tap by an off-screen ref must fail")
         except RuntimeError as error:
             report("off screen" in str(error), "MCP tap by an off-screen ref is refused")
-        # [WIN-79 F1] A newer read makes the older refs stale: refused, naming both reads.
-        newer = client.text("ui_tree", {"window": window})
+        # [MCP-71] T10: a ref from an older read is no longer refused by the
+        # Mac (suite_refs presses one); a ref that is no key at all still is.
         try:
-            client.text("tap", {"window": window, "ref": (button or {}).get("ref")})
-            report(False, "MCP tap by an older tree's ref must fail")
+            client.text("tap", {"window": window, "ref": "s%se1" % tree.get("snapshot")})
+            report(False, "MCP tap by a ref that is no key must fail")
         except RuntimeError as error:
-            report(("s%s" % tree.get("snapshot")) in str(error)
-                   and ("s%s" % newer.get("snapshot")) in str(error),
-                   "MCP tap by an older tree's ref is refused, naming both reads")
+            report("stale_ref" in str(error) and "latest tree" in str(error),
+                   "[MCP-71] MCP tap by a ref that is no key is refused stale_ref")
         # [MCP-6] A failure is a closed code a program switches on, with the
         # sentence for a model beside it.
         missing = client.tool("ui_tree", {"window": 999})

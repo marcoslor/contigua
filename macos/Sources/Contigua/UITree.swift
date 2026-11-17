@@ -54,6 +54,11 @@ struct UITree: Equatable {
         let password: Bool
         /// A loading signal: an indeterminate spinner or an empty WebView (MCP-103).
         var loading: Bool = false
+        /// The phone's key (MCP-71): the same node keeps it across reads.
+        var k: Int? = nil
+        var heading: Bool = false
+        /// The covering node's ref (`e<k>`) or `"window"` (MCP-73).
+        var covered: String? = nil
     }
 
     let seq: Int
@@ -105,8 +110,12 @@ struct UITree: Equatable {
                 guard values.count == 2 else { return nil }
                 return Point(x: values[0].doubleValue, y: values[1].doubleValue)
             }
+            var covered: String?
+            if let key = raw["covered"] as? Int { covered = "e\(key)" }
+            else if let word = raw["covered"] as? String { covered = word }
+            let key = raw["k"] as? Int
             return Node(index: index,
-                        ref: "",
+                        ref: key.map { "e\($0)" } ?? "",
                         parent: raw["p"] as? Int,
                         layer: raw["l"] as? Int ?? 0,
                         role: role,
@@ -124,7 +133,10 @@ struct UITree: Equatable {
                         focused: raw["focus"] as? Bool ?? false,
                         disabled: raw["disabled"] as? Bool ?? false,
                         password: raw["pwd"] as? Bool ?? false,
-                        loading: raw["loading"] as? Bool ?? false)
+                        loading: raw["loading"] as? Bool ?? false,
+                        k: key,
+                        heading: raw["heading"] as? Bool ?? false,
+                        covered: covered)
         }
     }
 
@@ -146,18 +158,47 @@ struct UITree: Equatable {
         self.loading = loading
     }
 
-    /// The same tree with the Mac's read counter [snapshot] and every node's
-    /// ref named `s<snapshot>e<row>` (S1).
+    /// The same tree stamped with the Mac's read counter [snapshot]. Refs are
+    /// the phone's keys, `e<k>`, named at parse (MCP-71); a row with no key
+    /// has no ref.
     func assigning(snapshot: Int) -> UITree {
         UITree(seq: seq, stream: stream, ok: ok, code: code, message: message,
                displayId: displayId, snapshot: snapshot, size: size,
-               truncated: truncated, layers: layers,
-               nodes: nodes.map { node in
-                   var named = node
-                   named.ref = "s\(snapshot)e\(node.index)"
-                   return named
-               },
+               truncated: truncated, layers: layers, nodes: nodes,
                note: note, loading: loading)
+    }
+
+    /// Each keyed row's label, as `expect` sends it (PROTOCOL.md "UI tree"
+    /// item 8): its text, else its desc, else the first row under it with
+    /// either, in reading order; `""` when none has one.
+    func labels() -> [Int: String] {
+        var out: [Int: String] = [:]
+        for node in nodes {
+            guard let k = node.k else { continue }
+            out[k] = label(of: node)
+        }
+        return out
+    }
+
+    private func label(of node: Node) -> String {
+        if let text = node.text, !text.isEmpty { return text }
+        if let desc = node.desc, !desc.isEmpty { return desc }
+        for other in nodes where other.index != node.index && descends(other, from: node.index) {
+            if let text = other.text, !text.isEmpty { return text }
+            if let desc = other.desc, !desc.isEmpty { return desc }
+        }
+        return ""
+    }
+
+    private func descends(_ node: Node, from ancestor: Int) -> Bool {
+        var parent = node.parent
+        var hops = 0
+        while let p = parent, hops < nodes.count {
+            if p == ancestor { return true }
+            parent = nodes.first { $0.index == p }?.parent
+            hops += 1
+        }
+        return false
     }
 
     /// The tool result: the trimmed tree as JSON text, only the fields the
@@ -178,7 +219,7 @@ struct UITree: Equatable {
 
             struct Node: Encodable {
                 let i: Int
-                let ref: String
+                let ref: String?
                 let p: Int?
                 let l: Int?
                 let role: String
@@ -197,6 +238,8 @@ struct UITree: Equatable {
                 let disabled: Bool?
                 let pwd: Bool?
                 let loading: Bool?
+                let heading: Bool?
+                let covered: String?
             }
 
             let window: Int
@@ -226,7 +269,7 @@ struct UITree: Equatable {
                           focused: $0.focused, active: $0.active)
             },
             nodes: nodes.map { node in
-                Out.Node(i: node.index, ref: node.ref, p: node.parent,
+                Out.Node(i: node.index, ref: node.ref.isEmpty ? nil : node.ref, p: node.parent,
                          l: severalLayers ? node.layer : nil,
                          role: node.role, text: node.text, desc: node.desc, id: node.id,
                          box: node.box, at: node.at.map { [$0.x, $0.y] },
@@ -239,7 +282,9 @@ struct UITree: Equatable {
                          focus: node.focused ? true : nil,
                          disabled: node.disabled ? true : nil,
                          pwd: node.password ? true : nil,
-                         loading: node.loading ? true : nil)
+                         loading: node.loading ? true : nil,
+                         heading: node.heading ? true : nil,
+                         covered: node.covered)
             },
             note: note,
             loading: loading ? true : nil)
@@ -422,6 +467,22 @@ final class UITreeBroker {
     private var seq = 0
     private var waiters: [Int: CheckedContinuation<UITree, Error>] = [:]
     private var refs = UITreeRefs()
+    /// The label each client was last answered per window and key: the
+    /// `expect` of its next press (MCP-86, #188).
+    private var answered: [MCPClientID: [UInt32: [Int: String]]] = [:]
+
+    /// A tree went to [client]: remember its labels for that client's presses.
+    func answered(_ tree: UITree, client: MCPClientID?) {
+        guard let client, tree.ok else { return }
+        answered[client, default: [:]][tree.stream, default: [:]].merge(tree.labels()) { $1 }
+    }
+
+    /// The label [client] was last answered for key [k] on [stream]; nil when
+    /// never (the press then sends no `expect`).
+    func expect(client: MCPClientID?, stream: UInt32, k: Int) -> String? {
+        guard let client else { return nil }
+        return answered[client]?[stream]?[k]
+    }
 
     /// Start a read. `send` carries the request out with the allocated `seq`;
     /// the reply arrives as [reply], the session's end as [fail], and a silent
@@ -461,12 +522,18 @@ final class UITreeBroker {
     /// A closed session has no tree to answer with.
     func fail(_ error: UITreeError) {
         refs.forgetAll()
+        answered.removeAll()
         let waiting = Array(waiters.values)
         waiters.removeAll()
         for waiter in waiting { waiter.resume(throwing: error) }
     }
 
-    func forget(stream: UInt32) { refs.forget(stream: stream) }
+    func forget(stream: UInt32) {
+        refs.forget(stream: stream)
+        for client in answered.keys { answered[client]?[stream] = nil }
+    }
+
+    func latestSnapshot(stream: UInt32) -> Int? { refs.latestSnapshot(for: stream) }
 
     /// The pixel space of the window's latest tree (MCP-50, MCP-63).
     func latestSize(stream: UInt32) -> [Int]? {

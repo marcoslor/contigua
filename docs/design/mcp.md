@@ -168,9 +168,9 @@ The contract holds five rules; each tool below follows them.
 ## Tools
 
 The descriptions are the `tools/list` text, word for word (MCP-7), as they
-stand once every task has shipped. Until T10 ships stable refs, the `tap` and
-`ui_tree` descriptions carry S1's rule instead of the cross-read sentence: "A
-ref works only from the window's latest tree; an older one is refused."
+stand once every task has shipped. Since T10 the `tap` and `ui_tree`
+descriptions carry the cross-read sentence: "A ref names one element for as
+long as it is on screen, across reads; a ref whose element is gone is refused."
 (MCP-71). Coordinates
 are `0..1` of the window (the same space TOUCH frames carry). `window` is an id
 from `list_windows`, `open_app` or `send_link`.

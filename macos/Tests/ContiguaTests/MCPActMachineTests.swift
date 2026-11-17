@@ -86,7 +86,12 @@ final class MCPActMachineTests: XCTestCase {
 
     func testAPressThatFailedNamesWhy() {
         let cases = [("gone", "stale_ref"), ("not_visible", "stale_ref"),
-                     ("off_screen", "off_screen"), ("covered", "covered")]
+                     ("off_screen", "off_screen"), ("covered", "covered"),
+                     // T10 (MCP-86, #188): a relabelled node is stale; the
+                     // phone's and the link's own failures keep their codes.
+                     ("changed", "stale_ref"), ("no_window", "no_window"),
+                     ("timeout", "timeout"), ("phone_offline", "phone_offline"),
+                     ("busy", "failed"), ("failed", "failed")]
         for (phone, code) in cases {
             let (state, actions, _) = step(machine(.pressing), .pressFailed(phone))
             XCTAssertEqual(state, .done, phone)

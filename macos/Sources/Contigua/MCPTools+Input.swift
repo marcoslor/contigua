@@ -26,25 +26,14 @@ extension MCPToolHost {
                              })
     }
 
-    /// S1: the ref is checked against the window's latest tree when the call's
-    /// turn comes; a stale, closed or off-screen ref is refused and nothing is
-    /// pressed (F1, F4, F9). Otherwise TOUCH goes to the node's `at`, and
-    /// `did.node` is that tree's row (MCP-108).
+    /// T10 (MCP-86): a ref is the phone's key; the call sends `ui.press` with
+    /// it and the label this client was last answered for it, and the phone
+    /// presses the node where it is now or refuses and presses nothing.
+    /// `did.node` is the node as the phone read it at the press (MCP-108).
     func tap(window id: Int, ref: String, wait: MCPWait, observe: MCPObserve) async throws -> [String: Any] {
-        let stream = UInt32(id)
-        var point: UITree.Point?
-        return try await act(id, wait: wait, observe: observe, ref: ref,
-                             did: {
-                                 let did = MCPActDid.tap(ref: ref, holdMs: nil,
-                                                         latest: controller.uiTreeLatest(stream: stream))
-                                 point = did.flatMap(\.point)
-                                 return did ?? MCPActDid(object: ["action": "tap", "ref": ref], snapshot: nil)
-                             },
-                             input: { window in
-                                 guard let point else { return }
-                                 send(.touch(TouchEvent(action: .down, nx: Float(point.x), ny: Float(point.y))), to: window)
-                                 send(.touch(TouchEvent(action: .up, nx: Float(point.x), ny: Float(point.y))), to: window)
-                             })
+        try await act(id, wait: wait, observe: observe, ref: ref, path: .press,
+                      did: { MCPActDid(object: ["action": "tap", "ref": ref], snapshot: nil) },
+                      input: { _ in })
     }
 
     func longPress(window id: Int, x: Double, y: Double, ms: Int,
@@ -122,16 +111,17 @@ extension MCPToolHost {
     /// Run one input call through its machine and build the envelope. `did`
     /// is computed when the call's turn comes (from the window's latest tree
     /// then), `input` sends it.
-    private func act(_ id: Int, wait: MCPWait, observe: MCPObserve, ref: String? = nil, gestureMs: Int = 0,
+    private func act(_ id: Int, wait: MCPWait, observe: MCPObserve, ref: String? = nil,
+                     path: MCPActMachine.Path = .input, gestureMs: Int = 0,
                      did: @escaping @MainActor () -> MCPActDid,
                      input: @escaping @MainActor (StreamWindowController) async -> Void) async throws -> [String: Any] {
         let client = self.client
         let acts = controller.windowActs
-        let env = MCPHostActEnvironment(host: self, id: id, ref: ref, did: did, input: { window in
+        let env = MCPHostActEnvironment(host: self, id: id, ref: ref, client: client, did: did, input: { window in
             acts.agentInput(window: UInt32(id), client: client)  // MCP-84: another_agent for any other holder
             await input(window)
         })
-        let outcome = await MCPActRunner.run(MCPActMachine(path: .input, wait: wait, observe: observe),
+        let outcome = await MCPActRunner.run(MCPActMachine(path: path, wait: wait, observe: observe),
                                              window: UInt32(id), queue: acts,
                                              deadline: Self.actDeadline(gestureMs: gestureMs), env: env,
                                              ref: ref != nil, client: client)
@@ -222,29 +212,43 @@ final class MCPHostActEnvironment: MCPActEnvironment {
     private var frameAtSend: [String: Any]?
     private var refusalError: MCPToolError?
 
-    init(host: MCPToolHost, id: Int, ref: String?, did: @escaping () -> MCPActDid,
+    private let client: MCPClientID?
+
+    init(host: MCPToolHost, id: Int, ref: String?, client: MCPClientID? = nil, did: @escaping () -> MCPActDid,
          input: @escaping (StreamWindowController) async -> Void) {
         self.host = host
         self.id = id
         self.ref = ref
+        self.client = client
         self.did = did
         self.input = input
     }
 
     func windowCondition() -> MCPActMachine.Condition { host.actCondition(id) }
 
+    /// T10: before the press, only what the phone cannot judge is refused: a
+    /// window with no tree since it opened or the phone reconnected (F4), and
+    /// a ref that is no key at all.
     func refusal() -> String? {
         guard let ref else { return nil }
-        let resolution = host.controller.uiTreeResolved(ref: ref, stream: UInt32(id))
-        switch UITreeTapPlan(resolution, ref: ref) {
-        case .press:
-            return nil
-        case .refuse(let sentence):
-            let error = MCPToolError.tapRefusal(resolution, ref: ref, window: id)
-                ?? MCPToolError.failed(sentence, window: id)
-            refusalError = error
-            return error.code.rawValue
+        let stream = UInt32(id)
+        let error: MCPToolError
+        if let latest = host.controller.uiTreeLatestSnapshot(stream: stream) {
+            guard Self.key(ref) == nil else { return nil }
+            error = MCPToolError(.staleRef, UITreeRefusal.stale(ref: ref, snapshot: 0, latest: latest),
+                                 ["window": id, "ref": ref, "snapshot": latest])
+        } else {
+            error = MCPToolError(.staleRef, UITreeRefusal.noTree(ref), ["window": id, "ref": ref])
         }
+        refusalError = error
+        return error.code.rawValue
+    }
+
+    /// `"e12"` → 12 (MCP-71).
+    nonisolated static func key(_ ref: String) -> Int? {
+        guard ref.first == "e", ref.count > 1, ref.dropFirst().allSatisfy(\.isASCII),
+              let k = Int(ref.dropFirst()), k >= 0 else { return nil }
+        return k
     }
 
     func sendInput() async {
@@ -256,7 +260,36 @@ final class MCPHostActEnvironment: MCPActEnvironment {
         await input(window)
     }
 
-    func sendPress() async -> MCPActMachine.Event { .pressFailed("gone") }  // T10: ui.press
+    func sendPress() async -> MCPActMachine.Event {
+        guard let ref, let k = Self.key(ref) else { return .pressFailed("gone") }
+        let stream = UInt32(id)
+        guard let window = host.controller.windows.controller(for: stream) else { return .pressFailed("no_window") }
+        let frame = host.frameObject(for: window)
+        frameAtSend = frame
+        frameAtInput = frame["seq"] as? Int
+        host.controller.windowActs.agentInput(window: stream, client: client)  // MCP-84
+        let expect = host.controller.uiTreeExpect(client: client, stream: stream, k: k)
+        let snapshot = host.controller.uiTreeLatestSnapshot(stream: stream)
+        let reply: UIPressReply
+        do {
+            reply = try await host.controller.uiPress(stream: stream, k: k, holdMs: nil, client: client,
+                                                      until: .now + MCPToolHost.actDeadline())
+        } catch UITreeError.timedOut {
+            return .pressFailed("timeout")
+        } catch UITreeError.notConnected {
+            return .pressFailed("phone_offline")
+        } catch {
+            return .pressFailed("failed")
+        }
+        guard reply.ok else {
+            let code = reply.code ?? "failed"
+            refusalError = MCPToolError.pressRefusal(code: code, ref: ref, window: id, latestSnapshot: snapshot,
+                                                     expect: expect, now: reply.now, coveredBy: reply.coveredBy)
+            return .pressFailed(code)
+        }
+        didNow = MCPActDid.press(ref: ref, reply: reply, snapshot: snapshot)
+        return .pressOK
+    }
     func sendType() async -> MCPActMachine.Event { .typeFailed("not_supported") }  // T13: ui.type
 
     func settle(quietMs: Int, timeoutMs: Int, until: ContinuousClock.Instant) async -> MCPSettleResult {
@@ -269,7 +302,9 @@ final class MCPHostActEnvironment: MCPActEnvironment {
 
     /// The failure a machine's `fail(code)` throws, with its sentence.
     func error(for code: String) -> MCPToolError {
-        if let refusalError, refusalError.code.rawValue == code { return refusalError }
+        if let refusalError, refusalError.code.rawValue == code || code == "stale_ref" && refusalError.code == .staleRef {
+            return refusalError
+        }
         let state = host.controller.windows.controller(for: UInt32(id)).map { host.stateToken(for: $0) }
         switch code {
         case "no_window": return .noWindow(id)
@@ -337,6 +372,18 @@ struct MCPActDid {
         if let box = node.box { object["box"] = box }
         if let holdMs { object["holdMs"] = holdMs }
         return MCPActDid(object: object, snapshot: latest.snapshot, point: at)
+    }
+
+    /// A press by key names what the phone pressed, as it read the node at
+    /// the press (MCP-108); `on.snapshot` is the window's latest read.
+    static func press(ref: String, reply: UIPressReply, snapshot: Int?) -> MCPActDid {
+        var named: [String: String] = ["role": reply.role ?? ""]
+        if let text = reply.text { named["text"] = text }
+        if let desc = reply.desc { named["desc"] = desc }
+        var object: [String: Any] = ["action": "tap", "ref": ref, "node": named]
+        if let at = reply.at { object["at"] = at }
+        if let box = reply.box { object["box"] = box }
+        return MCPActDid(object: object, snapshot: snapshot)
     }
 
     static func swipe(from: [Double], to: [Double], ms: Int) -> MCPActDid {
