@@ -40,7 +40,7 @@ final class WindowManager {
     /// MCP-84: the person's pointer or keys reached a window (StreamWindow).
     var onPersonInput: ((UInt32) -> Void)?
     /// The Mac closed a stream window itself; true when `close_window` did.
-    var onMacClosed: ((UInt32, Bool) -> Void)?
+    var onMacClosed: ((UInt32, MCPClientID?) -> Void)?
 
     /// Fired when a stream id is handed out (F4): a reused id must forget any
     /// refs a closed window left behind.
@@ -550,6 +550,10 @@ final class WindowManager {
     /// the phone and the Deck carries WIN-32's sentence.
     @discardableResult
     func noteTaskArrival(stream: UInt32, taskId: Int, pkg: String, label: String?) -> AppWindowController? {
+        opening(by: .app) { noteTaskArrivalBody(stream: stream, taskId: taskId, pkg: pkg, label: label) }
+    }
+
+    private func noteTaskArrivalBody(stream: UInt32, taskId: Int, pkg: String, label: String?) -> AppWindowController? {
         guard taskId > 0, !pkg.isEmpty else { return nil }
         let item = newWindowItem(for: pkg)
         guard item.enabled else {
@@ -962,9 +966,10 @@ final class WindowManager {
         onChange?()
     }
 
-    func closeAll() {
+    func closeAll(cause: MCPWindowLedger.Cause? = nil) {
         lock.lock()
         let controllers = Array(streams.values)
+        if let cause { for controller in controllers { recordClose(controller.stream, cause: cause) } }
         streams.removeAll()
         frontOrder.removeAll()
         lock.unlock()
@@ -1070,6 +1075,43 @@ final class WindowManager {
 
     private func store(_ controller: StreamWindowController, stream: UInt32) {
         lock.lock(); streams[stream] = controller; lock.unlock()
+        // MCP-51: every new window is recorded once, with whoever is opening.
+        ledger.opened(stream, kind: Self.ledgerKind(controller), package: Self.ledgerPackage(controller),
+                      by: opener, now: ProcessInfo.processInfo.systemUptime)
+    }
+
+    /// The windows ledger (MCP-50…53): who opened each window, why it closed.
+    private(set) var ledger = MCPWindowLedger()
+
+    /// Who the open in progress is for: the person unless a caller says
+    /// otherwise (an MCP connection's `open_app`, the app's own task).
+    var opener: MCPWindowLedger.Opener = .person
+
+    /// Run `body` with `opener` naming who opens (MCP-51).
+    func opening<T>(by opener: MCPWindowLedger.Opener, _ body: () throws -> T) rethrows -> T {
+        let before = self.opener
+        self.opener = opener
+        defer { self.opener = before }
+        return try body()
+    }
+
+    /// MCP-52: record why a window closed. The first cause wins.
+    func recordClose(_ stream: UInt32, cause: MCPWindowLedger.Cause) {
+        ledger.closed(stream, cause: cause, now: ProcessInfo.processInfo.systemUptime)
+    }
+
+    static func ledgerPackage(_ controller: StreamWindowController) -> String? {
+        if let app = controller as? AppWindowController { return app.pkg }
+        if let link = controller as? LinkWindowController { return link.pkg }
+        if let handoff = controller as? HandoffWindowController { return handoff.pkg }
+        return nil
+    }
+
+    private static func ledgerKind(_ controller: StreamWindowController) -> MCPWindowLedger.Kind {
+        if controller is LinkWindowController { return .link }
+        if controller is HandoffWindowController { return .handoff }
+        if controller is PhoneWindowController { return .mirror }
+        return .app
     }
 
     #if DEBUG
@@ -1232,6 +1274,7 @@ final class WindowManager {
                 // WIN-46: the phone could not move that task. That window goes
                 // quietly — no launcher notice, and the task stays where it is.
                 Log.app.info("adopt refused for stream \(stream, privacy: .public)")
+                recordClose(stream, cause: .openFailed)  // MCP-52
                 controller(for: stream)?.closeFromRemote()
                 return
             }
@@ -1241,6 +1284,7 @@ final class WindowManager {
                 // Deck carries the cap's sentence.
                 let app = (controller(for: stream) as? AppWindowController)
                     .map { appsByPkg[$0.pkg]?.label ?? $0.appLabel } ?? ""
+                recordClose(stream, cause: .openFailed)  // MCP-52
                 controller(for: stream)?.closeFromRemote()
                 onTooManyWindows?(NewWindowBlocker.atCap.sentence(app: app) ?? "")
                 return

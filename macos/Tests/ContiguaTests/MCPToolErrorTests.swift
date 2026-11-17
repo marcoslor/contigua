@@ -156,3 +156,20 @@ final class MCPToolErrorTests: XCTestCase {
         XCTAssertEqual(back["s"] as? String, "a\u{1}\u{8}\"\\\n/")
     }
 }
+
+extension MCPToolErrorTests {
+    // [MCP-53]
+    func testAClosedWindowSaysWhyItClosed() {
+        let closed = MCPWindowLedger.Closed(reason: "app_exited", closedBy: "phone", closedAgoMs: 3000)
+        let error = MCPToolError.noWindow(4, closed: closed)
+        XCTAssertEqual(error.code, .noWindow)
+        let object = error.object["error"] as? [String: Any]
+        XCTAssertEqual(object?["window"] as? Int, 4)
+        let record = object?["closed"] as? [String: Any]
+        XCTAssertEqual(record?["reason"] as? String, "app_exited")
+        XCTAssertEqual(record?["closedBy"] as? String, "phone")
+        XCTAssertEqual(record?["closedAgoMs"] as? Int, 3000)
+        XCTAssertEqual(error.message,
+                       "Window 4 closed 3 s ago: the app exited. Call list_windows to see what is open.")
+    }
+}

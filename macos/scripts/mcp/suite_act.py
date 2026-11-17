@@ -224,8 +224,8 @@ def suite(args):
         answer = reply.get("structuredContent") or {}
         closed = answer.get("closed") or {}
         report(not reply.get("isError") and answer.get("state") == "closed"
-               and closed.get("reason") == "closed" and closed.get("closedBy") == "agent",
-               "[MCP-52] MCP close_window during a held settle answers closed by agent, not app_exited (%s)"
+               and closed.get("reason") == "closed" and closed.get("closedBy") == "another_agent",
+               "[MCP-52] MCP close_window during a held settle answers closed by another_agent, not app_exited (%s)"
                % json.dumps(closed))
     finally:
         mode(args)

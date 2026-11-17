@@ -366,9 +366,16 @@ enum MCPOutputSchemas {
         case .listWindows:
             return object(["windows": array(object(["id": integer, "package": nullable("string"),
                                                     "size": array(integer), "state": stateToken,
-                                                    "frame": frameObject],
-                                                   required: ["id", "package", "size", "state", "frame"]))],
-                          required: ["windows"])
+                                                    "frame": frameObject, "kind": string,
+                                                    "openedBy": string, "openedAgoMs": integer],
+                                                   required: ["id", "package", "size", "state", "frame"])),
+                           "recentlyClosed": array(object(["id": integer, "kind": string,
+                                                           "package": nullable("string"),
+                                                           "reason": string, "closedBy": string,
+                                                           "closedAgoMs": integer],
+                                                          required: ["id", "kind", "package", "reason",
+                                                                     "closedBy", "closedAgoMs"]))],
+                          required: ["windows", "recentlyClosed"])
         case .screenshot:
             return object(["window": integer, "state": stateToken, "frame": frameObject,
                            "image": array(integer), "size": array(integer),
@@ -391,7 +398,10 @@ enum MCPOutputSchemas {
                           required: ["ok", "window", "frames", "sent_ms", "changed_ms",
                                      "state", "frame"])
         case .closeWindow:
-            return object(["ok": boolean, "window": integer], required: ["ok", "window"])
+            return object(["window": integer,
+                           "closed": object(["reason": string, "closedBy": string],
+                                            required: ["reason", "closedBy"])],
+                          required: ["window", "closed"])
         case .sendLink, .sendFile:
             return object(["message": string], required: ["message"])
         }
