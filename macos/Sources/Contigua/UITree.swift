@@ -170,35 +170,60 @@ struct UITree: Equatable {
 
     /// Each keyed row's label, as `expect` sends it (PROTOCOL.md "UI tree"
     /// item 8): its text, else its desc, else the first row under it with
-    /// either, in reading order; `""` when none has one.
+    /// either, in reading order. An editable row's label is its desc, else
+    /// its id, never its text (its value); under another row an editable row
+    /// and its rows give none. A row with no label is left out: no `expect`.
+    ///
+    /// Rows arrive in pre-order, so a row's subtree is the run of rows after
+    /// it up to `ends[at]`; one pass finds every run.
     func labels() -> [Int: String] {
+        let ends = subtreeEnds()
         var out: [Int: String] = [:]
-        for node in nodes {
+        for (at, node) in nodes.enumerated() {
             guard let k = node.k else { continue }
-            out[k] = label(of: node)
+            if let label = label(at: at, ends: ends) { out[k] = label }
         }
         return out
     }
 
-    private func label(of node: Node) -> String {
+    private static func own(_ node: Node) -> String? {
         if let text = node.text, !text.isEmpty { return text }
         if let desc = node.desc, !desc.isEmpty { return desc }
-        for other in nodes where other.index != node.index && descends(other, from: node.index) {
-            if let text = other.text, !text.isEmpty { return text }
-            if let desc = other.desc, !desc.isEmpty { return desc }
-        }
-        return ""
+        return nil
     }
 
-    private func descends(_ node: Node, from ancestor: Int) -> Bool {
-        var parent = node.parent
-        var hops = 0
-        while let p = parent, hops < nodes.count {
-            if p == ancestor { return true }
-            parent = nodes.first { $0.index == p }?.parent
-            hops += 1
+    private func label(at: Int, ends: [Int]) -> String? {
+        let node = nodes[at]
+        if node.edit {
+            if let desc = node.desc, !desc.isEmpty { return desc }
+            if let id = node.id, !id.isEmpty { return id }
+            return nil
         }
-        return false
+        if let own = Self.own(node) { return own }
+        var next = at + 1
+        while next < ends[at] {
+            if nodes[next].edit {
+                next = ends[next]  // a field and its rows give no label
+                continue
+            }
+            if let own = Self.own(nodes[next]) { return own }
+            next += 1
+        }
+        return nil
+    }
+
+    /// For each row's position, the position just past its subtree.
+    private func subtreeEnds() -> [Int] {
+        var ends = Array(repeating: nodes.count, count: nodes.count)
+        var open: [Int] = []  // positions of the rows the current one may sit under
+        for (at, node) in nodes.enumerated() {
+            while let top = open.last, nodes[top].index != node.parent {
+                ends[top] = at
+                open.removeLast()
+            }
+            open.append(at)
+        }
+        return ends
     }
 
     /// The tool result: the trimmed tree as JSON text, only the fields the
@@ -474,7 +499,13 @@ final class UITreeBroker {
     /// A tree went to [client]: remember its labels for that client's presses.
     func answered(_ tree: UITree, client: MCPClientID?) {
         guard let client, tree.ok else { return }
-        answered[client, default: [:]][tree.stream, default: [:]].merge(tree.labels()) { $1 }
+        let labels = tree.labels()
+        var known = answered[client, default: [:]][tree.stream, default: [:]]
+        for node in tree.nodes {
+            guard let k = node.k else { continue }
+            known[k] = labels[k]  // a row with no label now drops the old one: no `expect`
+        }
+        answered[client, default: [:]][tree.stream] = known
     }
 
     /// The label [client] was last answered for key [k] on [stream]; nil when

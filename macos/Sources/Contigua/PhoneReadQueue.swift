@@ -289,3 +289,19 @@ final class UIPressBroker {
         waiter.resume(with: result)
     }
 }
+
+/// What a `ui.press` came to: the phone's reply, or a failure before one.
+enum UIPressResult {
+    case reply(UIPressReply)
+    case failed(String)
+
+    /// MCP-84: whether the window may have taken input from the call. A
+    /// refusal pressed nothing; a press with no answer (`timeout`, a link
+    /// that dropped) may have.
+    var mayHaveActed: Bool {
+        switch self {
+        case .reply(let reply): return reply.ok
+        case .failed(let code): return code == "timeout" || code == "phone_offline"
+        }
+    }
+}
