@@ -561,4 +561,26 @@ final class UITreeTests: XCTestCase {
         XCTAssertNil(broker.expect(client: client, stream: 3, k: 1))
         XCTAssertEqual(broker.expect(client: client, stream: 3, k: 2), "Pay")
     }
+
+    // [MCP-86] Item 7: an editable row's label is its desc, else its id, never its text.
+    func testAnEditableRowsLabelIsNotItsText() {
+        func field(_ i: Int, k: Int?, p: Int?, desc: String?, id: String?) -> UITree.Node {
+            UITree.Node(index: i, ref: k.map { "e\($0)" } ?? "", parent: p, layer: 0, role: "EditText",
+                        text: "milk", desc: desc, id: id, box: nil, at: nil, off: false, click: true,
+                        edit: true, scroll: false, check: nil, selected: false, focused: false,
+                        disabled: false, password: false, k: k)
+        }
+        let labels = tree([
+            field(0, k: 1, p: nil, desc: nil, id: "search_box"),
+            field(1, k: 2, p: nil, desc: "Search", id: "search_box"),
+            field(2, k: 3, p: nil, desc: nil, id: nil),
+            row(3, k: 4, p: nil),                                   // a container
+            field(4, k: 5, p: 3, desc: "Note", id: nil),            //   its field contributes nothing
+            row(5, k: 6, p: 3, text: "Shopping"),
+        ]).labels()
+        XCTAssertEqual(labels[1], "search_box")
+        XCTAssertEqual(labels[2], "Search")
+        XCTAssertNil(labels[3])
+        XCTAssertEqual(labels[4], "Shopping")
+    }
 }

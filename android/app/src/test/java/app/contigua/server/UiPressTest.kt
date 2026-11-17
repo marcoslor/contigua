@@ -113,4 +113,22 @@ class UiPressTest {
         val byWindow = refused(UiPress.decide(Fake(true, node), size, "Add to cart") { "window" })
         assertEquals("window", byWindow.reply["coveredBy"])
     }
+
+    @Test
+    fun testAFieldWhoseTextChangedIsStillPressed() { // [MCP-86]
+        // #188's label is identity: a field's text is its value, so an edited
+        // field is the same field. Its label is its desc, else its view id.
+        val field = UiTree.Node(role = "android.widget.EditText", text = "milk", desc = "Search",
+            box = UiTree.Box(0, 500, 1_080, 600), editable = true)
+        assertEquals("Search", UiPress.label(field))
+        assertTrue(UiPress.decide(Fake(true, field), size, "Search", ::nobody) is UiPress.Decision.Press)
+        val byId = UiTree.Node(role = "android.widget.EditText", text = "milk",
+            viewId = "com.example:id/search_box", box = UiTree.Box(0, 500, 1_080, 600), editable = true)
+        assertEquals("search_box", UiPress.label(byId))
+        // Inside a container a field contributes nothing.
+        val row = UiTree.Node(role = "android.widget.LinearLayout", box = UiTree.Box(0, 500, 1_080, 700),
+            clickable = true, children = listOf(field,
+                UiTree.Node(role = "android.widget.TextView", text = "Shopping", box = UiTree.Box(0, 600, 1_080, 700))))
+        assertEquals("Shopping", UiPress.label(row))
+    }
 }
