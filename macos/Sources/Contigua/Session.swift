@@ -179,6 +179,8 @@ enum SessionEvent {
     /// `ui.settle` (PROTOCOL.md "UI tree" item 7, MCP-81): the phone's answer
     /// to "has this display stopped changing". `seq` echoes the request.
     case uiSettle(UISettleReply)
+    /// `ui.press` (PROTOCOL.md "UI tree" item 8, MCP-86).
+    case uiPress(UIPressReply)
     /// `ring.state`: a `phone.ring` started or ended.
     case ringState(ringing: Bool)
     /// `power.locked`: the phone's own power press with app streams up (its VD
@@ -1819,6 +1821,8 @@ final class Session {
             if let tree = UITree(message: message) { emit(.uiTree(tree)) }
         case "ui.settle":
             if let reply = UISettleReply(message: message) { emit(.uiSettle(reply)) }
+        case "ui.press":
+            if let reply = UIPressReply(message: message) { emit(.uiPress(reply)) }
         case "state":
             phoneScreenOn = (message.string("screen") ?? "on") == "on"
             if let cap = message.int("maxWindows") {
@@ -2365,6 +2369,15 @@ final class Session {
     func requestUISettle(stream: UInt32, seq: Int, quietMs: Int, timeoutMs: Int) {
         sendJSON(["t": "ui.settle", "stream": Int(stream), "seq": seq,
                   "quietMs": quietMs, "timeoutMs": timeoutMs])
+    }
+    /// `ui.press` (docs/PROTOCOL.md "UI tree" item 8, MCP-86): press the node
+    /// keyed `k` where it is now; `expect` is the label the asking client was
+    /// last answered for it. Never logged: the label is on-screen text.
+    func requestUIPress(stream: UInt32, seq: Int, k: Int, holdMs: Int?, expect: String?) {
+        var message: [String: Any] = ["t": "ui.press", "stream": Int(stream), "seq": seq, "k": k]
+        if let holdMs { message["holdMs"] = holdMs }
+        if let expect { message["expect"] = expect }
+        sendJSON(message)
     }
     func resizeWindow(stream: UInt32, width: Int, height: Int, dpi: Double) {
         sendJSON(["t": "window.resize", "stream": Int(stream), "w": width, "h": height, "dpi": Int(dpi.rounded())])

@@ -1554,13 +1554,13 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
      Unicode's private use areas (U+E000–U+F8FF and the two supplementary areas) are
      dropped from a label: an icon font draws art there, not a word, and a label made only
      of them is no label.
-   - The phone sends no `ref` and no `snapshot`: a ref never crosses the wire. The Mac
-     keeps a read counter per window (starting at 1, kept across reconnects) and names
-     each node `s<snapshot>e<row>`, and `snapshot` in the tool result is that counter. A
-     ref from any reply but the window's latest is refused with a sentence naming both
-     snapshots. A ref protects against a newer *tree*, not against a newer *screen*: an
-     overlay that appears after the read can cover the node, and the tap lands where the
-     node was. The tool says so, and the tap answer names the read it came from.
+   - The phone sends no `ref` and no `snapshot`. The Mac keeps a read counter per
+     window (starting at 1, kept across reconnects), and `snapshot` in the tool result is
+     that counter. S1 named each node `s<snapshot>e<row>` and refused a ref from any reply
+     but the window's latest; since T10 the Mac names a row `e<k>` from its key (item 9), a
+     ref from any earlier read is sent back as `ui.press` with that `k` (item 8), and the
+     phone, not the Mac, decides whether the node is still there, visible, uncovered and
+     labelled as the asking client last saw it. A row with no `k` has no ref.
    - At most 1200 nodes and 200 characters per label. `truncated` says the cap cut the
      tree. `displayId` is the display's own id (a virtual display's is in the sixties on
      current builds), never a counter.
