@@ -49,9 +49,8 @@ object UiPress {
         if (target == null || !target.refresh()) return refuse(GONE, "That element is no longer on the screen.")
         val node = target.read()
         if (!node.visibleToUser) return refuse(NOT_VISIBLE, "That element is not visible to the user.")
-        val box = node.box?.let { clip(it, size) }
-            ?: return refuse(OFF_SCREEN, "That element is off screen.")
-        val now = label(node)
+        val box = UiTree.visible(node, size) ?: return refuse(OFF_SCREEN, "That element is off screen.")
+        val now = label(node, size)
         if (expect != null && now != expect) {
             return refuse(CHANGED, "That element now reads differently.").also { it.reply["now"] = now }
         }
@@ -76,39 +75,33 @@ object UiPress {
 
     /**
      * The label `expect` is compared with (item 8): the node's text, else its
-     * description, else the first node under it with either, depth first, each
-     * trimmed as a row's label is; `""` when none has one. A password node's
+     * description, else the first on-screen node under it with either, depth
+     * first, each trimmed as a row's label is; `""` when none has one. A node
+     * under it that the tree would mark `off` on a display of [size]
+     * ([UiTree.off], the same rule) gives no label of its own, as the Mac
+     * skips an `off` row (MCP-86, MCP-106); a shown hint is no text (MCP-104). A password node's
      * text is never a label, as it is never a row's. An editable node's text is
      * its value, not what it is (#188): its label is its description, else its
      * view id as a row shortens it (a password field's, its view id alone, as
      * its row carries no desc), and under another node it and its subtree
      * give none.
      */
-    fun label(node: UiTree.Node): String {
+    fun label(node: UiTree.Node, size: IntSize): String {
         // A password field's row carries neither text nor desc (item 2): its id alone.
         if (node.editable && node.password) return UiTree.viewId(node.viewId) ?: ""
         if (node.editable) return UiTree.label(node.desc) ?: UiTree.viewId(node.viewId) ?: ""
-        return find(node, 0) ?: ""
+        return find(node, size, 0) ?: ""
     }
 
-    private fun find(node: UiTree.Node, depth: Int): String? {
+    private fun find(node: UiTree.Node, size: IntSize, depth: Int): String? {
         if (depth > UiTree.MAX_DEPTH) return null
         if (depth > 0 && node.editable) return null
-        if (!node.password) {
-            (UiTree.label(node.text) ?: UiTree.label(node.desc))?.let { return it }
+        if (!node.password && !(depth > 0 && UiTree.off(node, size))) {
+            val text = if (node.showingHint) null else UiTree.label(node.text)
+            (text ?: UiTree.label(node.desc))?.let { return it }
         }
-        for (child in node.children) find(child, depth + 1)?.let { return it }
+        for (child in node.children) find(child, size, depth + 1)?.let { return it }
         return null
-    }
-
-    /** The part of [box] on the display when at least 8×8 px of it is, else null (item 2, F9). */
-    private fun clip(box: UiTree.Box, size: IntSize): UiTree.Box? {
-        if (size.w <= 0 || size.h <= 0 || box.empty) return null
-        val clipped = UiTree.Box(
-            box.left.coerceIn(0, size.w), box.top.coerceIn(0, size.h),
-            box.right.coerceIn(0, size.w), box.bottom.coerceIn(0, size.h),
-        )
-        return clipped.takeIf { it.width >= UiTree.MIN_VISIBLE && it.height >= UiTree.MIN_VISIBLE }
     }
 
     private fun refuse(code: String, sentence: String) = Decision.Refuse(code, UiTree.failure(code, sentence))

@@ -2022,6 +2022,8 @@ class Session(
             return
         }
         val seq = Json.int(obj["seq"])
+        // MCP-106: off-screen rows are left out unless the Mac asks for them.
+        val offscreen = obj["offscreen"] == true
         val displayId = synchronized(streams) { streams[stream]?.displayId }
         if (displayId == null) {
             sendUiTree(stream, seq, UiTree.failure(UiCodes.NO_WINDOW, "There is no window $stream."))
@@ -2057,7 +2059,7 @@ class Session(
                         "ui.tree stream=$stream display=$displayId layers=${layers.size} " +
                             "nodes=${layers.sumOf { it.nodes.size }} took_ms=${now() - started}",
                     )
-                    sendUiTree(stream, seq, UiTree.reply(displayId, size, layers, answer.keys))
+                    sendUiTree(stream, seq, UiTree.reply(displayId, size, layers, answer.keys, offscreen))
                 }
                 is UiTree.Answer.Failure -> {
                     log("ui.tree stream=$stream display=$displayId failed=${answer.code}")
