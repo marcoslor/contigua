@@ -281,11 +281,19 @@ try:
                "[MCP-108] tap %s names the node it pressed" % digit)
 
     # Clear the timer: delete back to zero.
+    # The keypad's delete is an image button: its label may be empty, so its
+    # resource id counts too.
+    def is_delete(r):
+        return r.get("click") and ("delete" in label(r).lower() or "backspace" in label(r).lower()
+                                   or "delete" in (r.get("id") or "").lower())
+    deletes = 0
     for _ in range(len(typed) + 2):
-        delete = node(tree, lambda r: label(r).lower() in ("delete", "backspace", "del"))
+        delete = node(tree, is_delete)
         if delete is None:
             break
+        deletes += 1
         tree = client.text("tap", {"window": window, "ref": delete["ref"]}).get("tree") or tree_of(client, window)
+    print("[mcpact] delete key taps: %d" % deletes)
     shown = display_digits(tree)
     report(not shown, "the timer is cleared back to zero (%s)" % ("zero" if not shown else "digits left"))
 finally:
