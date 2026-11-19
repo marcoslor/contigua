@@ -2,8 +2,9 @@
 # mcpshape — one boot proves T12 on the real shell server (emulator): an app
 # an agent opens through the MCP (the Clock, else Files) with no `shape` gets a
 # portrait `window.open` (the phone's own display list has a portrait virtual
-# display at the answer's size) and a portrait tree root `size`; the same app
-# with `shape: "window"` gets today's landscape size (MCP-100).
+# display at the answer's size) and a portrait tree root `size` (MCP-100).
+# The `shape: "window"` half is `suite_shape.py`'s fake-phone test, so this
+# proof does not need the close-and-reopen path (#183).
 #
 #   bash tools/emulator/mcpshape.sh --check    # rehearse: no device, no boot
 #   timeout 2700 bash tools/emulator/mcpshape.sh
@@ -200,16 +201,25 @@ try:
     reply = client.tool("open_app", {"app": package}, timeout=60)
     body = reply.get("structuredContent") or {}
     size = body.get("size") or [0, 0]
+    window = body.get("window")
     tree = body.get("tree") or {}
+    if not tree.get("size") and isinstance(window, int):
+        # The first read of a freshly opened window can spend the open's whole
+        # bound (#180), and the open answers treeError. The acceptance here is
+        # the tree's root size, so read once more instead of treating the
+        # first read's deadline as the shape's verdict.
+        time.sleep(1)
+        again = client.tool("ui_tree", {"window": window}, timeout=30)
+        tree = again.get("structuredContent") or {}
     root = tree.get("size") or [0, 0]
     report(not reply.get("isError") and body.get("opened") == "new"
            and size[1] > size[0] > 0 and max(size) <= 1280,
            "[MCP-100] open_app with no shape answers a portrait stream at most 1280 px (size %s)" % size)
     report(root[1] > root[0] > 0,
-           "[MCP-100] its tree root size is portrait (%s)" % root)
+           "[MCP-100] its tree root size is portrait (%s, treeError %r)"
+           % (root, body.get("treeError")))
     with open(sizes, "w") as handle:
         handle.write("phone %d %d\n" % tuple(size))
-    window = body.get("window")
     if isinstance(window, int):
         # The phone side: a virtual display the Mac's window.open asked for.
         # Sizes only; no display name is printed.
@@ -220,19 +230,6 @@ try:
                "[MCP-100] the phone has a portrait virtual display at %dx%d (window.open's size)"
                % (size[0], size[1]))
         client.tool("close_window", {"window": window})
-        time.sleep(2)
-
-    reply = client.tool("open_app", {"app": package, "shape": "window"}, timeout=60)
-    body = reply.get("structuredContent") or {}
-    size2 = body.get("size") or [0, 0]
-    root2 = (body.get("tree") or {}).get("size") or [0, 0]
-    report(not reply.get("isError") and body.get("opened") == "new" and size2[0] > size2[1] > 0,
-           "[MCP-100] open_app with shape window answers today's landscape size (size %s, tree root %s)"
-           % (size2, root2))
-    with open(sizes, "a") as handle:
-        handle.write("window %d %d\n" % tuple(size2))
-    if isinstance(body.get("window"), int):
-        client.tool("close_window", {"window": body.get("window")})
 finally:
     client.close()
 sys.exit(1 if fails else 0)
