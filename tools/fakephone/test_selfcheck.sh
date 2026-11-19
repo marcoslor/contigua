@@ -78,7 +78,7 @@ note "open 1080x2340 (3s)"
     || die "open failed: $(cat "$WORK/open.err")"
 cat "$WORK/open.txt"
 PROBE="$("$FFPROBE" -v error -show_entries stream=codec_name,width,height -of csv=p=0 "$WORK/open.h264")"
-echo "$PROBE" | grep -q "^h264,1072,2336$" || die "ffprobe said '$PROBE', expected 'h264,1072,2336'"
+echo "$PROBE" | grep -q "^h264,1080,2340$" || die "ffprobe said '$PROBE', expected 'h264,1080,2340'"
 
 note "resize-test"
 "${DECK[@]}" resize-test > "$WORK/resize.txt" 2>"$WORK/resize.err" \
@@ -143,7 +143,7 @@ for e in touches:
     assert 0.0 <= e["nx"] <= 1.0 and 0.0 <= e["ny"] <= 1.0, "touch coords not normalized"
 
 configs = [(e["w"], e["h"]) for e in events if e["ev"] == "video" and e.get("config")]
-assert (1072, 2336) in configs, "no VIDEO_CONFIG for 1072x2336: %r" % configs
+assert (1080, 2340) in configs, "no VIDEO_CONFIG for 1080x2340: %r" % configs
 assert (720, 1280) in configs, "no VIDEO_CONFIG for 720x1280 after resize: %r" % configs
 
 qualities = [e for e in events if e["ev"] == "quality"]
