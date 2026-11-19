@@ -262,8 +262,7 @@ if lmkd_quiet 15 90; then
 else
   step "warn: lmkd not quiet after 90 s (waited $(( $(date +%s) - SETTLE_START ))s); starting the server anyway"
 fi
-CODE_PATH="$(emu shell dumpsys package "$SHIZUKU_PKG" 2>/dev/null |
-  sed -n 's/.*codePath=\(.*\)$/\1/p' | head -1 | tr -d '\r')"
+CODE_PATH="$(emu shell dumpsys package "$SHIZUKU_PKG" 2>/dev/null | shizuku_code_path)"
 ABI="$(emu shell getprop ro.product.cpu.abi | tr -d '\r')"
 case "$ABI" in
   arm64-v8a) ABI_DIR=arm64 ;;

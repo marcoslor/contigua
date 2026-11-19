@@ -52,6 +52,7 @@ PIN), `start.sh --window` (visible emulator window), `start.sh --no-build`
 
 ```sh
 bash tools/emulator/preflight.sh              # no device: syntax, APK, manifest, budget
+bash tools/emulator/lib-test.sh               # no device: the shared helpers on fixtures
 bash tools/emulator/verify-batch.sh --check   # the rehearsal of the boot command
 timeout 1800 bash tools/emulator/verify-batch.sh
 ```

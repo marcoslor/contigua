@@ -126,6 +126,13 @@ server_port_from_logcat() {
 }
 
 # The shell-UID user service process(es) that host the server.
+# The first codePath= value in `dumpsys package` output, CRs stripped.
+# Reads every line: `head -1` closes the pipe while dumpsys still has a second
+# match to write, and `pipefail` then ends the caller with no message (#207).
+shizuku_code_path() {
+  sed -n 's/.*codePath=\(.*\)$/\1/p' | sed -n '1p' | tr -d '\r'
+}
+
 server_pids() {
   # grep exits 1 when there is no daemon; the rig runs under `set -euo pipefail`.
   emu shell "ps -A -o PID,NAME 2>/dev/null | grep 'app.contigua:'" 2>/dev/null |
