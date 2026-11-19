@@ -24,12 +24,12 @@ extension MCPToolHost {
 
     private var opener: MCPWindowLedger.Opener { client.map { .client($0) } ?? .person }
 
-    func openApp(_ query: String, newWindow: Bool, wait: MCPWait, observe: MCPObserve) async throws -> [String: Any] {
+    func openApp(_ query: String, newWindow: Bool, shape: MCPWindowShape = .phone, wait: MCPWait, observe: MCPObserve) async throws -> [String: Any] {
         let phone = try onlinePhone()
         let app = try Self.chooseApp(query, in: IntentsBridge.apps(for: phone, in: controller))
         let before = Set(controller.windows.openStreams)
         // MCP-51: a window this call creates is this connection's.
-        controller.windows.opening(by: opener) {
+        controller.windows.opening(by: opener, shape: shape) {
             controller.intentsOpenApp(app.pkg, on: phone.id, newWindow: newWindow)
         }
         // The window is created or raised synchronously above; the newest
@@ -46,9 +46,9 @@ extension MCPToolHost {
 
     /// MCP-43: the link opens in a new window on the live link path; the
     /// answer is that window.
-    func sendLink(_ url: String, wait: MCPWait, observe: MCPObserve) async throws -> [String: Any] {
+    func sendLink(_ url: String, shape: MCPWindowShape = .phone, wait: MCPWait, observe: MCPObserve) async throws -> [String: Any] {
         _ = try onlinePhone()
-        let stream = try controller.windows.opening(by: opener) {
+        let stream = try controller.windows.opening(by: opener, shape: shape) {
             try IntentsBridge.openLinkWindow(url, controller: controller)
         }
         return try await opened(stream, kind: .link, opened: .new, wait: wait, observe: observe)
