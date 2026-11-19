@@ -62,7 +62,7 @@ final class SessionDialGroupTests: XCTestCase {
             // own bound and then some.
             DispatchQueue.global().async {
                 // A dial on a live loop ends well inside 3 s against the fake.
-                Thread.sleep(forTimeInterval: 3)
+                Thread.sleep(forTimeInterval: 3)  // real-time: the dial's TLS handshake against the fake server has no test clock
                 dialDone.signal()
             }
             _ = dialDone.wait(timeout: .now() + 5)

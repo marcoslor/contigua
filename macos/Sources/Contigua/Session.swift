@@ -310,6 +310,9 @@ final class Session {
     /// queue, so a test can hold a dial while the session closes. nil in the app.
     var dialGateForTests: (@Sendable () -> Void)?
     private var ownsGroup: Bool = false
+    /// The dials running on `eventLoopGroup`, so a close shuts the group down
+    /// only after the last of them returns (#190).
+    private let dials = DispatchGroup()
 
     private var decoder = FrameDecoder()
     /// window.content for each stream, waiting for the VIDEO_CONFIG it precedes (read on the reader).
@@ -633,7 +636,12 @@ final class Session {
         let learnedCert = dialLearnedCert
         let pinned = dialPin.record
         let gate = dialGateForTests
+        // Entered on the session queue and left when the dial returns: a close
+        // that runs between the two holds the group alive for this dial.
+        let dials = self.dials
+        dials.enter()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in  // gcd: the TLS handshake blocks; one thread per path is the point
+            defer { dials.leave() }
             gate?()
             self?.dial(id: id, endpoint: endpoint, pinned: pinned, group: group,
                        learned: learned, learnedCert: learnedCert)
@@ -1267,25 +1275,33 @@ final class Session {
         _ = done.wait(timeout: .now() + timeout)
     }
 
-    private func enqueueClose(completion: (() -> Void)?) {
+    private func enqueueClose(completion: (@Sendable () -> Void)?) {
         intentionalClose = true
         cancelTimers()
         transition(.closed, nil)
         // Strong self: the teardown must run even when the owner drops its
         // reference right after close (the quit path does exactly that).
         queue.async {
-            self.closeBlocking()
-            completion?()
+            self.closeBlocking(completion: completion)
         }
     }
 
     /// Runs on `queue`: the part of close() that can block.
-    private func closeBlocking() {
+    private func closeBlocking(completion: (@Sendable () -> Void)? = nil) {
         closeChannel()
-        if ownsGroup {
-            try? eventLoopGroup?.syncShutdownGracefully()
-            eventLoopGroup = nil
-            ownsGroup = false
+        guard ownsGroup, let group = eventLoopGroup else {
+            completion?()
+            return
+        }
+        // A dial already running holds this group. Shutting it down under that
+        // dial makes NIO schedule onto a dead loop ("already shut down", #190),
+        // so the group goes only after the last dial returns. A session started
+        // meanwhile gets a fresh group.
+        eventLoopGroup = nil
+        ownsGroup = false
+        dials.notify(queue: queue) {
+            try? group.syncShutdownGracefully()
+            completion?()
         }
     }
 
