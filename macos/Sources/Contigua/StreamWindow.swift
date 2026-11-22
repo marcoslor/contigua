@@ -2151,6 +2151,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             Log.video.info("density press: the window is at the clamp, nothing to send")
             return
         }
+        // MCP-101: the person's own density change on this window hands a
+        // phone-shape window back before the re-send below asks at WIN-5's size.
+        agentShapeEvent(.densityChange)
         manager.setDensity(next, forPackage: pkg)
     }
 
@@ -2162,15 +2165,18 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// The View ▸ Density pick (nil is "Default") for this window's app.
     func setDensityOverride(_ value: Double?) {
         guard let pkg = densityPackage else { return }
+        agentShapeEvent(.densityChange)  // MCP-101, as in adjustDensity
         manager.setDensity(value, forPackage: pkg)
     }
 
     /// The app's override or the Settings default changed: the phone gets the
     /// new dpi. The value itself is computed, so this only re-sends.
     func applyStoredDensity() {
-        guard window != nil else { return }
-        // MCP-101: the person's density change hands a phone-shape window back.
-        agentShapeEvent(.densityChange)
+        // MCP-100: a phone-shape window reads no density setting, so a stored
+        // change (another window's pick, Settings' clear, a link window
+        // learning its app) re-sends nothing; only the person's pick on this
+        // window hands it back (adjustDensity, setDensityOverride).
+        guard window != nil, agentShape == nil else { return }
         sendResize()
     }
 
