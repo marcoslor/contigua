@@ -1,4 +1,6 @@
-# K1: the Android build and unit tests, only when Android code changes.
+# K1: the Android build, unit tests and lint, only when Android code changes.
+# Lint runs against app/lint-baseline.xml, so only a new finding fails; it is the
+# check a release build's lintVital runs, caught before the release.
 name: Android
 on:
   pull_request:
@@ -22,12 +24,14 @@ jobs:
           distribution: temurin
           java-version: 17
           cache: gradle
-      - name: Build and unit tests
+      - name: Build, unit tests and lint
         working-directory: android
-        run: ./gradlew -q --no-daemon :app:assembleDebug :app:testDebugUnitTest
+        run: ./gradlew -q --no-daemon --continue :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: k1-reports
-          path: android/app/build/reports/tests
+          path: |
+            android/app/build/reports/tests
+            android/app/build/reports/lint-results-debug.html
           retention-days: 3
