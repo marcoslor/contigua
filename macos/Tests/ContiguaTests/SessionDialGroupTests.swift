@@ -45,7 +45,6 @@ final class SessionDialGroupTests: XCTestCase {
         // The dial is held at its start until the session has fully closed.
         let entered = DispatchSemaphore(value: 0)
         let release = DispatchSemaphore(value: 0)
-        let dialDone = DispatchSemaphore(value: 0)
         session.dialGateForTests = {
             entered.signal()
             release.wait()
@@ -57,15 +56,10 @@ final class SessionDialGroupTests: XCTestCase {
 
         let output = try capturingStandardError {
             release.signal()
-            // The dial reaches the phone's TLS server (or fails) and its
-            // result comes back to the session queue; give it the handshake's
-            // own bound and then some.
-            DispatchQueue.global().async {
-                // A dial on a live loop ends well inside 3 s against the fake.
-                Thread.sleep(forTimeInterval: 3)
-                dialDone.signal()
-            }
-            _ = dialDone.wait(timeout: .now() + 5)
+            // real-time: before the fix the dial's work is dropped by NIO, so it
+            // never reports an end to wait on; 3 s covers a dial that reaches
+            // the local fake phone's TLS server and comes back to the queue.
+            Thread.sleep(forTimeInterval: 3)  // real-time: no dial-end event exists before the fix
         }
         XCTAssertFalse(output.contains("already shut down"),
                        "a dial ran on the session's group after close shut it down")
