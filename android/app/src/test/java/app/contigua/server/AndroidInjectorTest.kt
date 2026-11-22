@@ -38,7 +38,7 @@ class AndroidInjectorTest {
         val injector = AndroidInjector(log = {}, sink = { _, _ -> }, clipboard = clipboard)
         injector.text(0, "café")
         // The paste path restores 400 ms after the paste; wait past it.
-        Thread.sleep(800)
+        Thread.sleep(800) // real-time: the old paste path restores the clip 400 ms later on a real executor
         assertTrue("the person's image clip is still on the clipboard", clipboard.holdsTheImage)
     }
 }

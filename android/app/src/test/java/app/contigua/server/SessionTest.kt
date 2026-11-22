@@ -5,6 +5,7 @@ import app.contigua.proto.Frame
 import app.contigua.proto.FrameReader
 import app.contigua.proto.Frames
 import app.contigua.proto.HoverPayload
+import app.contigua.proto.KeyPayload
 import app.contigua.proto.Json
 import app.contigua.proto.PathCodec
 import app.contigua.proto.TouchPayload
@@ -987,6 +988,36 @@ class SessionTest {
         )
         // Set text typed no keys.
         assertTrue(platform.keys.isEmpty())
+    }
+
+    /**
+     * The agent's keys keep their own down times: a key the person holds on
+     * the Mac across a `ui.type` still goes up with the down time it went
+     * down with, and event times never go backwards (MCP-109; lead review).
+     */
+    @Test
+    fun testAUiTypeLeavesThePersonsHeldKeyItsOwnDownTime() { // [MCP-109]
+        val release = CountDownLatch(1).also { it.countDown() }
+        closeCurrent()
+        connect(pairDecisionTimeoutMs = 30_000, uiTree = TypeInto(release))
+        addAndAuthenticate()
+        send(mapOf("t" to "window.open", "stream" to 3, "w" to 400, "h" to 800, "dpi" to 160, "mode" to "phone"))
+        readUntil("window.opened")
+        platform.keys.clear()
+        val shift = 59 // KEYCODE_SHIFT_LEFT, held by the person
+        sendFrame(Frames.TYPE_KEY, 3, Frames.encodeKey(KeyPayload(Frames.ACTION_DOWN, shift, 0)))
+        await { platform.keys.size >= 1 }
+        send(mapOf("t" to "ui.type", "stream" to 3, "seq" to 1, "text" to "ok"))
+        assertEquals("keys", readUntil("ui.type")["via"])
+        sendFrame(Frames.TYPE_KEY, 3, Frames.encodeKey(KeyPayload(Frames.ACTION_UP, shift, 0)))
+        await { platform.keys.count { it.keycode == shift } >= 2 }
+        val held = platform.keys.filter { it.keycode == shift }
+        assertEquals("the person's key up keeps its own down time", held[0].downTime, held[1].downTime)
+        for (pair in platform.keys.filter { it.keycode != shift }.chunked(2)) {
+            assertEquals("the agent's key up keeps its down's time", pair[0].eventTime, pair[1].downTime)
+        }
+        val times = platform.keys.map { it.eventTime }
+        assertEquals("event times never go backwards", times.sorted(), times)
     }
 
     @Test
