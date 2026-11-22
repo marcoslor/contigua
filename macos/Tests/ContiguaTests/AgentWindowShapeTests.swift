@@ -134,13 +134,50 @@ final class AgentWindowShapeTests: XCTestCase {
         XCTAssertEqual(controller.displayPixels(), CGSize(width: 590, height: 1280))
     }
 
+    /// The person's own pick on this window: View ▸ Density, ⌘+/⌘−, ⌘0.
     func testADensityPickOnThePhoneShapeWindowHandsItBack_MCP101() throws {
+        let picks: [(String, (AppWindowController) -> Void)] = [
+            ("View ▸ Density", { $0.setDensityOverride(1.25) }),
+            ("⌘+", { $0.adjustDensity(0.25) }),
+            ("⌘0", { $0.resetDensity() }),
+        ]
+        for (name, pick) in picks {
+            let controller = makeController()
+            defer { controller.window?.close() }
+            controller.takeAgentShape(try XCTUnwrap(shape(1080, 2340, 450)))
+            pick(controller)
+            XCTAssertNil(controller.agentShape, "\(name): the person's density change hands the window back")
+            XCTAssertNotEqual(controller.displayPixels(), CGSize(width: 590, height: 1280), name)
+        }
+    }
+
+    /// A stored change the person did not make on this window: the package's
+    /// override set from another of its windows, Settings' clear, or the
+    /// re-send every window of the package gets. The phone shape reads
+    /// neither setting (MCP-100), so it keeps the shape and its dpi.
+    func testAStoredDensityChangeKeepsThePhoneShape_MCP100() throws {
         let controller = makeController()
         defer { controller.window?.close() }
         controller.takeAgentShape(try XCTUnwrap(shape(1080, 2340, 450)))
+        try XCTUnwrap(manager).densityStore.set(1.25, forKey: WindowDensityStore.key(forPackage: "com.example.shop"))
         controller.applyStoredDensity()
-        XCTAssertNil(controller.agentShape, "the person's density change hands the window back")
-        XCTAssertNotEqual(controller.displayPixels(), CGSize(width: 590, height: 1280))
+        XCTAssertNotNil(controller.agentShape, "a stored change is not the person's change to this window")
+        XCTAssertEqual(controller.dpi(), 246)
+        XCTAssertEqual(controller.displayPixels(), CGSize(width: 590, height: 1280))
+    }
+
+    /// An agent's `send_link` window learns its app from the phone's first
+    /// title; that app's stored override must not hand the shape back.
+    func testALinkWindowLearningAnAppWithAnOverrideKeepsThePhoneShape_MCP100() throws {
+        _ = makeController().window?.close()
+        let manager = try XCTUnwrap(manager)
+        manager.densityStore.set(1.25, forKey: WindowDensityStore.key(forPackage: "com.example.shop"))
+        let link = LinkWindowController(stream: 2, url: "https://example.com", manager: manager)
+        defer { link.window?.close() }
+        link.takeAgentShape(try XCTUnwrap(shape(1080, 2340, 450)))
+        link.adopt(pkg: "com.example.shop")
+        XCTAssertNotNil(link.agentShape, "the app learning the package is not the person's change")
+        XCTAssertEqual(link.dpi(), 246)
     }
 
     func testFullScreenHandsThePhoneShapeBack_MCP101() throws {
