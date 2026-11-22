@@ -1,0 +1,20 @@
+# What the macOS runner can do for the e2e suite (#227): a report, not a gate.
+# Its output decides which e2e checks CI can run (#214).
+name: Mac probe
+on:
+  pull_request:
+    paths: ['macos/scripts/ci-probe.*', '.github/workflows/mac-probe.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe
+        run: macos/scripts/ci-probe.sh | tee probe.txt
+      - name: Summary
+        run: |
+          { echo '```'; cat probe.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
