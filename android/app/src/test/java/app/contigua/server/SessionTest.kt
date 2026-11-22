@@ -942,6 +942,53 @@ class SessionTest {
         assertTrue(tapUp.eventTime - tapDown.eventTime in 1..50)
     }
 
+    /**
+     * A source that types into a focused field holding nothing that takes set
+     * text, once [release] opens: the session's own keys are handed through.
+     */
+    private class TypeInto(private val release: CountDownLatch) : UiTreeSource, UiTypeSource {
+        val started = CountDownLatch(1)
+        override fun dump(displayId: Int, size: IntSize): UiTree.Answer = UiTree.Answer.Tree(emptyList())
+        override fun type(displayId: Int, window: Int, text: String, clear: Boolean, submit: Boolean,
+                          keys: TextEntry.Keys): TextEntry.Outcome {
+            started.countDown()
+            release.await(5, TimeUnit.SECONDS)
+            val focus = object : TextEntry.Focus {
+                override val field = TextEntry.Field(null)
+                override fun setText(text: String) = true
+                override fun setSelection(start: Int, end: Int) = true
+            }
+            return TextEntry.type(window, text, clear, submit, focus, keys)
+        }
+    }
+
+    @Test
+    fun testUiTypeAnswersHowItTyped() { // [MCP-109]
+        val release = CountDownLatch(1)
+        val source = TypeInto(release)
+        closeCurrent()
+        connect(pairDecisionTimeoutMs = 30_000, uiTree = source)
+        addAndAuthenticate()
+        send(mapOf("t" to "window.open", "stream" to 3, "w" to 400, "h" to 800, "dpi" to 160, "mode" to "phone"))
+        readUntil("window.opened")
+        send(mapOf("t" to "ui.type", "stream" to 3, "seq" to 1, "text" to "café"))
+        assertTrue("the type is running", source.started.await(2, TimeUnit.SECONDS))
+        // One ui.* request at a time (PROTOCOL.md "UI tree" item 6).
+        send(mapOf("t" to "ui.tree", "stream" to 3, "seq" to 2))
+        val tree = readUntil("ui.tree")
+        assertEquals(false, tree["ok"])
+        assertEquals("busy", tree["code"])
+        release.countDown()
+        val reply = readUntil("ui.type")
+        assertEquals(
+            mapOf("t" to "ui.type", "stream" to 3L, "seq" to 1L, "ok" to true,
+                "entry" to "inserted", "via" to "set_text", "characters" to 4L),
+            reply.mapValues { (it.value as? Number)?.toLong() ?: it.value },
+        )
+        // Set text typed no keys.
+        assertTrue(platform.keys.isEmpty())
+    }
+
     @Test
     fun phoneModeMirrorsDisplayZeroAtItsAspect() {
         addAndAuthenticate()

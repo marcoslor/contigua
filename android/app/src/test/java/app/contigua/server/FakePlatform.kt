@@ -250,6 +250,10 @@ class FakePlatform : DisplayLayer, AppCatalog, Launcher, Injector, Power, Device
         texts.add(s)
     }
 
+    /** Printable ASCII as one down/up per character (its code as the keycode); anything else has no key. */
+    override fun keyStrokes(s: String): List<KeyStroke>? =
+        if (s.all { it.code in 0x20..0x7E }) s.flatMap { listOf(KeyStroke(0, it.code), KeyStroke(1, it.code)) } else null
+
     // ---- Power --------------------------------------------------------
 
     override fun onInput(displayId: Int) {
