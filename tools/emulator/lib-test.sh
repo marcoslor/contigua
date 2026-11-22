@@ -30,6 +30,28 @@ check "" "no codePath" 'Package [com.example]
   userId=10123
 '
 
+# A failed adb read stops with its status, never an empty path and no message:
+# under `set -e` an `emu` that times out (124) ended start.sh silently (#207).
+err="$(mktemp)"
+emu() { return 124; }
+if got="$(package_code_path moe.shizuku.privileged.api 2>"$err")"; then
+  echo "LIB-TEST FAIL: a failed dumpsys read as '$got'"
+  fail=1
+elif grep -q 'status 124' "$err"; then
+  echo "LIB-TEST OK: a failed dumpsys says its status"
+else
+  echo "LIB-TEST FAIL: a failed dumpsys said '$(cat "$err")', wanted its status"
+  fail=1
+fi
+emu() { printf 'Packages:\r\n  codePath=/data/app/shizuku\r\n'; }
+if got="$(package_code_path moe.shizuku.privileged.api 2>"$err")" && [ "$got" = "/data/app/shizuku" ]; then
+  echo "LIB-TEST OK: a dumpsys read -> '$got'"
+else
+  echo "LIB-TEST FAIL: a dumpsys read -> '${got:-}' ($(cat "$err"))"
+  fail=1
+fi
+rm -f "$err"
+
 # The regression: more matches than a pipe's buffer, after the one head kept.
 set -o pipefail
 dumpsys_fixture() {
