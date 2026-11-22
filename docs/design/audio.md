@@ -71,6 +71,14 @@ Mac (`Contigua`):
   Opus decode via system `AudioToolbox` (`kAudioFormatOpus` where available);
   if the running SDK lacks a system Opus decoder, fall back to requesting AAC
   from the phone (see negotiation). No new third-party deps (system only).
+- Threading (MEDIA-12, #212): every engine and player call runs on one serial
+  audio queue, decided by `AudioOutputMachine`; the session queue, the main
+  thread, the device-change notification and the played-buffer completions
+  only post to it and never wait. AVFAudio's player stop holds the engine's
+  lock while it waits for outstanding completions, so a completion that called
+  the player (to conceal and schedule) deadlocked the stop, and the main
+  thread, which called the player directly, froze the app. A completion now
+  reports `rendered` with its episode's generation; a stale one is ignored.
 - Session: handle `AUDIO_CONFIG`/`AUDIO_FRAME`, feed engine. Per-device
   volume/mute in menu bar (`MenuBarContent` slider + mute toggle) driving the
   player node gain only — never the phone.
