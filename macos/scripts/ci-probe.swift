@@ -92,14 +92,33 @@ line("SCREENSHOT", code == 0 && (frac ?? 0) > 0.8,
 // Input: a real click at the window's centre, through the window server.
 let mainHeight = NSScreen.screens.first?.frame.height ?? screen.frame.height
 let centre = CGPoint(x: window.frame.midX, y: mainHeight - window.frame.midY)  // CG is top-left
-let src = CGEventSource(stateID: .hidSystemState)
-for type in [CGEventType.leftMouseDown, .leftMouseUp] {
-    CGEvent(mouseEventSource: src, mouseType: type, mouseCursorPosition: centre, mouseButton: .left)?
-        .post(tap: .cghidEventTap)
-    pump(0.1)
+print("INFO frontmost_is_probe=\(NSWorkspace.shared.frontmostApplication?.processIdentifier == getpid()) key=\(window.isKeyWindow)")
+// Each way the checks could post: the HID tap and the session tap, with a HID
+// or no source. The first that lands is the one to use; the pointer's position
+// after the move says whether the event reached the window server at all.
+var landed: [String] = []
+let ways: [(String, CGEventSource?, CGEventTapLocation)] = [
+    ("hid/hidtap", CGEventSource(stateID: .hidSystemState), .cghidEventTap),
+    ("nil/hidtap", nil, .cghidEventTap),
+    ("combined/sessiontap", CGEventSource(stateID: .combinedSessionState), .cgSessionEventTap),
+]
+for (name, src, tap) in ways {
+    let before = view.clicks
+    CGEvent(mouseEventSource: src, mouseType: .mouseMoved, mouseCursorPosition: centre, mouseButton: .left)?
+        .post(tap: tap)
+    pump(0.2)
+    let at = NSEvent.mouseLocation
+    for type in [CGEventType.leftMouseDown, .leftMouseUp] {
+        CGEvent(mouseEventSource: src, mouseType: type, mouseCursorPosition: centre, mouseButton: .left)?
+            .post(tap: tap)
+        pump(0.1)
+    }
+    pump(0.8)
+    let moved = abs(at.x - window.frame.midX) < 2 && abs(at.y - window.frame.midY) < 2
+    print("INFO input \(name): pointer_moved=\(moved) clicks=\(view.clicks - before)")
+    if view.clicks > before { landed.append(name) }
 }
-pump(1.0)
-line("INPUT", view.clicks > 0, "clicks=\(view.clicks)")
+line("INPUT", !landed.isEmpty, landed.isEmpty ? "clicks=0" : "via=\(landed.joined(separator: ","))")
 
 line("TALL_SCREEN", vf.height >= tallNeed, "visible_height=\(Int(vf.height)) need=\(Int(tallNeed))")
 exit(0)
