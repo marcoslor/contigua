@@ -2,9 +2,9 @@
 # mcpshape — one boot proves T12 on the real shell server (emulator): an app
 # an agent opens through the MCP (the Clock, else Files) with no `shape` gets a
 # portrait `window.open` (the phone's own display list has a portrait virtual
-# display at the answer's size) and a portrait tree root `size` (MCP-100).
-# The `shape: "window"` half is `suite_shape.py`'s fake-phone test, so this
-# proof does not need the close-and-reopen path (#183).
+# display at the answer's size) and a portrait tree root `size`; a second app
+# opened with `shape: "window"` gets today's landscape size (MCP-100). The two
+# halves open different apps, so no close-and-reopen is involved (#183).
 #
 #   bash tools/emulator/mcpshape.sh --check    # rehearse: no device, no boot
 #   timeout 2700 bash tools/emulator/mcpshape.sh
@@ -230,6 +230,24 @@ try:
                "[MCP-100] the phone has a portrait virtual display at %dx%d (window.open's size)"
                % (size[0], size[1]))
         client.tool("close_window", {"window": window})
+
+    # shape "window" on a second app, so no reopen of the first is involved
+    # (#183): a person's window, today's landscape size (MCP-100).
+    other = [a for a in apps if a.get("package") != package
+             and ("settings" in a.get("package", "").lower()
+                  or "documentsui" in a.get("package", "").lower()
+                  or "deskclock" in a.get("package", "").lower())]
+    report(bool(other), "the phone has a second app for shape window")
+    if other:
+        reply = client.tool("open_app", {"app": other[0]["package"], "shape": "window"}, timeout=60)
+        body = reply.get("structuredContent") or {}
+        size2 = body.get("size") or [0, 0]
+        report(not reply.get("isError") and body.get("opened") == "new" and size2[0] > size2[1] > 0,
+               "[MCP-100] open_app with shape window answers today's landscape size (size %s)" % size2)
+        with open(sizes, "a") as handle:
+            handle.write("window %d %d\n" % tuple(size2))
+        if isinstance(body.get("window"), int):
+            client.tool("close_window", {"window": body.get("window")})
 finally:
     client.close()
 sys.exit(1 if fails else 0)
