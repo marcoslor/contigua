@@ -196,7 +196,20 @@ internal class AndroidInjector(
         }
     }
 
-    override fun keyStrokes(s: String): List<KeyStroke>? = TODO("B5")
+    /**
+     * `ui.type`'s keys (MCP-109): the events `KeyCharacterMap.VIRTUAL_KEYBOARD`
+     * makes for [s], or null when a character has none. A map that answers a
+     * character with `KEYCODE_UNKNOWN` instead of null has no key for it
+     * either. [text] and its clipboard paste are not this path (MCP-110).
+     */
+    override fun keyStrokes(s: String): List<KeyStroke>? {
+        if (s.isEmpty()) return emptyList()
+        val events = runCatching {
+            KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD).getEvents(s.toCharArray())
+        }.getOrNull() ?: return null
+        if (events.any { it.keyCode == KeyEvent.KEYCODE_UNKNOWN }) return null
+        return events.map { KeyStroke(it.action, it.keyCode, it.metaState) }
+    }
 
     private fun typeAscii(displayId: Int, s: String) {
         val kcm = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD)

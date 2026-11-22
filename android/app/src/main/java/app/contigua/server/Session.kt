@@ -1734,6 +1734,7 @@ class Session(
                 "ui.tree" -> onUiTree(obj)
                 "ui.settle" -> onUiSettle(obj)
                 "ui.press" -> onUiPress(obj)
+                "ui.type" -> onUiType(obj)
                 "nav" -> onNav(obj, frame)
                 "text" -> onText(obj, frame)
                 "clip.set" -> onClipSet(obj)
@@ -2230,6 +2231,101 @@ class Session(
         state.lastEventTime = up
         injector.touch(state.displayId, Frames.TOUCH_UP, 0, nx, ny, size, down, up)
         if (state.content != WindowContent.Phone) power.onInput(state.displayId)
+    }
+
+    /**
+     * `ui.type` (docs/PROTOCOL.md "UI tree" item 10, MCP-109/MCP-110): type
+     * into the focused field of the stream's display as KEY events or by
+     * setting its text, never through the clipboard. The source finds the
+     * field and performs the accessibility actions off the reader thread;
+     * keys go through the same injector and timestamps as the Mac's KEY
+     * frames, and the reply follows the last key or action. The log line
+     * carries the stream, the outcome, `via`, the character count and the
+     * duration, never the text.
+     */
+    private fun onUiType(obj: Map<String, Any?>) {
+        val seq = Json.int(obj["seq"])
+        val stream = Json.int(obj["stream"]) ?: run {
+            sendUiType(0, seq, UiTree.failure(UiCodes.NO_WINDOW, "There is no window to type in."))
+            return
+        }
+        val state = synchronized(streams) { streams[stream] }
+        if (state == null) {
+            sendUiType(stream, seq, UiTree.failure(UiCodes.NO_WINDOW, "There is no window $stream."))
+            return
+        }
+        val text = obj["text"] as? String ?: ""
+        val characters = text.codePointCount(0, text.length)
+        if (characters == 0 || characters > TextEntry.MAX_CHARACTERS) {
+            log("ui.type stream=$stream failed=${UiCodes.FAILED} characters=$characters")
+            sendUiType(stream, seq, UiTree.failure(
+                UiCodes.FAILED, "ui.type takes 1 to ${TextEntry.MAX_CHARACTERS} characters.",
+            ))
+            return
+        }
+        val clear = obj["clear"] == true
+        val submit = obj["submit"] == true
+        val source = uiTree as? UiTypeSource
+        if (source == null) {
+            sendUiType(stream, seq, UiTree.failure(UiCodes.FAILED, "This phone cannot type into a field."))
+            return
+        }
+        if (!uiBusy.compareAndSet(false, true)) {
+            sendUiType(stream, seq, UiTree.failure(UiCodes.BUSY, "The last accessibility request is still running."))
+            return
+        }
+        val keys = object : TextEntry.Keys {
+            override fun strokes(text: String): List<KeyStroke>? = injector.keyStrokes(text)
+            override fun press(strokes: List<KeyStroke>) = injectStrokes(state, strokes)
+        }
+        val started = now()
+        Thread({
+            try {
+                val outcome = try {
+                    source.type(state.displayId, stream, text, clear, submit, keys)
+                } catch (t: Throwable) {
+                    TextEntry.Outcome.Refused(UiCodes.FAILED, TextEntry.sentence(UiCodes.FAILED, stream))
+                }
+                when (outcome) {
+                    is TextEntry.Outcome.Typed -> {
+                        log("ui.type stream=$stream typed via=${outcome.via} entry=${outcome.entry} characters=$characters took_ms=${now() - started}")
+                        sendUiType(stream, seq, linkedMapOf(
+                            "ok" to true, "entry" to outcome.entry, "via" to outcome.via, "characters" to characters,
+                        ))
+                    }
+                    is TextEntry.Outcome.Refused -> {
+                        log("ui.type stream=$stream failed=${outcome.code} characters=$characters took_ms=${now() - started}")
+                        sendUiType(stream, seq, UiTree.failure(outcome.code, outcome.sentence))
+                    }
+                }
+            } finally {
+                uiBusy.set(false)
+            }
+        }, "ui-type-$stream").start()
+    }
+
+    /**
+     * `ui.type`'s keys, stamped as [handleInput] stamps the Mac's KEY frames:
+     * each down starts its key's down time, event times never go backwards.
+     */
+    private fun injectStrokes(state: StreamState, strokes: List<KeyStroke>) {
+        for (stroke in strokes) {
+            val t = bumpTime(state)
+            val downTime = if (stroke.action == Frames.ACTION_DOWN) t else state.keyDownTime
+            if (stroke.action == Frames.ACTION_DOWN) state.keyDownTime = t
+            injector.key(state.displayId, stroke.action, stroke.keycode, stroke.metaState, downTime, t)
+        }
+        if (strokes.isNotEmpty() && state.content != WindowContent.Phone) power.onInput(state.displayId)
+    }
+
+    /** One `ui.type` reply: the body, then what every reply carries. */
+    private fun sendUiType(stream: Int, seq: Int?, body: Map<String, Any?>) {
+        val reply = LinkedHashMap<String, Any?>()
+        reply["t"] = "ui.type"
+        reply["stream"] = stream
+        if (seq != null) reply["seq"] = seq
+        reply.putAll(body)
+        sendJson(reply)
     }
 
     /** One `ui.press` reply: the body, then what every reply carries. */

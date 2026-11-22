@@ -1711,7 +1711,9 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
     `{"t":"ui.type","stream":N,"seq":S,"ok":false,"code":C,"message":"…"}` with `no_field`
     (set text needed and no node has input focus), `not_supported` (the node offers no
     `ACTION_SET_TEXT`, or is a password field holding text without `clear`), `no_window`,
-    `busy` or `failed` (the app refused the action). The phone logs the stream, the outcome,
+    `busy` or `failed` (the app refused the action, the phone could not read the focused field,
+    or `text` is missing or outside 1–2000 characters). Characters are counted as code points. The
+    phone logs the stream, the outcome,
     `via`, the character count and the duration, never the text.
 
 ## Secure screens
