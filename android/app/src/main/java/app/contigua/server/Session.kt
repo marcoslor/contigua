@@ -2309,10 +2309,14 @@ class Session(
      * each down starts its key's down time, event times never go backwards.
      */
     private fun injectStrokes(state: StreamState, strokes: List<KeyStroke>) {
+        // The agent's own down times, per key (the key map nests SHIFT around a
+        // letter): the stream's keyDownTime belongs to the person's KEY frames
+        // on the reader thread, so this thread never writes it.
+        val downs = HashMap<Int, Long>()
         for (stroke in strokes) {
             val t = bumpTime(state)
-            val downTime = if (stroke.action == Frames.ACTION_DOWN) t else state.keyDownTime
-            if (stroke.action == Frames.ACTION_DOWN) state.keyDownTime = t
+            val downTime = if (stroke.action == Frames.ACTION_DOWN) t.also { downs[stroke.keycode] = t }
+                else downs.remove(stroke.keycode) ?: t
             injector.key(state.displayId, stroke.action, stroke.keycode, stroke.metaState, downTime, t)
         }
         if (strokes.isNotEmpty() && state.content != WindowContent.Phone) power.onInput(state.displayId)
@@ -3757,10 +3761,11 @@ class Session(
     }
 
     /** Monotonic, strictly increasing event time; keeps a fresh downTime per gesture. */
-    private fun bumpTime(state: StreamState): Long {
+    /** The reader and the ui-type thread both stamp events: one at a time. */
+    private fun bumpTime(state: StreamState): Long = synchronized(state) {
         val t = maxOf(now(), state.lastEventTime + 1)
         state.lastEventTime = t
-        return t
+        t
     }
 
     // ------------------------------------------------------------------
