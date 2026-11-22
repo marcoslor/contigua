@@ -11,6 +11,8 @@
 # 3. ui.press (item 8, MCP-86/89): k 2 presses Continue at its `at` (one touch
 #    down/up); off-screen k 4 and unknown k 999 press nothing; --tree-variant's
 #    covered k 6 is `covered` by 7; --relabel's k 2 is `changed`, no touch.
+# 4. ui.type (item 10, MCP-109/110): "café" is set text, "milk 42" keys, and
+#    with clear set text that replaces; the `type` event counts and never the text; --type-refuse refuses.
 # Exits 0 only if every check passed.
 set -u
 
@@ -176,6 +178,57 @@ touches = [e for e in map(json.loads, open(sys.argv[2])) if e.get("kind") == "to
 assert reply["ok"] is False and reply["code"] == "changed" and reply["now"] == "Continue later", reply
 assert touches == [], touches
 print("  k 2 changed, now %r, touches 0" % reply["now"])
+PY
+
+# types <name> <flags…> -- <deckctl ui-type args…>: one fake phone, its events file.
+types() {
+    local name="$1"; shift
+    local flags=()
+    while [ "$1" != "--" ]; do flags+=("$1"); shift; done
+    shift
+    start "$name" --events "$WORK/$name-events.jsonl" "${flags[@]+"${flags[@]}"}"
+    "$PY" "$HERE/deckctl.py" --host 127.0.0.1 --port "$PORT" --state "$WORK/$name-deck.json" \
+        --pair ui-type "$@" > "$WORK/$name.jsonl" 2>"$WORK/$name-deck.err" \
+        || die "ui-type ($name) failed: $(cat "$WORK/$name-deck.err")"
+}
+
+note "ui-type: text outside the key map is set, key-map text goes as keys; its log line has counts, never text (MCP-109/110)"
+types type -- --text "café"
+types typekeys -- --text "milk 42"
+types typeclear -- --text "milk 42" --clear
+"$PY" - "$WORK" <<'PY' || die "ui-type assertions failed"
+import json, os, sys
+def run(name):
+    (reply,) = [json.loads(l) for l in open(os.path.join(sys.argv[1], name + ".jsonl")) if l.strip()]
+    events = list(map(json.loads, open(os.path.join(sys.argv[1], name + "-events.jsonl"))))
+    # The `rx` trace records the request as sent (T13's e2e reads it); the `type` line never the text.
+    lines = [e for e in events if e.get("ev") == "type"]
+    assert len(lines) == 1 and set(lines[0]) == {"ev", "stream", "characters", "via", "entry", "ts"}, lines
+    assert (lines[0]["characters"], lines[0]["via"], lines[0]["entry"]) == \
+        (reply["characters"], reply["via"], reply["entry"]), (lines, reply)
+    return reply, len([e for e in events if e.get("last_input") == "type"])
+cafe, cafe_inputs = run("type")
+keys, key_inputs = run("typekeys")
+clear, clear_inputs = run("typeclear")
+assert cafe == {"t": "ui.type", "stream": 1, "seq": 1, "ok": True, "entry": "inserted",
+                "via": "set_text", "characters": 4}, cafe
+assert (keys["via"], keys["entry"], keys["characters"], key_inputs) == ("keys", "inserted", 7, 7), (keys, key_inputs)
+# The fake's field takes set text, so clear sets it whole: one input.
+assert (clear["via"], clear["entry"], clear_inputs) == ("set_text", "replaced", 1), (clear, clear_inputs)
+print("  café %s/%s, milk 42 %s/%s, with clear %s/%s" % (
+    cafe["via"], cafe["entry"], keys["via"], keys["entry"], clear["via"], clear["entry"]))
+PY
+
+note "ui-type --type-refuse not_supported: refused with its code, nothing typed (MCP-109)"
+types typerefuse --type-refuse not_supported -- --text "café"
+"$PY" - "$WORK/typerefuse.jsonl" "$WORK/typerefuse-events.jsonl" <<'PY' || die "ui-type refuse assertions failed"
+import json, sys
+(reply,) = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+events = list(map(json.loads, open(sys.argv[2])))
+assert reply["ok"] is False and reply["code"] == "not_supported" and "clear: true" in reply["message"], reply
+assert [e.get("code") for e in events if e.get("ev") == "type"] == ["not_supported"], events
+assert not [e for e in events if e.get("last_input") == "type"], "a refused type typed"
+print("  refused %s" % reply["code"])
 PY
 
 echo "TREE-KEYS OK"
