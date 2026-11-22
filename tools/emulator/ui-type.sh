@@ -19,6 +19,7 @@
 #      and the phone sent no clip.set during the run; then the person's `text`
 #      path with "é" (the control) does change it (#173, plan T14).
 # A Compose TextField is not covered: neither the image nor the app has one.
+# A step that finds nothing prints the tree's row shapes and goes on.
 # Output is codes, counts and match booleans only; no screen text is printed.
 set -uo pipefail
 
@@ -223,19 +224,22 @@ def main():
     edit = until(lambda: next((n for n in rows(client, deckctl) if n.get("edit") and n.get("at")
                                and not n.get("pwd")), None), 20)
     check(edit is not None, "MCP-109", "the contact editor shows a field (%s)" % (edit or {}).get("role"))
+    copied = False
     if edit is None:
-        return finish(client)
-    k = edit["k"]
-    request(client, deckctl, {"t": "ui.press", "stream": 1, "k": k})
-    settle(client, deckctl)
-    # The person's clip, copied by the app itself: the field's text, all of it.
-    r = type_(client, deckctl, CLIP, clear=True)
-    check(r.get("ok") is True, "MCP-110", "the clip's text typed as keys: %s" % answer(r))
-    key(client, KEYCODE_A, CTRL)
-    key(client, KEYCODE_C, CTRL)
-    drain(client, deckctl, 1.0)
-    CLIPS.clear()  # from here on, the phone's clipboard must not change
-    round_trip(client, deckctl, "MCP-109 EditText", k, keys_first=True)
+        shapes(client, deckctl, "editor")
+    else:
+        k = edit["k"]
+        request(client, deckctl, {"t": "ui.press", "stream": 1, "k": k})
+        settle(client, deckctl)
+        # The person's clip, copied by the app itself: the field's text, all of it.
+        r = type_(client, deckctl, CLIP, clear=True)
+        check(r.get("ok") is True, "MCP-110", "the clip's text typed: %s" % answer(r))
+        key(client, KEYCODE_A, CTRL)
+        key(client, KEYCODE_C, CTRL)
+        drain(client, deckctl, 1.0)
+        CLIPS.clear()  # from here on, the phone's clipboard must not change
+        copied = True
+        round_trip(client, deckctl, "MCP-109 EditText", k, keys_first=True)
 
     # 2. A WebView <input> on a local page.
     shell("am", "start", "-W", "--display", "0", "-a", "android.intent.action.VIEW",
@@ -245,6 +249,8 @@ def main():
     check(web is not None, "MCP-109", "the page's input is a row (%s)" % (web or {}).get("role"))
     if web is not None:
         round_trip(client, deckctl, "MCP-109 WebView", web["k"], keys_first=False)
+    else:
+        shapes(client, deckctl, "input page")
 
     # 3. A canvas that takes keys and no set text.
     shell("am", "start", "-W", "--display", "0", "-a", "android.intent.action.VIEW",
@@ -252,7 +258,9 @@ def main():
     counter = lambda: next((n for n in rows(client, deckctl) if (n.get("text") or "").startswith("keys ")), None)
     shown = until(counter, 25)
     check(shown is not None, "MCP-109", "the canvas page shows its key count")
-    if shown is not None:
+    if shown is None:
+        shapes(client, deckctl, "canvas page")
+    else:
         box = shown["box"]
         size = request(client, deckctl, {"t": "ui.tree", "stream": 1}).get("size") or [1, 1]
         at = ((box[0] + box[2]) / 2.0 / size[0], max(0.0, box[1] - 150) / size[1])
@@ -275,8 +283,12 @@ def main():
     shell("am", "start", "-W", "--display", "0", "-a", "android.intent.action.INSERT",
           "-t", "vnd.android.cursor.dir/contact")
     edit = until(lambda: next((n for n in rows(client, deckctl) if n.get("edit") and n.get("at")
-                               and not n.get("pwd")), None), 20)
-    if edit is not None:
+                               and not n.get("pwd")), None), 20) if copied else None
+    if not copied:
+        line("FAIL", "MCP-110", "no clip was copied in step 1, so the clip check could not run")
+    elif edit is None:
+        line("FAIL", "MCP-110", "the editor showed no field for the paste check")
+    else:
         k = edit["k"]
         request(client, deckctl, {"t": "ui.press", "stream": 1, "k": k})
         settle(client, deckctl)
@@ -308,6 +320,23 @@ def main():
     for l in types:
         line("INFO", "log", l)
     return finish(client)
+
+
+def shapes(client, deckctl, where):
+    """What the display showed when a step found nothing: the tree's answer, the
+    resumed package and each row's role and flags; never a label."""
+    reply = request(client, deckctl, {"t": "ui.tree", "stream": 1})
+    resumed = "?"
+    for l in shell("dumpsys", "activity", "activities").splitlines():
+        if "ResumedActivity" in l and "/" in l:
+            resumed = l.split("/")[0].split()[-1]
+            break
+    line("INFO", "evidence", "%s: tree ok=%s code=%s rows=%d layers=%s resumed=%s" % (
+        where, reply.get("ok"), reply.get("code"), len(reply.get("nodes") or []),
+        [(l.get("type"), bool(l.get("active"))) for l in reply.get("layers") or []], resumed))
+    for n in (reply.get("nodes") or [])[:40]:
+        line("INFO", "evidence", "  %s %s" % (n.get("role"), sorted(f for f in (
+            "click", "edit", "focus", "hint", "pwd", "scroll") if n.get(f))))
 
 
 def finish(client):
