@@ -268,6 +268,10 @@ final class AudioEngine {
         writeStats()
     }
 
+    /// Returns once every call made so far has run. Every call already runs
+    /// on its caller's thread, so there is nothing to wait for (test seam).
+    func waitUntilIdle() {}
+
     func stop() {
         lock.lock()
         pendingPCM.removeAll()
