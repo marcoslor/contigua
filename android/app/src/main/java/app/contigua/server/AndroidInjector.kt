@@ -196,6 +196,8 @@ internal class AndroidInjector(
         }
     }
 
+    override fun keyStrokes(s: String): List<KeyStroke>? = TODO("B5")
+
     private fun typeAscii(displayId: Int, s: String) {
         val kcm = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD)
         for (ch in s) {

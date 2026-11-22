@@ -453,6 +453,7 @@ interface Injector {
     fun hover(displayId: Int, action: Int, nx: Float, ny: Float, size: IntSize)
     fun key(displayId: Int, action: Int, keycode: Int, metaState: Int, downTime: Long, eventTime: Long)
     fun text(displayId: Int, s: String)
+    fun keyStrokes(s: String): List<KeyStroke>?
 }
 
 /** Battery/keep-awake policy. It never keeps the panel on beyond the person's own timeout. */
