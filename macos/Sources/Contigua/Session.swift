@@ -305,11 +305,14 @@ final class Session {
 
     private let queue = DispatchQueue(label: "app.contigua.session")
     private var exporterProvider: (() -> [UInt8]?)?
-    private var eventLoopGroup: EventLoopGroup?
+    /// A group the owner handed in (tests); never shut down by the session.
+    private let injectedGroup: EventLoopGroup?
+    /// The group this connect's dials run on and its lifecycle (PATH-53): a
+    /// close shuts it down only after the last dial started on it has ended.
+    private var dialGroup: DialGroup?
     /// Tests only (#190): runs at the start of every dial, off the session
     /// queue, so a test can hold a dial while the session closes. nil in the app.
     var dialGateForTests: (@Sendable () -> Void)?
-    private var ownsGroup: Bool = false
 
     private var decoder = FrameDecoder()
     /// window.content for each stream, waiting for the VIDEO_CONFIG it precedes (read on the reader).
@@ -510,7 +513,7 @@ final class Session {
         self.pinnedPhone = pinnedPhone
         self.phonePinStore = pinStore
         self.pinSessionEstablished = onPinEstablished
-        self.eventLoopGroup = group
+        self.injectedGroup = group
         self.connectTimeout = connectTimeout
         self.pairingTimeout = pairingTimeout
 
@@ -567,11 +570,10 @@ final class Session {
         }
         pairingAttempt = pinned == nil && pairingPolicy == .allowed
 
-        if eventLoopGroup == nil {
-            eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-            ownsGroup = true
+        if dialGroup == nil {
+            dialGroup = injectedGroup.map { DialGroup(group: $0, owned: false) }
+                ?? DialGroup(group: MultiThreadedEventLoopGroup(numberOfThreads: 1), owned: true)
         }
-        let group = eventLoopGroup!
         let learned = SessionLockedBox(value: "")
         let learnedCert = SessionLockedBox<NIOSSLCertificate?>(value: nil)
         learnedPinProvider = { learned.get() }
@@ -613,6 +615,9 @@ final class Session {
     private func startDial(index: Int, provider: PathProvider, join: Bool, id: String,
                            probe: Bool = false, timeout: TimeInterval? = nil) {
         guard let endpoint = provider.endpoint else { return }
+        // PATH-53: a dial counts against the group before it leaves the queue;
+        // a group that is closing takes no new dial.
+        guard let dialGroup, dialGroup.dialStarted() else { return }
         attempts[id] = Attempt(id: id, endpoint: endpoint,
                                dialedPinned: dialPin.isPinned,
                                providerIndex: index,
@@ -628,29 +633,38 @@ final class Session {
         // connect keeps the general one.
         let deadline = timeout ?? (probe ? PathProbeMachine.connectTimeout : connectTimeout)
         DispatchQueue.main.asyncAfter(deadline: .now() + deadline, execute: timer)  // gcd: a deadline timer hops back to the session queue
-        let group = eventLoopGroup!
         let learned = dialLearned
         let learnedCert = dialLearnedCert
         let pinned = dialPin.record
         let gate = dialGateForTests
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in  // gcd: the TLS handshake blocks; one thread per path is the point
             gate?()
-            self?.dial(id: id, endpoint: endpoint, pinned: pinned, group: group,
-                       learned: learned, learnedCert: learnedCert)
+            guard let self else { dialGroup.dialEnded(); return }
+            self.dial(id: id, endpoint: endpoint, pinned: pinned, dialGroup: dialGroup,
+                      learned: learned, learnedCert: learnedCert)
         }
     }
 
     /// One provider's dial, off the session queue: resolution and the TLS
     /// handshake block, and the providers must run at the same time (§9.1).
     private func dial(id: String, endpoint: Endpoint, pinned: PinnedPhoneV2?,
-                      group: EventLoopGroup,
+                      dialGroup: DialGroup,
                       learned: SessionLockedBox<String>,
                       learnedCert: SessionLockedBox<NIOSSLCertificate?>) {
+        // PATH-53: the dial ends on the session queue after its last use of
+        // the group (install closes a channel nobody wants on that loop), so
+        // a close that came first shuts the group down only then.
+        func finish(_ body: @escaping (Session?) -> Void) {
+            queue.async { [weak self] in
+                body(self)
+                dialGroup.dialEnded()
+            }
+        }
         guard let target = resolveTarget(endpoint) else {
-            queue.async { [weak self] in self?.attemptFailed(id, reason: "resolve") }
+            finish { $0?.attemptFailed(id, reason: "resolve") }
             return
         }
-        let connector = TlsConnectorV2(identity: identity, pinnedPhone: pinned, group: group)
+        let connector = TlsConnectorV2(identity: identity, pinnedPhone: pinned, group: dialGroup.group)
         do {
             let result = try connector.connect(host: target.host, port: target.port,
                 net: netStrategy,
@@ -666,8 +680,9 @@ final class Session {
                     guard let self, writable else { return }
                     self.queue.async { self.pathLayer.writable(id) }
                 })
-            queue.async { [weak self] in
-                self?.install(id, result: result, target: target)
+            finish { session in
+                guard let session else { result.channel.close(promise: nil); return }
+                session.install(id, result: result, target: target)
             }
         } catch let error as TlsV2Error {
             let reason: String
@@ -676,7 +691,7 @@ final class Session {
             case .noPin: reason = "no-pin"
             default: reason = "tls"
             }
-            queue.async { [weak self] in self?.attemptFailed(id, reason: reason) }
+            finish { $0?.attemptFailed(id, reason: reason) }
         } catch {
             let message = String(describing: error)
             // A mid-handshake verify failure IS the stale-pin refusal (§7).
@@ -693,7 +708,7 @@ final class Session {
             } else {
                 reason = "tls"
             }
-            queue.async { [weak self] in self?.attemptFailed(id, reason: reason) }
+            finish { $0?.attemptFailed(id, reason: reason) }
         }
     }
 
@@ -1282,11 +1297,10 @@ final class Session {
     /// Runs on `queue`: the part of close() that can block.
     private func closeBlocking() {
         closeChannel()
-        if ownsGroup {
-            try? eventLoopGroup?.syncShutdownGracefully()
-            eventLoopGroup = nil
-            ownsGroup = false
-        }
+        // PATH-53: shuts the group down now when no dial runs on it, else
+        // when the last one ends; a later start() dials on a new group.
+        dialGroup?.close()
+        dialGroup = nil
     }
 
     private func closeChannel() {
