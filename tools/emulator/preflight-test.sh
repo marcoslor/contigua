@@ -7,7 +7,7 @@ cd "$(dirname "$0")/../.." || exit 1
 # shellcheck source=tools/emulator/lib.sh
 . tools/emulator/lib.sh
 
-tmp="$(mktemp -t pd-ledger)"
+tmp="$(mktemp "${TMPDIR:-/tmp}/pd-ledger.XXXXXX")"
 trap 'rm -f "$tmp"' EXIT
 cat > "$tmp" <<'LEDGER'
 10-20 03:48 files-s4 emulator 68519

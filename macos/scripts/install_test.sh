@@ -8,7 +8,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-TMP="$(mktemp -d -t contigua-install-test)"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/contigua-install-test.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 FAILS=0
 pass() { echo "PASS $*"; }
