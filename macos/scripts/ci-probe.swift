@@ -38,8 +38,15 @@ func run(_ path: String, _ args: [String]) -> Int32 {
     return p.terminationStatus
 }
 
+/// Runs the app's event loop for `seconds`: window-server events reach a
+/// window only through NSApp's queue, which a bare run loop never drains.
 func pump(_ seconds: TimeInterval) {
-    RunLoop.current.run(until: Date().addingTimeInterval(seconds))
+    let until = Date().addingTimeInterval(seconds)
+    while Date() < until {
+        if let event = NSApp.nextEvent(matching: .any, until: until, inMode: .default, dequeue: true) {
+            NSApp.sendEvent(event)
+        }
+    }
 }
 
 /// Fraction of sampled pixels that are green in the PNG at `path`.
@@ -60,6 +67,7 @@ func greenFraction(_ path: String) -> Double? {
 
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
+app.finishLaunching()
 
 guard let screen = NSScreen.main else {
     print("INFO no main screen")
