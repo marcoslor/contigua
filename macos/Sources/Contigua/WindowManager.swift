@@ -16,6 +16,11 @@ final class WindowManager {
     /// Streams whose first frame has reached this window (the opening cover's
     /// end); touched on the session queue under `lock`.
     private var firstFrameNoted: Set<UInt32> = []
+    /// Streams the phone answered `window.opened` for (MCP-41).
+    private var phoneOpened: Set<UInt32> = []
+    /// An MCP open waiting on its window (MCP-41): one per call, by stream.
+    private var openWatches: [UInt32: [(id: Int, client: MCPClientID?, feed: (MCPActMachine.Event) -> Void)]] = [:]
+    private var nextOpenWatch = 0
     var phone: PhoneInfo?
     /// The active phone's display name (its nickname, else its own name):
     /// app and link window titles carry it — "WhatsApp (Nicky)".
@@ -941,6 +946,43 @@ final class WindowManager {
     /// stream's last one, after `remove`) notes nothing: it took the id's one
     /// note before, and the next window opened on that id kept its opening
     /// cover for good.
+    /// MCP-41: an MCP open hears its window's `window.opened`, first frame,
+    /// refusal and close; what already happened is fed at once. Returns the
+    /// id `unwatchOpen` takes.
+    func watchOpen(stream: UInt32, client: MCPClientID?,
+                   _ feed: @escaping (MCPActMachine.Event) -> Void) -> Int {
+        nextOpenWatch += 1
+        let id = nextOpenWatch
+        openWatches[stream, default: []].append((id, client, feed))
+        lock.lock()
+        let framed = firstFrameNoted.contains(stream)
+        lock.unlock()
+        let live = controller(for: stream).map { $0.mcpLifecycle != .opening } ?? false
+        // A window that is already showing its picture has had its open.
+        if phoneOpened.contains(stream) || live { feed(.windowOpened) }
+        if framed || live { feed(.firstFrame) }
+        return id
+    }
+
+    func unwatchOpen(stream: UInt32, id: Int) {
+        openWatches[stream]?.removeAll { $0.id == id }
+        if openWatches[stream]?.isEmpty == true { openWatches[stream] = nil }
+    }
+
+    private func feedOpenWatches(_ stream: UInt32, _ event: (MCPClientID?) -> MCPActMachine.Event) {
+        for watch in openWatches[stream] ?? [] { watch.feed(event(watch.client)) }
+    }
+
+    /// The window went: each watching call hears why, as its client sees it.
+    private func openWatchesClosed(_ stream: UInt32) {
+        let now = ProcessInfo.processInfo.systemUptime
+        feedOpenWatches(stream) { client in
+            let record = self.ledger.closeRecord(stream, asker: client, now: now)
+            return .windowClosed(reason: record?.reason ?? "closed", by: record?.closedBy ?? "person")
+        }
+        phoneOpened.remove(stream)
+    }
+
     func markFirstFrame(stream: UInt32, hasWindow: Bool) -> Bool {
         guard hasWindow else { return false }
         lock.lock()
@@ -954,6 +996,7 @@ final class WindowManager {
         firstFrameNoted.remove(stream)
         frontOrder.removeAll { $0 == stream }
         lock.unlock()
+        if removed { openWatchesClosed(stream) }
         if removed { onStreamClosed?(stream) }
         if removed { syncStatsSubscription() }
         refreshTitles()
@@ -974,6 +1017,7 @@ final class WindowManager {
         frontOrder.removeAll()
         lock.unlock()
         for controller in controllers {
+            openWatchesClosed(controller.stream)
             onStreamClosed?(controller.stream)
             controller.closeFromRemote()
         }
@@ -1180,6 +1224,7 @@ final class WindowManager {
                 // where the window's cover and the menus live.
                 DispatchQueue.main.async { [weak self, weak controller] in  // gcd: off the video queue
                     controller?.noteFirstFrame()
+                    self?.feedOpenWatches(stream) { _ in .firstFrame }  // MCP-41
                     // The New Window items say "Opening on your phone…" until
                     // this moment: the menus and the Dock shim read it now
                     // (WIN-27).
@@ -1260,6 +1305,8 @@ final class WindowManager {
             Log.video.info("stream \(stream, privacy: .public) resize ack \(width, privacy: .public)x\(height, privacy: .public) dpi=\(dpi, privacy: .public) (\(outcome, privacy: .private)) in \(ms, privacy: .public) ms")
             controller?.resizeSettled(ResizeRequest(w: width, h: height, dpi: dpi))
         case .windowOpened(let stream, _, _, _, let started):
+            phoneOpened.insert(stream)
+            feedOpenWatches(stream) { _ in .windowOpened }  // MCP-41
             if started == .fresh {
                 (controller(for: stream) as? HandoffWindowController)?.showFreshNotice()
             }
@@ -1270,6 +1317,8 @@ final class WindowManager {
         case .maxWindows(let cap):
             setMaxWindows(cap)
         case .phoneError(let code, _, let stream):
+            // MCP-41/43: an MCP open hears the phone's refusal of its window.
+            if stream != 0, code != "no_stream" { feedOpenWatches(stream) { _ in .openFailed(code) } }
             if code == "cannot_adopt" {
                 // WIN-46: the phone could not move that task. That window goes
                 // quietly — no launcher notice, and the task stays where it is.

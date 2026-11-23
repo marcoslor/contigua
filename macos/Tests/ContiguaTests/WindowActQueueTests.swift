@@ -51,6 +51,18 @@ final class FakeActEnvironment: MCPActEnvironment {
 
     func readTree(until: ContinuousClock.Instant) async -> MCPTreeResult { .ok("{}") }
 
+    /// Opening (T6): the open's events, fed when the runner starts watching
+    /// or later through `openFeed`.
+    var openEvents: [MCPActMachine.Event] = []
+    var openFeed: (@MainActor (MCPActMachine.Event) -> Void)?
+    var stoppedWatching = false
+    func watchOpen(_ feed: @escaping @MainActor (MCPActMachine.Event) -> Void) {
+        log.append("\(name).watch")
+        openFeed = feed
+        for event in openEvents { feed(event) }
+    }
+    func stopWatchingOpen() { stoppedWatching = true }
+
     func release() {
         settleGate?.resume()
         settleGate = nil
@@ -287,5 +299,57 @@ final class WindowActQueueTests: XCTestCase {
         _ = await first.value
         _ = await probe.value
         XCTAssertTrue(probed)
+    }
+
+    // MARK: Opening (T6, MCP-41)
+
+    func testAnOpenThatIsAlreadyLiveSettlesAndReads_MCP41() async {
+        let env = FakeActEnvironment(name: "O")
+        env.openEvents = [.windowOpened, .firstFrame]
+        let outcome = await MCPActRunner.run(MCPActMachine(opening: .settle, observe: .tree), window: 5,
+                                             queue: nil, deadline: .seconds(5), env: env)
+        XCTAssertEqual(outcome, .answer(MCPActMachine.Answer(
+            settle: MCPActMachine.Settle(state: "settled", waitedMs: 300), tree: "{}")))
+        XCTAssertEqual(env.log, ["O.watch", "O.settle"])
+        XCTAssertTrue(env.stoppedWatching)
+    }
+
+    func testAnOpenWaitsForItsFirstFrame_MCP41() async {
+        let env = FakeActEnvironment(name: "O")
+        env.openEvents = [.windowOpened]
+        let call = Task { await MCPActRunner.run(MCPActMachine(opening: .settle, observe: .none), window: 5,
+                                                 queue: nil, deadline: .seconds(5), env: env) }
+        await untilTrue { env.openFeed != nil }
+        XCTAssertEqual(env.log, ["O.watch"], "no settle before the first frame")
+        env.openFeed?(.firstFrame)
+        let outcome = await call.value
+        XCTAssertEqual(outcome, .answer(MCPActMachine.Answer(settle: MCPActMachine.Settle(state: "settled", waitedMs: 300))))
+        XCTAssertEqual(env.log, ["O.watch", "O.settle"])
+    }
+
+    func testAnOpenThePhoneRefusedFails_MCP43() async {
+        let env = FakeActEnvironment(name: "O")
+        env.openEvents = [.openFailed("launch_failed")]
+        let outcome = await MCPActRunner.run(MCPActMachine(opening: .settle, observe: .tree), window: 5,
+                                             queue: nil, deadline: .seconds(5), env: env)
+        XCTAssertEqual(outcome, .fail("launch_failed"))
+        XCTAssertEqual(env.log, ["O.watch"])
+    }
+
+    func testAnOpenWhoseWindowClosesFailsNoWindow_MCP41() async {
+        let env = FakeActEnvironment(name: "O")
+        env.openEvents = [.windowOpened, .windowClosed(reason: "app_exited", by: "phone")]
+        let outcome = await MCPActRunner.run(MCPActMachine(opening: .settle, observe: .tree), window: 5,
+                                             queue: nil, deadline: .seconds(5), env: env)
+        XCTAssertEqual(outcome, .fail("no_window"))
+    }
+
+    func testTheDeadlineInOpeningAnswersNotReady_MCP41() async {
+        let env = FakeActEnvironment(name: "O")
+        let outcome = await MCPActRunner.run(MCPActMachine(opening: .settle, observe: .tree), window: 5,
+                                             queue: nil, deadline: .milliseconds(100), env: env)
+        XCTAssertEqual(outcome, .answer(MCPActMachine.Answer(settle: MCPActMachine.Settle(state: "not_ready"),
+                                                             state: "opening")))
+        XCTAssertTrue(env.stoppedWatching)
     }
 }
