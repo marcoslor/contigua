@@ -322,6 +322,27 @@ final class MCPToolHostTests: XCTestCase {
         XCTAssertTrue(answer["locked"] is NSNull, "no phone: locked must be null, got \(String(describing: answer["locked"]))")
     }
 
+    /// #266 item 5: a phone that answers a `wait`'s read `busy` reaches the
+    /// runner through the real mapping as `failed`, which ends the wait at
+    /// once with `failed`: no retry, no `busy` code ([MCP-97], MCP-6, MCP-70).
+    @MainActor
+    func testABusyPhoneEndsAWaitWithFailedThroughTheRealMapping_MCP97() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        let window = try await fixture.liveWindow()
+        fixture.treeFailure = "busy"
+        let started = ContinuousClock.now
+        let (answer, _) = await fixture.call("wait", ["window": Int(window.stream), "text": "Continue",
+                                                      "timeoutMs": 3000])
+        XCTAssertLessThan(ContinuousClock.now - started, .milliseconds(2500), "the wait polled on after the failure")
+        XCTAssertEqual(answer["isError"] as? Bool, true, "a busy read must end the wait: \(answer)")
+        let text = try XCTUnwrap(((answer["content"] as? [[String: Any]])?.first)?["text"] as? String)
+        let error = try XCTUnwrap((try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])?["error"]
+                                  as? [String: Any])
+        XCTAssertEqual(error["code"] as? String, "failed")
+        XCTAssertEqual(fixture.sent("ui.tree").count, 1, "one read, no retry: \(fixture.sentTypes())")
+    }
+
     // MARK: type_text goes through ui.type (plan T13)
 
     /// `type_text {window, text: "café", clear: true, submit: true}` goes to
@@ -410,15 +431,23 @@ private final class TypeTextFixture {
             guard frame.messageType == .json,
                   let message = JSONFrame.decode(payload: frame.payload) else { return }
             self?.record(message)
-            Self.answer(message, on: connection)
+            Self.answer(message, on: connection, treeFailure: self?.treeFailure)
         }
     }
+
+    /// When set, the fake answers every `ui.tree` with this failure code.
+    var treeFailure: String? {
+        get { lock.lock(); defer { lock.unlock() }; return failure }
+        set { lock.lock(); failure = newValue; lock.unlock() }
+    }
+    nonisolated(unsafe) private var failure: String?
 
     nonisolated private func record(_ message: JSONMessage) {
         lock.lock(); received.append(message); lock.unlock()
     }
 
-    nonisolated private static func answer(_ message: JSONMessage, on connection: FakeServer.Connection) {
+    nonisolated private static func answer(_ message: JSONMessage, on connection: FakeServer.Connection,
+                                           treeFailure: String?) {
         guard let stream = message.int("stream"), let seq = message.int("seq") else { return }
         switch message.t {
         case "ui.type":
@@ -429,6 +458,9 @@ private final class TypeTextFixture {
         case "ui.settle":
             connection.sendJSON(["t": "ui.settle", "stream": stream, "seq": seq, "ok": true,
                                  "settled": true, "waitedMs": 300, "events": 0])
+        case "ui.tree" where treeFailure != nil:
+            connection.sendJSON(["t": "ui.tree", "stream": stream, "seq": seq, "ok": false,
+                                 "code": treeFailure ?? "failed", "message": "The display is busy."])
         case "ui.tree":
             connection.sendJSON(["t": "ui.tree", "stream": stream, "seq": seq, "ok": true,
                                  "displayId": 2, "size": [1080, 2340], "layers": [], "nodes": []])
