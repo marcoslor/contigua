@@ -1,7 +1,8 @@
 // The app in front on the phone (docs/PROTOCOL.md "Foreground app", PANEL-26).
 //
 // A pull, not a watch: the Mac asks `task.front` only while the card is open —
-// once when it opens and at most once every 2 s after that — and the phone
+// once when it opens and again 2 s after the last request, the card's or an
+// MCP read's (the shared budget, FrontReadMachine) — and the phone
 // reads its own task list once per request. The state is one small machine so
 // a late reply cannot overwrite a newer answer, and the panel shows the row
 // only while the machine knows a package; `pkg: null` (home, our app, SystemUI)

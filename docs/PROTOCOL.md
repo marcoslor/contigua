@@ -1496,7 +1496,7 @@ The panel's "Open <App> on Mac" row names the app in front without opening a str
 2. The package is the only payload: no label, title or activity. The Mac resolves the app's
    name and icon from the `apps` list it already has and logs only `front: present|none`,
    never the package.
-3. The Mac asks once when the card opens and at most once every 2 s while it stays open, and
+3. The Mac asks once when the card opens and again 2 s after the last request while it stays open, and
    once per MCP `phone_status` call (docs/specs/mcp.md MCP-32) within the same 2 s budget:
    a request less than 2 s after the last one, from either, reuses that answer. It asks at
    no other time (a Mac-side rule; the phone is unchanged). A reply whose `seq` is not the newest request is
