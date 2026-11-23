@@ -270,6 +270,12 @@ final class StreamChromeWindowTests: XCTestCase {
     }
 
     func testAClickIsTheWindowsOwnAndNeverPassesThrough() throws {
+        // The expected line is written for full motion. Under the system's Reduce
+        // Motion (the CI runner has it on) the opening cover skips its fade and
+        // is already hidden, so the test fixes the setting instead of reading it.
+        let motion = Motion.overrideFull
+        Motion.overrideFull = true
+        addTeardownBlock { Motion.overrideFull = motion }
         let manager = makeManager()
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("chrome-\(UUID().uuidString).txt")
         addTeardownBlock { try? FileManager.default.removeItem(at: file) }
