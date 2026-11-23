@@ -37,6 +37,7 @@ PROFILE="${PD_MCPSHAPE_PROFILE:-mcpshape}"
 SUPPORT="$HOME/Library/Application Support/Contigua-$PROFILE"
 APP_PID=""
 TAP_PID=""
+LOGCAT_PID=""
 FAIL=0
 
 ok() { printf 'PASS %s\n' "$*"; }
@@ -89,6 +90,15 @@ cleanup() {
     stop_app
     [ -n "$TAP_PID" ] && kill "$TAP_PID" 2>/dev/null || true
     "$ADB" -s "$SERIAL" forward --remove "tcp:$PORT" >/dev/null 2>&1 || true
+    # The phone's own lines (codes, counts, sizes and durations only), kept
+    # before the emulator goes: a window that answered no size is explained by
+    # its display and encoder lines.
+    if [ -n "$LOGCAT_PID" ]; then
+        kill "$LOGCAT_PID" 2>/dev/null || true
+        say "phone lines (all in $WORK/phone.log):"
+        grep -iE "ContiguaSvc: .*(window|display|stream|video|encod|codec|frame)" "$WORK/phone.log" \
+            | sed -E 's/^ *([0-9.]+) .*ContiguaSvc: /  \1 /' | tail -25
+    fi
     # The only allowed kill: this emulator's own console.
     "$ADB" -s "$SERIAL" emu kill >/dev/null 2>&1 || true
     exit "$trap_rc"
@@ -167,6 +177,10 @@ done
 APP_PID=$!
 wait_for 60 app_connected && ok "the Mac app is connected" || { bad "no welcome"; exit 1; }
 
+"$ADB" -s "$SERIAL" logcat -c >/dev/null 2>&1 || true
+"$ADB" -s "$SERIAL" logcat -v monotonic -s ContiguaSvc:I > "$WORK/phone.log" 2>&1 &
+LOGCAT_PID=$!
+
 "$PYTHON" - "$ROOT/macos/scripts/mcp" "$SHIM" "$PROFILE" "$WORK/sizes" "$ADB" "$SERIAL" <<'PY'
 import re, subprocess, sys, time
 sys.path.insert(0, sys.argv[1])
@@ -179,6 +193,19 @@ def report(good, text):
     global fails
     print(("PASS " if good else "FAIL ") + text)
     fails += 0 if good else 1
+    sys.stdout.flush()
+
+def explain(tag, reply):
+    # What an open answered besides its size: an error's sentence (the Mac's
+    # own, fixed text) or the answer's state, so a [0, 0] says why.
+    body = reply.get("structuredContent") or {}
+    if reply.get("isError"):
+        content = reply.get("content") or [{}]
+        print("INFO %s error: %s" % (tag, str(content[0].get("text", ""))[:160]))
+    else:
+        print("INFO %s opened=%r window=%r size=%r state=%r keys=%s" % (
+            tag, body.get("opened"), body.get("window"), body.get("size"),
+            body.get("state"), sorted(body)))
     sys.stdout.flush()
 
 client = MCP(shim, profile)
@@ -202,6 +229,7 @@ try:
     package = pick[0]["package"]
 
     reply = client.tool("open_app", {"app": package}, timeout=60)
+    explain("open_app", reply)
     body = reply.get("structuredContent") or {}
     size = body.get("size") or [0, 0]
     window = body.get("window")
@@ -243,6 +271,7 @@ try:
     report(bool(other), "the phone has a second app for shape window")
     if other:
         reply = client.tool("open_app", {"app": other[0]["package"], "shape": "window"}, timeout=60)
+        explain("open_app shape window", reply)
         body = reply.get("structuredContent") or {}
         size2 = body.get("size") or [0, 0]
         report(not reply.get("isError") and body.get("opened") == "new" and size2[0] > size2[1] > 0,
