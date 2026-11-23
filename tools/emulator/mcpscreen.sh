@@ -170,6 +170,9 @@ if [ $? -ne 0 ]; then tail -30 "$WORK/start.log"; bad "start.sh --no-build faile
 ok "booted the real server"
 
 rm -rf "$SUPPORT"
+# #218: a fresh run starts from no remembered phone: the profile's defaults
+# (its clientId, remembered phone and cached address) go with its keys.
+defaults delete "app.contigua.mac.$PROFILE" >/dev/null 2>&1 || true
 mkdir -p "$SUPPORT"
 PAIRED=0
 for attempt in 1 2; do
@@ -295,9 +298,10 @@ try:
     if seven is None:
         sys.exit(1)
     tapped = client.text("tap", {"window": calc_window, "ref": seven["ref"]})
-    report(tapped.get("ok") is True and "frame" in tapped and "state" in tapped,
-           "the tap by ref answers ok with state=%s frame.seq=%s"
-           % (tapped.get("state"), (tapped.get("frame") or {}).get("seq")))
+    # MCP-80: the act envelope has no `ok`; `did` names the press, `state` the window.
+    report("ok" not in tapped and "did" in tapped and "state" in tapped,
+           "the tap by ref answers the act envelope with state=%s settle=%s"
+           % (tapped.get("state"), (tapped.get("settle") or {}).get("state")))
     time.sleep(0.7)
     after, path1 = shot(client, calc_window, "after")
     frame = after.get("frame") or {}

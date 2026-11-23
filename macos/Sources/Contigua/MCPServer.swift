@@ -48,6 +48,8 @@ final class MCPSocketServer {
 
     /// Called on the main actor whenever the accepted-client count changes.
     var onClientCountChanged: ((Int) -> Void)?
+    /// A connection closed: its queued and running calls end (MCP-84).
+    var onClientClosed: ((MCPClientID) -> Void)?
 
     private(set) var clientCount = 0 {
         didSet { if clientCount != oldValue { onClientCountChanged?(clientCount) } }
@@ -289,6 +291,7 @@ final class MCPSocketServer {
     /// Cancel a client's read source and close its fd after any queued write, so
     /// a reply already being written is flushed before the socket goes away.
     private func closeClient(_ client: Client) {
+        onClientClosed?(client.id)
         client.source.cancel()
         queue.async { close(client.fd) }
     }

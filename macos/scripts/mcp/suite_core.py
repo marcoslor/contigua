@@ -64,6 +64,8 @@ def suite(args):
         report(bool(settings) and settings[0].get("label") == "Settings",
                "MCP list_apps lists Settings (com.android.settings)")
 
+        # Only this suite's opens count: an earlier suite (act) opened its own.
+        opens_since = time.time()
         opened = client.text("open_app", {"app": "com.android.settings"})
         window = opened.get("window")
         report(isinstance(window, int) and opened.get("package") == "com.android.settings",
@@ -88,7 +90,8 @@ def suite(args):
                     continue
                 msg = event.get("msg") or {}
                 if (event.get("ev") == "rx" and msg.get("t") == "window.open"
-                        and msg.get("pkg") == "com.android.settings"):
+                        and msg.get("pkg") == "com.android.settings"
+                        and event.get("ts", 0) >= opens_since):
                     opens += 1
         except OSError:
             opens = -1
@@ -136,15 +139,19 @@ def suite(args):
         # A ref names an element: tapping it lands on that element's point, the
         # late-bound way an agent should press instead of guessing coordinates.
         ref_point = (button or {}).get("at") or [0, 0]
-        by_ref = client.text("tap", {"window": window, "ref": (button or {}).get("ref")})
-        report(abs((by_ref.get("x") or -1) - ref_point[0]) < 1e-6
-               and abs((by_ref.get("y") or -1) - ref_point[1]) < 1e-6,
+        # No wait and no observe: a tree read after the tap would replace the
+        # refs the off-screen and stale checks below use (S1).
+        by_ref = client.text("tap", {"window": window, "ref": (button or {}).get("ref"),
+                                     "wait": "none", "observe": "none"})
+        did = by_ref.get("did") or {}
+        pressed = did.get("at") or [-1, -1]
+        report(abs(pressed[0] - ref_point[0]) < 1e-6 and abs(pressed[1] - ref_point[1]) < 1e-6,
                "MCP tap by ref resolves to the element's own point")
-        report(by_ref.get("snapshot") == tree.get("snapshot")
-               and by_ref.get("box") == (button or {}).get("box"),
-               "MCP tap by ref echoes the read it came from and the node's box")
-        report(isinstance(by_ref.get("x"), (int, float))
-               and len(str(by_ref.get("x")).split(".")[-1]) <= 3,
+        report((by_ref.get("on") or {}).get("snapshot") == tree.get("snapshot")
+               and did.get("box") == (button or {}).get("box"),
+               "[MCP-80] MCP tap by ref echoes the read it came from and the node's box")
+        report(isinstance(pressed[0], (int, float))
+               and len(str(pressed[0]).split(".")[-1]) <= 3,
                "MCP tap by ref prints its point to three decimals")
         # [WIN-79 S1] The Mac names refs s<snapshot>e<row> from its own count.
         report(bool(nodes) and all(re.match(r"^s%se\d+$" % tree.get("snapshot"), n.get("ref") or "")

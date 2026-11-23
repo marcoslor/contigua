@@ -181,7 +181,8 @@ Two arguments recur on every tool that acts or opens:
   until the window's accessibility tree has not changed for 300 ms, at most 2 s
   (MCP-81).
 - `observe`: `"tree"` (the default), `"text"` or `"none"`: what screen to
-  return after the settle (MCP-82).
+  return after the settle (MCP-82). `"text"` is taken once T9 ships the text
+  view (MCP-74); until then the argument is `"tree"` or `"none"`.
 
 `open_app` and `send_link` also take `shape`: `"phone"` (the default for a new
 window) or `"window"` (MCP-100, "A window an agent opens" below).
@@ -233,7 +234,7 @@ closed token is listed in the spec row cited.
   - `type_text`: `{action: "type", characters: 2, clear: false, submit: false, entry: "inserted", via: "keys"}` — never the text. `entry`: `inserted` (at the cursor; what was there stays), `replaced` (`clear`), `unknown` (keys sent with no focused field seen); `via`: `keys` or `set_text` (MCP-109).
   - `press_key`: `{action: "key", key: "back"}`; `ignored: true` for `home`/`recents` in an app window, where they send nothing (MCP-94).
 - `on.snapshot` is the tree the ref (or `hit`) came from, null when none was read; `on.frame` the frame `seq` when the input was sent.
-- `settle.state`: `settled`, `still_changing`, `not_waited`, `not_ready`, `unavailable`, `window_closed`, `interrupted` (MCP-81). `waitedMs` is absent for `not_waited`. A `still_changing` carries `reason`: `changes` (the screen kept changing) or `loading` (it went quiet but still showed a spinner or an empty web page, MCP-107).
+- `settle.state`: `settled`, `still_changing`, `not_waited`, `not_ready`, `unavailable`, `window_closed`, `interrupted` (MCP-81). `waitedMs` is absent for `not_waited`. A `still_changing` carries `reason`: `changes` (the screen kept changing) or `loading` (it went quiet but still showed a spinner or an empty web page, MCP-107). A call its deadline ended (MCP-8) says `reason: "deadline"`: `not_waited` when no settle was sent yet, else `still_changing` with `waitedMs` counted from the settle's send. A settle that finds the display gone answers `window_closed`, holding the answer up to 500 ms for the phone's close reason; a window the Mac closed itself answers `closed: {reason: "closed", closedBy: "person" | "agent"}` until T7's ledger names the connection.
 - `state`: `opening`, `live`, `paused`, `stalled`, `offline`, `closed` (MCP-21).
 - `alsoActed?`: `person`, `another_agent` — other input that reached the window during this call (MCP-84).
 - `closed?`: when the window closed during the call, `{reason, closedBy}` (MCP-83); then `state: "closed"`, `settle.state: "window_closed"`, and no `tree`.
@@ -244,7 +245,7 @@ A `press_key back` that ends the app:
 ```json
 {"window": 3, "did": {"action": "key", "key": "back"},
  "on": {"snapshot": 9, "frame": 2210},
- "settle": {"state": "window_closed", "waitedMs": 180},
+ "settle": {"state": "window_closed"},
  "state": "closed", "frame": {"seq": 2214, "ageMs": 170},
  "closed": {"reason": "app_exited", "closedBy": "phone"}}
 ```

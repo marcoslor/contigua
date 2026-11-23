@@ -22,6 +22,7 @@ final class MCPAutomation {
     @ObservationIgnored private var server: MCPSocketServer?
     /// The app side of a tool call; nil while shutting down.
     @ObservationIgnored var hostProvider: (@MainActor () -> MCPToolHost?)?
+    @ObservationIgnored var onClientClosed: (@MainActor (MCPClientID) -> Void)?
 
     /// `forced` is the e2e hook (`--mcp-enable`, test builds only): it turns
     /// the setting on in this profile without asking, then the normal path runs.
@@ -48,6 +49,9 @@ final class MCPAutomation {
         }
         server.onClientCountChanged = { [weak self] count in
             self?.clientCount = count
+        }
+        server.onClientClosed = { [weak self] client in
+            self?.onClientClosed?(client)
         }
         do {
             try server.start()

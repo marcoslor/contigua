@@ -206,6 +206,28 @@ final class UITreeTests: XCTestCase {
 
     // MARK: Refs (S1, F1, F4, F6, F9)
 
+    /// MCP-103: the phone's loading signal reaches the client on the row and
+    /// on the answer; a tree with none says nothing about loading.
+    func testLoadingPassesThrough_MCP103() throws {
+        let raw = phoneReply(extra: [
+            "loading": true,
+            "nodes": [["i": 0, "l": 0, "role": "ProgressBar", "loading": true,
+                       "box": [500, 1000, 580, 1080], "at": [0.5, 0.5]]],
+        ])
+        let tree = try XCTUnwrap(UITree(message: raw)).assigning(snapshot: 1)
+        XCTAssertTrue(tree.loading)
+        XCTAssertTrue(tree.nodes[0].loading)
+        let encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(tree.encoded().utf8)) as? [String: Any])
+        XCTAssertEqual(encoded["loading"] as? Bool, true)
+        let row = try XCTUnwrap((encoded["nodes"] as? [[String: Any]])?.first)
+        XCTAssertEqual(row["loading"] as? Bool, true)
+
+        let quiet = try XCTUnwrap(UITree(message: phoneReply())).assigning(snapshot: 2)
+        let plain = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(quiet.encoded().utf8)) as? [String: Any])
+        XCTAssertNil(plain["loading"])
+        XCTAssertNil((plain["nodes"] as? [[String: Any]])?.first?["loading"])
+    }
+
     func test_WIN79_refsCarryTheirSnapshot() throws {
         let tree = try XCTUnwrap(UITree(message: phoneReply())).assigning(snapshot: 13)
         XCTAssertEqual(tree.snapshot, 13)
@@ -381,12 +403,14 @@ final class UITreeTests: XCTestCase {
 
     @MainActor
     func test_WIN79_twoWindowsReadOneAfterTheOther() async throws {
+        // F6 lives in PhoneReadQueue (MCP-9), which the controller reads through.
         let broker = UITreeBroker()
+        let reads = PhoneReadQueue()
         var seq1 = 0
         var seq2 = 0
-        let first = Task { try await broker.read(stream: 1, timeout: 5, send: { seq1 = $0 }) }
+        let first = Task { try await reads.run { try await broker.read(stream: 1, timeout: 5, send: { seq1 = $0 }) } }
         await waitUntil { seq1 != 0 }
-        let second = Task { try await broker.read(stream: 2, timeout: 5, send: { seq2 = $0 }) }
+        let second = Task { try await reads.run { try await broker.read(stream: 2, timeout: 5, send: { seq2 = $0 }) } }
         // The second read waits for the first instead of racing it (F6).
         try? await Task.sleep(nanoseconds: 20_000_000) // real-time: let a wrongly-racing second read run
         XCTAssertEqual(seq2, 0, "the second window's read must wait")
@@ -415,13 +439,16 @@ final class UITreeTests: XCTestCase {
     @MainActor
     func test_WIN79_disconnectFailsPendingReads() async {
         let broker = UITreeBroker()
+        let reads = PhoneReadQueue()
         var seq = 0
         var queuedSent = false
-        let read = Task { try await broker.read(stream: 3, timeout: 5, send: { seq = $0 }) }
+        let read = Task { try await reads.run { try await broker.read(stream: 3, timeout: 5, send: { seq = $0 }) } }
         await waitUntil { seq != 0 }
         // A second window's read queued behind the first (F6).
-        let queued = Task { try await broker.read(stream: 4, timeout: 5, send: { _ in queuedSent = true }) }
+        let queued = Task { try await reads.run { try await broker.read(stream: 4, timeout: 5, send: { _ in queuedSent = true }) } }
         try? await Task.sleep(nanoseconds: 20_000_000) // real-time: let the queued read join the queue
+        // The controller's session end fails both (failUITrees).
+        reads.fail(UITreeError.notConnected)
         broker.fail(.notConnected)
         for task in [read, queued] {
             do {
