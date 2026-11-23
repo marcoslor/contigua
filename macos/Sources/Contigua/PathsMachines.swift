@@ -40,6 +40,7 @@ extension PathSessionEvent {
         case .pongLost: return "pong-lost"
         case .peerSwitch: return "switch"
         case .probeWelcomed: return "probe"
+        case .standbyAnswered: return "answered"
         case .close: return "close"
         case .graceExpired: return "grace"
         case .drainExpired: return "drain"
@@ -61,6 +62,9 @@ enum PathSessionEvent: Equatable {
     /// A single-path silence probe (PATH-24) welcomed as a second path;
     /// `oldSilent` says whether the current path had still delivered nothing.
     case probeWelcomed(id: String, oldSilent: Bool)
+    /// A `path.pong` arrived on attached path `id` (PATH-54): it proves that
+    /// path carries frames again; only an orphaned session acts on it.
+    case standbyAnswered(id: String)
     case close(reason: String)
     /// The 30 s orphan grace passed (the caller's clock says so).
     case graceExpired
@@ -160,7 +164,7 @@ struct PathSessionMachine {
                 live.remove(id)
                 standby.remove(id)
                 return []
-            case .peerSwitch, .graceExpired, .drainExpired, .probeWelcomed:
+            case .peerSwitch, .graceExpired, .drainExpired, .probeWelcomed, .standbyAnswered:
                 return []
             }
 
@@ -253,6 +257,11 @@ struct PathSessionMachine {
 
             case .graceExpired, .drainExpired:
                 return []
+
+            case .standbyAnswered:
+                // A path carries the session: only the margin rule brings a
+                // standby back (D-2).
+                return []
             }
 
         case .migrating(let from, let to, _):
@@ -339,7 +348,7 @@ struct PathSessionMachine {
                 standby.remove(id)
                 scores[id] = scores[id] ?? -1
                 return [.startPing(path: id), .ranking(.pathUp(id))]
-            case .graceExpired, .probeWelcomed:
+            case .graceExpired, .probeWelcomed, .standbyAnswered:
                 return []
             }
 
@@ -375,6 +384,15 @@ struct PathSessionMachine {
                 return [.ignore]
             case .probeWelcomed:
                 return [.ignore]
+            case .standbyAnswered(let id):
+                // PATH-54 (#248): nothing carries the session, so the first
+                // attached path that answers a ping takes it, with a join's
+                // unplanned-switch semantics (PATH-6/9); it is already pinged.
+                guard live.contains(id) else { return [] }
+                standby.remove(id)
+                state = .live(current: id)
+                return [.switchTo(path: id), .replayFromLastAck,
+                        .requestKeyframes, .ranking(.externalSwitch(id))]
             case .close(let reason):
                 state = .ended(reason: reason)
                 return [.end(reason: reason)]
