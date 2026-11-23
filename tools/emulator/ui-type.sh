@@ -351,6 +351,17 @@ def shapes(client, deckctl, where):
     line("INFO", "evidence", "%s: tree ok=%s code=%s rows=%d layers=%s resumed=%s focus=%s" % (
         where, reply.get("ok"), reply.get("code"), len(reply.get("nodes") or []),
         [(l.get("type"), bool(l.get("active"))) for l in reply.get("layers") or []], resumed, focused))
+    # The emulator's screen as it was (the rig's own test apps, nothing of a
+    # person's), next to this script, so a layer the tree names is seen.
+    try:
+        png = subprocess.run(ADB + ["exec-out", "screencap", "-p"], capture_output=True, timeout=30).stdout
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "evidence-%s.png" % "".join(c if c.isalnum() else "-" for c in where))
+        with open(path, "wb") as handle:
+            handle.write(png)
+        line("INFO", "evidence", "%s: screen %s (%d bytes)" % (where, path, len(png)))
+    except (OSError, subprocess.SubprocessError) as error:
+        line("INFO", "evidence", "%s: no screen (%s)" % (where, type(error).__name__))
     for n in (reply.get("nodes") or [])[:40]:
         line("INFO", "evidence", "  %s %s" % (n.get("role"), sorted(f for f in (
             "click", "edit", "focus", "hint", "pwd", "scroll") if n.get(f))))
