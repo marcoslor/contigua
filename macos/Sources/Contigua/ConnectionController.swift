@@ -2919,7 +2919,7 @@ final class ConnectionController {
                           identity: identity, pinnedPhone: pins.record(for: ref.id),
                           pinStore: pins,
                           onPinEstablished: { [weak self] record in self?.mirrorIdentityPin(record: record) }),
-                  for: record, policy: DialPolicy.pairingPolicy(for: .manualConnect))
+                  for: record, policy: DialPolicy.pairingPolicy(for: .manualConnect(launchPairing: record.machine.launchPairing)))
             return
         }
         let cached = cache.address(forDeviceId: ref.id)
