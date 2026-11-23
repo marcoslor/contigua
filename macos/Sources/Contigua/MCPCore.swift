@@ -373,8 +373,13 @@ enum MCPOutputSchemas {
         case .phoneStatus:
             return object(["connected": boolean, "name": nullable("string"),
                            "battery": nullable("integer"), "charging": boolean,
-                           "locked": boolean, "windows": integer],
-                          required: ["connected", "name", "battery", "charging", "locked", "windows"])
+                           "locked": nullable("boolean"), "screen": nullable("string"),
+                           "lockSource": nullable("string"), "lockChangedAgoMs": integer,
+                           "input": string, "maxWindows": integer, "windows": integer,
+                           "foreground": ["type": ["object", "null"]],
+                           "foregroundError": ["type": "string", "enum": ["not_supported", "timeout"]]],
+                          required: ["connected", "name", "battery", "charging", "locked", "screen",
+                                     "input", "foreground", "windows", "maxWindows"])
         case .listApps:
             return object(["apps": array(object(["label": string, "package": string],
                                                 required: ["label", "package"]))],
