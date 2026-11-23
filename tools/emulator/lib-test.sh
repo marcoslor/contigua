@@ -50,6 +50,25 @@ else
   echo "LIB-TEST FAIL: a dumpsys read -> '${got:-}' ($(cat "$err"))"
   fail=1
 fi
+# The installed versionCode read, one step earlier in start.sh, fails the same
+# way: a timed-out read stops with its status, never an empty code.
+emu() { return 124; }
+if got="$(installed_version_code com.example 2>"$err")"; then
+  echo "LIB-TEST FAIL: a failed versionCode read as '$got'"
+  fail=1
+elif grep -q 'status 124' "$err"; then
+  echo "LIB-TEST OK: a failed versionCode read says its status"
+else
+  echo "LIB-TEST FAIL: a failed versionCode read said '$(cat "$err")', wanted its status"
+  fail=1
+fi
+emu() { printf 'Packages:\r\n  versionCode=42 minSdk=29\r\n  versionCode=7\r\n'; }
+if got="$(installed_version_code com.example 2>"$err")" && [ "$got" = "42" ]; then
+  echo "LIB-TEST OK: a versionCode read -> '$got'"
+else
+  echo "LIB-TEST FAIL: a versionCode read -> '${got:-}' ($(cat "$err"))"
+  fail=1
+fi
 rm -f "$err"
 
 # The regression: more matches than a pipe's buffer, after the one head kept.
