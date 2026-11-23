@@ -691,6 +691,54 @@ final class MCPToolHostTests: XCTestCase {
         XCTAssertEqual(windows.appWindows().first?.stream, clock.stream, "it said raised but raised nothing")
         XCTAssertEqual(windows.openStreams, before)
     }
+
+    /// [MCP-40] (#183, folded in from #185 and answered as #262 item 9
+    /// decides): `newWindow: true` for an app with no window open opens its
+    /// first window, as without the flag, even for an app that opens one
+    /// window at a time; the answer is `opened: "new"` and no answer sends the
+    /// client to list_windows and a retry.
+    @MainActor
+    func testMCP40NewWindowOnASingleWindowAppWithNoWindowOpensTheFirst() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        _ = try await fixture.liveWindow()
+        await fixture.sendApps([Self.settingsMulti, Self.clockOne])
+        let windows = fixture.controller.windows
+        XCTAssertTrue(windows.appWindows(pkg: "com.android.deskclock").isEmpty)
+
+        let (answer, _) = await fixture.call("open_app", ["app": "Clock", "newWindow": true,
+                                                          "wait": "none", "observe": "none"])
+        let clocks = windows.appWindows(pkg: "com.android.deskclock")
+        XCTAssertEqual(clocks.count, 1, "the first window did not open: \(answer)")
+        // The fake phone sends no video: the open answers at its 10 s bound, `opening`.
+        XCTAssertEqual(answer["isError"] as? Bool, false, "open_app failed: \(answer)")
+        let structured = answer["structuredContent"] as? [String: Any] ?? [:]
+        XCTAssertEqual(structured["window"] as? Int, clocks.first.map { Int($0.stream) })
+        XCTAssertEqual(structured["opened"] as? String, "new")
+        let opens = fixture.sent("window.open")
+        XCTAssertEqual(opens.count, 1)
+        XCTAssertNil(opens.first?.bool("newInstance"), "the first window is a plain open")
+    }
+
+    /// [WIN-36] Shortcuts' (and the debug route's) explicit `newInstance` for
+    /// an app with no window open opens its first window, as without the
+    /// argument, even for an app that opens one window at a time.
+    @MainActor
+    func testShortcutsNewInstanceWithNoWindowOpensTheFirst_WIN36() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        _ = try await fixture.liveWindow()
+        await fixture.sendApps([Self.settingsMulti, Self.clockOne])
+        let controller = fixture.controller
+        let phone = try XCTUnwrap(controller.link.phone?.id)
+        let before = controller.windows.openStreams.count
+
+        controller.intentsOpenApp("com.android.deskclock", on: phone, newWindow: true)
+        XCTAssertEqual(controller.windows.appWindows(pkg: "com.android.deskclock").count, 1,
+                       "newInstance with no window open opened nothing")
+        XCTAssertEqual(controller.windows.openStreams.count, before + 1)
+        XCTAssertNil(controller.pendingOpen)
+    }
 }
 
 /// A real controller online with the fake phone server, which answers
