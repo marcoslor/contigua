@@ -125,6 +125,26 @@ server_port_from_logcat() {
     sed -n 's/.*listening on 0\.0\.0\.0:\([0-9][0-9]*\).*/\1/p' | tail -1
 }
 
+# The first codePath= value in `dumpsys package` output, CRs stripped.
+# Reads every line: a `head -1` can close the pipe while sed still writes, and
+# `pipefail` then ends the caller with no message (#207).
+shizuku_code_path() {
+  sed -n 's/.*codePath=\(.*\)$/\1/p' | sed -n '1p' | tr -d '\r'
+}
+
+# A package's code path from the device. A failed adb read (a timeout is 124)
+# says so with its status and fails: under `set -e` a bare `$(emu ...)` ended
+# start.sh with no message (#207).
+package_code_path() { # package_code_path <pkg>
+  local dump status
+  dump="$(emu shell dumpsys package "$1" 2>/dev/null)" || {
+    status=$?
+    echo "dumpsys package $1 failed (status $status)" >&2
+    return 1
+  }
+  printf '%s\n' "$dump" | shizuku_code_path
+}
+
 # The shell-UID user service process(es) that host the server.
 server_pids() {
   # grep exits 1 when there is no daemon; the rig runs under `set -euo pipefail`.
@@ -189,7 +209,7 @@ apk_version_code() { # apk_version_code <apk>
 # The versionCode the device reports for an installed package.
 installed_version_code() { # installed_version_code <pkg>
   emu shell dumpsys package "$1" 2>/dev/null |
-    sed -n 's/.*versionCode=\([0-9][0-9]*\).*/\1/p' | head -1 | tr -d '\r'
+    sed -n 's/.*versionCode=\([0-9][0-9]*\).*/\1/p' | sed -n '1p' | tr -d '\r'
 }
 
 # The rig's debug receivers are exported to explicit intents only in practice:

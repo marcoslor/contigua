@@ -269,9 +269,12 @@ if lmkd_quiet 15 90; then
 else
   step "warn: lmkd not quiet after 90 s (waited $(( $(date +%s) - SETTLE_START ))s); starting the server anyway"
 fi
-CODE_PATH="$(emu shell dumpsys package "$SHIZUKU_PKG" 2>/dev/null |
-  sed -n 's/.*codePath=\(.*\)$/\1/p' | head -1 | tr -d '\r')"
-ABI="$(emu shell getprop ro.product.cpu.abi | tr -d '\r')"
+# Each read says why it failed: under `set -e` a bare failed `$(emu ...)` ended
+# the boot here with no message (#207).
+CODE_PATH="$(package_code_path "$SHIZUKU_PKG")" || die "cannot read $SHIZUKU_PKG's code path"
+[ -n "$CODE_PATH" ] || die "dumpsys package $SHIZUKU_PKG has no codePath"
+ABI="$(emu shell getprop ro.product.cpu.abi | tr -d '\r')" ||
+  die "getprop ro.product.cpu.abi failed (status $?)"
 case "$ABI" in
   arm64-v8a) ABI_DIR=arm64 ;;
   armeabi-v7a) ABI_DIR=arm ;;
