@@ -102,14 +102,17 @@ settled() {
 }
 settle_t0=$(date +%s)
 step "waiting for the guest to settle (load under $EMU_CORES, up to ${SETTLE_S}s)"
-until settled; do
+while :; do
+  if settled; then
+    step "settled in $(( $(date +%s) - settle_t0 ))s (load $(guest_load))"
+    break
+  fi
   if [ $(( $(date +%s) - settle_t0 )) -ge "$SETTLE_S" ]; then
     step "WARNING: the guest is still busy after ${SETTLE_S}s (load $(guest_load)); checks may fail on it"
     break
   fi
   sleep 5
 done
-settled && step "settled in $(( $(date +%s) - settle_t0 ))s (load $(guest_load))"
 
 # The rig is a test device: keep its screen on (lock.sh sleeps it explicitly
 # when a check needs a locked phone). A sleeping screen freezes the app, and a
