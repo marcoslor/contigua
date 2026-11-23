@@ -723,6 +723,65 @@ final class MCPActMachineTests: XCTestCase {
                        "B's input went out while A's press was on the phone")
     }
 
+    // MARK: Review follow-ups (#262): one test per untested row
+
+    /// Row "Queued · Opening · Pressing · Typing | `windowClosed`": a call still
+    /// queued when its window closes fails `no_window` and sends nothing.
+    func testQueuedWindowClosedFailsNoWindow_MCP85() {
+        let (state, actions, _) = step(machine(.queued), .windowClosed(reason: "app_exited", by: "phone"))
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [.fail("no_window")])
+    }
+
+    /// Row "any but Done, Sending, Draining, Pressing, Typing | `clientGone`" in Closing.
+    func testClosingClientGoneEndsWithNoAnswer_MCP83() {
+        let (state, actions, _) = step(machine(.closing, nextReq: 2), .clientGone)
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [])
+    }
+
+    /// Row "any but Draining, Done | `otherInput`" in Closing: the source is
+    /// kept and the close's answer carries it.
+    func testClosingOtherInputIsAlsoActed_MCP84() {
+        var (state, actions, m) = step(machine(.closing, nextReq: 2), .otherInput("person"))
+        XCTAssertEqual(state, .closing)
+        XCTAssertEqual(actions, [])
+        (state, actions, m) = step(m, .closeWaitOver)
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [.answer(M.Answer(settle: M.Settle(state: "window_closed"), state: "closed",
+                                                  alsoActed: ["person"]))])
+    }
+
+    /// Row "Draining | anything else": a window closing while the call drains
+    /// is ignored; the turn is still held.
+    func testDrainingIgnoresWindowClosed_MCP84() {
+        let (state, actions, _) = step(machine(.draining), .windowClosed(reason: "app_exited", by: "phone"))
+        XCTAssertEqual(state, .draining)
+        XCTAssertEqual(actions, [])
+    }
+
+    /// Row "Draining | anything else": the link's loss is ignored.
+    func testDrainingIgnoresLinkLost_MCP84() {
+        let (state, actions, _) = step(machine(.draining), .linkLost)
+        XCTAssertEqual(state, .draining)
+        XCTAssertEqual(actions, [])
+    }
+
+    /// Row "Draining | anything else": a second deadline is ignored.
+    func testDrainingIgnoresTheDeadline_MCP84() {
+        let (state, actions, _) = step(machine(.draining), .deadline(waitedMs: 100))
+        XCTAssertEqual(state, .draining)
+        XCTAssertEqual(actions, [])
+    }
+
+    /// Row "Draining | anything else": a client that leaves while its call
+    /// drains changes nothing.
+    func testDrainingIgnoresClientGone_MCP84() {
+        let (state, actions, _) = step(machine(.draining), .clientGone)
+        XCTAssertEqual(state, .draining)
+        XCTAssertEqual(actions, [])
+    }
+
     // [MCP-86] T10: the phone answers `ui.press` gone → stale_ref, and no
     // input frame went out.
     @MainActor
