@@ -28,6 +28,24 @@ class UiAutomationTreeTest {
         SettleWatch.State.Idle -> -1
     }
 
+    /**
+     * A failed connect logs the wrapper's class and its root cause's class,
+     * and nothing of either message (logs carry codes and classes only).
+     */
+    @Test
+    fun testAConnectFailureLogsItsRootClassOnly() {
+        val refusal = IllegalStateException("UiAutomationService android.accessibilityservice.IAccessibilityServiceClient already registered!")
+        val wrapped = java.lang.reflect.InvocationTargetException(RuntimeException("binder: com.example", refusal))
+        assertEquals(
+            "ui.tree: connect InvocationTargetException root=IllegalStateException",
+            UiAutomationTree.connectFailureLine(wrapped),
+        )
+        assertEquals(
+            "ui.tree: connect SecurityException root=SecurityException",
+            UiAutomationTree.connectFailureLine(SecurityException("uid 2000 is not allowed")),
+        )
+    }
+
     @Test
     fun MCP107_anEventFromAnotherThreadRunsOnTheWatchLooper() {
         val looper = shadowOf(Looper.getMainLooper())
