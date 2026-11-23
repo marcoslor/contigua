@@ -298,21 +298,10 @@ final class PhonePanelP3Tests: XCTestCase {
         return (panel, view)
     }
 
-    private func isControl(_ view: NSView) -> Bool {
-        let name = String(describing: type(of: view))
-        // SwiftUI wraps the slider in a KeyViewProxy on macOS 27 and hosts a bare
-        // NSSlider on macOS 26, never both: either way it is one control.
-        return name.contains("KeyViewProxy") || view is NSSwitch || view is NSSlider || name.contains("PopupButton")
-    }
-
-    /// The controls in the order SwiftUI laid them out — the key-view order the
-    /// debug probe maps `PhonePanelItem.focusOrder` to.
+    /// The controls in the panel's key-view loop — the order the debug probe
+    /// maps `PhonePanelItem.focusOrder` to, through the same function.
     private func hierarchyControls(in view: NSView) -> [NSView] {
-        func walk(_ view: NSView) -> [NSView] {
-            let own: [NSView] = isControl(view) ? [view] : []
-            return own + view.subviews.flatMap(walk)
-        }
-        return walk(view)
+        PanelProbe.keyLoopControls(in: view)
     }
 
     private func controls(in view: NSView) -> [NSView] {

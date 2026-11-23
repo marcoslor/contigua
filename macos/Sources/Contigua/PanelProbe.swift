@@ -6,9 +6,10 @@
 // the path a person's pointer takes, and the phone counts the effect.
 //
 // SwiftUI keeps its controls inside one hosting view, so the controls are
-// found in the view tree: one KeyViewProxy per focusable row, the DND switch
-// and the Now Playing popup as real AppKit views. They follow the panel's own
-// layout order (PhonePanelItem.focusOrder); a control is only mapped while
+// found by walking the panel's key-view loop: one KeyViewProxy per focusable
+// row (macOS 26 hosts the volume as a bare NSSlider instead), the DND switch
+// and the Now Playing popup as real AppKit views. The loop's order is the
+// panel's own (PhonePanelItem.focusOrder); a control is only mapped while
 // every item has one. A check that a click landed is the phone receiving
 // `phone.dnd` / `media.command`, not the action being called.
 
@@ -506,23 +507,36 @@ enum PanelProbe {
 
     private static func controlViews(in window: NSWindow) -> [NSView] {
         guard let content = window.contentView else { return [] }
-        var views: [NSView] = []
-        collectControls(content, into: &views)
-        return views
+        return keyLoopControls(in: content)
     }
 
     private static func switchView(in window: NSWindow) -> NSView? {
         controlViews(in: window).first { $0 is NSSwitch }
     }
 
-    private static func collectControls(_ view: NSView, into views: inout [NSView]) {
-        let name = String(describing: type(of: view))
-        if name.contains("KeyViewProxy") || view is NSSwitch || name.contains("PopupButton") {
-            views.append(view)
-            // A popup's own subviews are not controls of their own.
-            return
+    /// The panel's controls in its real key-view loop, the order a person's Tab
+    /// walks and PhonePanelItem.focusOrder describes. The view tree's order is
+    /// not that order: macOS 26 hosts the volume slider as a bare NSSlider ahead
+    /// of the gear's KeyViewProxy, while macOS 27 makes it a KeyViewProxy in
+    /// place. A popup's own subviews are not controls of their own.
+    static func keyLoopControls(in root: NSView) -> [NSView] {
+        var controls: [NSView] = []
+        var seen: Set<ObjectIdentifier> = []
+        var next = root.nextKeyView
+        while let view = next, view !== root, seen.insert(ObjectIdentifier(view)).inserted {
+            if isControl(view), view.isDescendant(of: root),
+               !controls.contains(where: { view.isDescendant(of: $0) }) {
+                controls.append(view)
+            }
+            next = view.nextKeyView
         }
-        for child in view.subviews { collectControls(child, into: &views) }
+        return controls
+    }
+
+    static func isControl(_ view: NSView) -> Bool {
+        let name = String(describing: type(of: view))
+        return name.contains("KeyViewProxy") || view is NSSwitch || view is NSSlider
+            || name.contains("PopupButton")
     }
 
     // MARK: - Events
