@@ -3,6 +3,8 @@ package app.contigua.server
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import java.util.Collections
+import java.util.WeakHashMap
 import java.util.concurrent.CountDownLatch
 
 /**
@@ -74,6 +76,13 @@ internal class SettleWatches(
     /** The running watches; looper only. */
     private val watches = ArrayList<Watch>()
 
+    /**
+     * The sessions that ended; looper only. A cancel can come before its watch
+     * starts (`settle()` connecting), and that watch then never starts (MCP-81).
+     * Weak, so an entry goes with its session.
+     */
+    private val ended: MutableSet<Any> = Collections.newSetFromMap(WeakHashMap())
+
     /** The watches whose machine asked to listen; looper only. */
     private val listening = HashSet<Watch>()
 
@@ -113,9 +122,13 @@ internal class SettleWatches(
         return if (handler.post { watch.begin(quietMs, timeoutMs, arrivedAt) }) watch else null
     }
 
-    /** [owner]'s session ended: its watch stops listening and answers nothing. */
+    /**
+     * [owner]'s session ended: its watch stops listening and answers nothing,
+     * and a watch it starts later never starts.
+     */
     fun cancel(owner: Any) {
         handler.post {
+            ended.add(owner)
             for (watch in watches.filter { it.owner === owner }) watch.drive(SettleWatch.Event.SessionEnd)
         }
     }
@@ -159,6 +172,8 @@ internal class SettleWatches(
 
         fun begin(quietMs: Long, timeoutMs: Long, arrivedAt: Long) {
             if (answer != null) return
+            // Its session ended before the watch started: no listening, no answer.
+            if (owner in ended) return finish(SettleAnswer.Cancelled)
             // A display with no window yet, or not listed yet, is still opening
             // (MCP-107): the watch starts loading, and the first window counts.
             val windowed = readWindows()
