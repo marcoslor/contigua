@@ -352,6 +352,8 @@ final class PhonePanelP3Tests: XCTestCase {
         let items = PhonePanelItem.focusOrder(for: state)
         let laidOut = controls(in: view)
         XCTAssertEqual(laidOut.count, items.count, "one laid-out control per item")
+        // A short list fails above; indexing it would crash the whole test process.
+        guard laidOut.count == items.count else { return }
         guard let dndIndex = items.firstIndex(of: .dnd) else { return XCTFail("no Focus module") }
         let dnd = frame(laidOut[dndIndex], in: view)
         let ringer = frame(laidOut[dndIndex + 1], in: view)
@@ -377,6 +379,8 @@ final class PhonePanelP3Tests: XCTestCase {
         let items = PhonePanelItem.focusOrder(for: state)
         let laidOut = controls(in: view)
         XCTAssertEqual(laidOut.count, items.count)
+        // A short list fails above; indexing it would crash the whole test process.
+        guard laidOut.count == items.count else { return }
         let volume = frame(laidOut[items.firstIndex(of: .volume)!], in: view)
         let dnd = frame(laidOut[items.firstIndex(of: .dnd)!], in: view)
         XCTAssertEqual(volume.height, 14, accuracy: 0.5)
@@ -445,6 +449,8 @@ final class PhonePanelP3Tests: XCTestCase {
         let items = PhonePanelItem.focusOrder(for: state)
         let laidOut = controls(in: view)
         XCTAssertEqual(laidOut.count, items.count)
+        // A short list fails above; indexing it would crash the whole test process.
+        guard laidOut.count == items.count else { return }
         let phone = frame(laidOut[items.firstIndex(of: .phoneScreen)!], in: view)
         let apps = frame(laidOut[items.firstIndex(of: .findApps)!], in: view)
         XCTAssertEqual(phone.minY, apps.minY, accuracy: 1, "WINDOWS is one row")
@@ -470,6 +476,8 @@ final class PhonePanelP3Tests: XCTestCase {
         let view = host(state, showsGear: true)
         let laidOut = hierarchyControls(in: view)
         XCTAssertEqual(laidOut.count, items.count, "one laid-out control per item")
+        // A short list fails above; indexing it would crash the whole test process.
+        guard laidOut.count == items.count else { return }
         let gear = frame(laidOut[0], in: view)
         XCTAssertEqual(gear.width, 22, accuracy: 1)
         XCTAssertEqual(gear.height, 22, accuracy: 1)
@@ -500,6 +508,8 @@ final class PhonePanelP3Tests: XCTestCase {
         let (panel, view) = panelHost(plain)
         let laidOut = hierarchyControls(in: view)
         XCTAssertEqual(laidOut.count, items.count, "one laid-out control per item")
+        // A short list fails above; indexing it would crash the whole test process.
+        guard laidOut.count == items.count else { return }
         XCTAssertTrue(panel.firstResponder === laidOut[items.firstIndex(of: .gear)!],
                       "the key order starts on the gear")
         panel.focusFirstPhoneControl(steps: PhonePanelItem.openingFocusSteps(for: plain))
