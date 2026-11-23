@@ -77,8 +77,9 @@ struct MCPToolHost {
             case .swipe(let window, let x1, let y1, let x2, let y2, let ms, let wait, let observe):
                 return .answer(try await swipe(window: window, x1: x1, y1: y1, x2: x2, y2: y2, ms: ms,
                                                wait: wait, observe: observe))
-            case .typeText(let window, let text, let wait, let observe):
-                return .answer(try await typeText(window: window, text: text, wait: wait, observe: observe))
+            case .typeText(let window, let text, let clear, let submit, let wait, let observe):
+                return .answer(try await typeText(window: window, text: text, clear: clear, submit: submit,
+                                                  wait: wait, observe: observe))
             case .pressKey(let window, let key, let wait, let observe):
                 return .answer(try await pressKey(window: window, key: key, wait: wait, observe: observe))
             case .inputProbe(let window, let x, let y, let width, let height):

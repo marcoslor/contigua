@@ -190,6 +190,8 @@ enum SessionEvent {
     case uiSettle(UISettleReply)
     /// `ui.press` (PROTOCOL.md "UI tree" item 8, MCP-86).
     case uiPress(UIPressReply)
+    /// `ui.type` (PROTOCOL.md "UI tree" item 10, MCP-109).
+    case uiType(UITypeReply)
     /// `ring.state`: a `phone.ring` started or ended.
     case ringState(ringing: Bool)
     /// `power.locked`: the phone's own power press with app streams up (its VD
@@ -1832,6 +1834,8 @@ final class Session {
             if let reply = UISettleReply(message: message) { emit(.uiSettle(reply)) }
         case "ui.press":
             if let reply = UIPressReply(message: message) { emit(.uiPress(reply)) }
+        case "ui.type":
+            if let reply = UITypeReply(message: message) { emit(.uiType(reply)) }
         case "state":
             phoneScreenOn = (message.string("screen") ?? "on") == "on"
             if let cap = message.int("maxWindows") {
@@ -2383,6 +2387,14 @@ final class Session {
     /// `ui.press` (docs/PROTOCOL.md "UI tree" item 8, MCP-86): press the node
     /// keyed `k` where it is now; `expect` is the label the asking client was
     /// last answered for it. Never logged: the label is on-screen text.
+    /// `ui.type` (docs/PROTOCOL.md "UI tree" item 10, MCP-109): type into the
+    /// focused field of the stream's display, as keys or by setting its text,
+    /// never through the clipboard (MCP-110). Never logged: the text is the
+    /// agent's input.
+    func requestUIType(stream: UInt32, seq: Int, text: String, clear: Bool, submit: Bool) {
+        sendJSON(["t": "ui.type", "stream": Int(stream), "seq": seq, "text": text,
+                  "clear": clear, "submit": submit])
+    }
     func requestUIPress(stream: UInt32, seq: Int, k: Int, holdMs: Int?, expect: String?) {
         var message: [String: Any] = ["t": "ui.press", "stream": Int(stream), "seq": seq, "k": k]
         if let holdMs { message["holdMs"] = holdMs }
@@ -2645,4 +2657,37 @@ final class SessionLockedBox<T> {
     init(value: T) { underlying = value }
     func set(_ newValue: T) { lock.lock(); underlying = newValue; lock.unlock() }
     func get() -> T { lock.lock(); defer { lock.unlock() }; return underlying }
+}
+
+/// The phone's `ui.type` reply (PROTOCOL.md "UI tree" item 10, MCP-109): how
+/// it typed, or the code it refused with, having typed nothing. Never the text.
+struct UITypeReply: Equatable {
+    let seq: Int
+    let stream: UInt32
+    let ok: Bool
+    /// `inserted`, `replaced` or `unknown`.
+    let entry: String?
+    /// `keys` or `set_text`.
+    let via: String?
+    /// The text's length in code points, as the phone counted it.
+    let characters: Int?
+    let code: String?
+
+    init(seq: Int, stream: UInt32, ok: Bool, entry: String? = nil, via: String? = nil,
+         characters: Int? = nil, code: String? = nil) {
+        self.seq = seq
+        self.stream = stream
+        self.ok = ok
+        self.entry = entry
+        self.via = via
+        self.characters = characters
+        self.code = code
+    }
+
+    init?(message: JSONMessage) {
+        guard let ok = message.bool("ok"), let stream = message.int("stream") else { return nil }
+        self.init(seq: message.int("seq") ?? 0, stream: UInt32(max(0, stream)), ok: ok,
+                  entry: message.string("entry"), via: message.string("via"),
+                  characters: message.int("characters"), code: message.string("code"))
+    }
 }

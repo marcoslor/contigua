@@ -366,6 +366,28 @@ def mode_on(args, name):
         return False
     return name.replace("_", "-") in words
 
+def mode_value(args, name, choices):
+    """A valued mode (`--type-refuse CODE`), from the command line or, with
+    `--mode-file`, from a `type-refuse=CODE` word in that file as each request
+    arrives (plan T13, suite_type); a value outside `choices` counts as unset."""
+    value = getattr(args, name, None)
+    if value:
+        return value
+    path = getattr(args, "mode_file", None)
+    if not path:
+        return None
+    try:
+        with open(path) as handle:
+            words = handle.read().split()
+    except OSError:
+        return None
+    prefix = name.replace("_", "-") + "="
+    for word in words:
+        if word.startswith(prefix) and word[len(prefix):] in choices:
+            return word[len(prefix):]
+    return None
+
+
 class FakeMedia(object):
     """The fake phone's Now Playing (docs/design/notify.md "Media part 2"): the
     session list, the chosen one, its position and its absolute volume. Every
@@ -5625,8 +5647,9 @@ class Session(object):
         if self._ui_busy:
             refuse("busy")
             return
-        if self.phone.args.type_refuse:
-            refuse(self.phone.args.type_refuse)
+        refusal = mode_value(self.phone.args, "type_refuse", self.UI_TYPE_SENTENCES)
+        if refusal:
+            refuse(refusal)
             return
         if not characters or characters > 2000:
             refuse("failed")
@@ -6847,7 +6870,8 @@ def build_parser():
                         "second read drops the row with k 2 (MCP-71/72/73)")
     p.add_argument("--type-refuse", default=None, metavar="CODE", dest="type_refuse",
                    choices=["no_field", "not_supported", "no_window", "busy", "failed"],
-                   help="ui.type answers this code and types nothing (MCP-109)")
+                   help="ui.type answers this code and types nothing (MCP-109); also the "
+                        "mode file's type-refuse=CODE word")
     p.add_argument("--ignore-ui-settle", action="store_true",
                    help="never answer ui.settle (a phone that cannot watch a display)")
     p.add_argument("--settle-ms", type=int, default=120, metavar="MS",
