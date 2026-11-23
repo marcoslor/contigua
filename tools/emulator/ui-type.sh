@@ -18,7 +18,8 @@
 #      "térmica" is refused not_supported and no key reaches the page.
 #   4. The clip copied in 1 is pasted into the cleared field: still the same,
 #      and the phone sent no clip.set during the run; then the person's `text`
-#      path with "é" (the control) does change it (#173, plan T14).
+#      path with "é" (the control) leaves it too: since plan T14 that run goes
+#      in by set text (WIN-80, tools/emulator/clip-keep.sh).
 # A Compose TextField is not covered: neither the image nor the app has one.
 # A step that finds nothing prints the tree's row shapes and goes on.
 # Output is codes, counts and match booleans only; no screen text is printed.
@@ -310,7 +311,7 @@ def main():
         check(pasted == CLIP and sent == 0, "MCP-110",
               "the clip copied before the run pastes the same after it (match=%s), clip.set sent during it: %d"
               % (pasted == CLIP, sent))
-        # The control: the person's text path pastes through the clipboard (#173).
+        # The control: the person's text path sets the run, not the clip (WIN-80).
         type_(client, deckctl, "q", clear=True)
         key(client, KEYCODE_DEL)
         client.send_json({"t": "text", "stream": 1, "text": "é"})
@@ -321,7 +322,7 @@ def main():
         settle(client, deckctl)
         pasted = field_of(client, deckctl, k).get("text")
         line("INFO", "control", "after the text path typed a non-ASCII run the clip is still ours=%s "
-             "(expected False until T14)" % (pasted == CLIP))
+             "(True since T14, WIN-80)" % (pasted == CLIP))
     log = subprocess.run(ADB + ["logcat", "-d"], capture_output=True, text=True, timeout=30).stdout
     types = [l.split("ui.type ")[-1] for l in log.splitlines() if "ui.type stream=" in l]
     leaked = [l for l in types if "café" in l or "rmica" in l or CLIP in l]
