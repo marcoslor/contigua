@@ -633,7 +633,7 @@ window, WIN-47); the other keys are KEY down/up frames with Android keycodes
 (enter 66, delete 67, tab 61, escape 111, arrows 19–22). `type_text` is the
 `ui.type` exchange (MCP-109), and never touches the clipboard (MCP-110).
 
-**Typing without the clipboard (#173).** Until T13 the tool sends the `text`
+**Typing without the clipboard (#173).** Before T13 the tool sent the `text`
 message, whose non-ASCII runs go through the phone's clipboard and a paste key:
 that overwrites what the person copied (an image is lost outright), tells apps
 a paste happened, and races two writers. A process at shell UID has these
@@ -645,7 +645,7 @@ routes to a focused field:
 | A multi-character key event (`ACTION_MULTIPLE` with `KEYCODE_UNKNOWN`) | nothing on API 34: input injection takes only down and up key actions, and the native event carries no characters | — |
 | `ACTION_SET_TEXT` on the focused node, through the `UiAutomation` connection `ui_tree` holds | `EditText`, a WebView's editable field, a Compose `TextField`, most cross-platform toolkits | it sets the whole text, so the phone reads the field's text and selection and sets before + typed + after, then moves the cursor with `ACTION_SET_SELECTION`; a password field's text cannot be read, so it can only be replaced; the field's undo history and composing span reset; a view that draws its own text offers no such action |
 | Committing through an input connection | — | only the active input method has one; becoming it changes a phone setting (CONV-AND-04) |
-| The clipboard and a paste key (today) | what pastes | the person's clip, apps notified, writers race (#173) |
+| The clipboard and a paste key (the person's `text` path until T14) | what pastes | the person's clip, apps notified, writers race (#173) |
 
 The tool takes the first and the third: text the key map can type goes as KEY
 events at the cursor, exactly as a keyboard would (`via: "keys"`); any other
