@@ -2,6 +2,7 @@
 // accessibility tree, refuse a malformed one, issue refs from a per-window read
 // counter, and write the tool result with only the fields the contract names.
 
+import AppKit
 import XCTest
 @testable import Contigua
 
@@ -593,6 +594,33 @@ final class UITreeTests: XCTestCase {
         broker.answered(tree([row(0, k: 1, p: nil), row(1, k: 2, p: nil, text: "Pay")]), client: client)
         XCTAssertNil(broker.expect(client: client, stream: 3, k: 1))
         XCTAssertEqual(broker.expect(client: client, stream: 3, k: 2), "Pay")
+    }
+
+    /// #266 item 9: the screen labels a connection was answered (its presses'
+    /// `expect`s) are screen text: they go when that connection closes, and
+    /// another connection's stay ([MCP-86]).
+    @MainActor
+    func testAClosedConnectionsLabelsAreDropped_MCP86() throws {
+        _ = NSApplication.shared
+        let profile = try XCTUnwrap(Profile(name: "unit-labels-\(UUID().uuidString.prefix(8).lowercased())"))
+        let controller = ConnectionController(options: LaunchOptions.parse(["Contigua"]), profile: profile)
+        defer {
+            controller.shutdown()
+            if let suite = profile.defaultsSuiteName { profile.defaults.removePersistentDomain(forName: suite) }
+            try? FileManager.default.removeItem(at: profile.supportDirectoryUrl)
+        }
+        let gone = MCPClientID(1)
+        let staying = MCPClientID(2)
+        let pay = tree([row(0, k: 1, p: nil, text: "Pay")])
+        controller.uiTreeAnswered(pay, client: gone)
+        controller.uiTreeAnswered(pay, client: staying)
+        XCTAssertEqual(controller.uiTreeExpect(client: gone, stream: 3, k: 1), "Pay")
+
+        controller.mcp.onClientClosed?(gone)
+        XCTAssertNil(controller.uiTreeExpect(client: gone, stream: 3, k: 1),
+                     "a closed connection's screen labels outlived it")
+        XCTAssertEqual(controller.uiTreeExpect(client: staying, stream: 3, k: 1), "Pay",
+                       "another connection's labels went with it")
     }
 
     // [MCP-86] Item 7: an editable row's label is its desc, else its id, never its text.
