@@ -22,6 +22,8 @@ final class ControlsHost {
     private var last: ControlsSnapshot?
     /// One reload at a time, off the main actor.
     private var reloadQueued = false
+    /// Snapshot writes since launch (CTRL-17's check reads it).
+    private(set) var writes = 0
 
     init?(controller: ConnectionController, directory: URL?) {
         guard let directory else { return nil }
@@ -82,6 +84,7 @@ final class ControlsHost {
         var stamped = snapshot
         stamped.updated = Date().timeIntervalSince1970
         guard stamped.write(to: ControlsPaths.snapshotURL(in: directory)) else { return }
+        writes += 1
         last = stamped
         reloadControls()
     }
