@@ -45,6 +45,7 @@ PROFILE="${PD_TREESHOW_PROFILE:-treeshow}"
 SUPPORT="$HOME/Library/Application Support/Contigua-$PROFILE"
 APP_PID=""
 TAP_PID=""
+LOGCAT_PID=""
 FAIL=0
 
 ok() { printf 'PASS %s\n' "$*"; }
@@ -97,6 +98,14 @@ cleanup() {
     stop_app
     [ -n "$TAP_PID" ] && kill "$TAP_PID" 2>/dev/null || true
     "$ADB" -s "$SERIAL" forward --remove "tcp:$PORT" >/dev/null 2>&1 || true
+    # The phone's ui.* lines (codes, counts and durations only), kept before
+    # the emulator goes: a failed call is explained by its settle and read times.
+    if [ -n "$LOGCAT_PID" ]; then
+        kill "$LOGCAT_PID" 2>/dev/null || true
+        grep -E "ContiguaSvc: ui\.(tree|settle|press)" "$WORK/phone.log" > "$WORK/phone-ui.log" 2>/dev/null || true
+        say "phone ui.* lines (also in $WORK/phone-ui.log):"
+        sed -E 's/^ *([0-9.]+) .*ContiguaSvc: /  \1 /' "$WORK/phone-ui.log" | tail -20
+    fi
     # The only allowed kill: this emulator's own console.
     "$ADB" -s "$SERIAL" emu kill >/dev/null 2>&1 || true
     exit "$trap_rc"
@@ -179,7 +188,17 @@ wait_for 60 app_connected && ok "the Mac app is connected" || { bad "no welcome"
 if emu shell dumpsys window 2>/dev/null | grep -Eq 'mDreamingLockscreen=true|isKeyguardShowing=true|mShowingLockscreen=true'; then
     bad "the emulator shows a keyguard; this run never unlocks it"; exit 1
 fi
+# The pairing's prompt taps read the screen with `uiautomator dump`; one that
+# outlived its adb call still holds the platform's one UiAutomation, and the
+# phone's own connect then fails (ui.tree no_a11y). Wait for it to exit.
+uiautomator_gone() { ! emu shell ps -A -o ARGS 2>/dev/null | grep -q '[u]iautomator'; }
+if ! uiautomator_gone; then
+    say "a uiautomator dump is still running; waiting for it to exit"
+    wait_for 60 uiautomator_gone || { bad "a uiautomator dump still holds the accessibility connection"; exit 1; }
+fi
 emu logcat -c >/dev/null 2>&1 || true
+"$ADB" -s "$SERIAL" logcat -v monotonic -s ContiguaSvc:I > "$WORK/phone.log" 2>&1 &
+LOGCAT_PID=$!
 
 "$PYTHON" - "$ROOT/macos/scripts/mcp" "$SHIM" "$PROFILE" "$WORK" "$ADB" "$SERIAL" <<'PY'
 import json, subprocess, sys, time
