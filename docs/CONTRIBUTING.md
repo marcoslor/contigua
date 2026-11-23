@@ -22,6 +22,8 @@ A check runs in the cheapest tier that can see the defect.
 | 4 | The emulator | `tools/emulator/` |
 | 5 | The real phone and Mac | the maintainer |
 
+**What CI runs** on every pull request and push to `main` (`.github/workflows/`): tier 0 (`rules`), a secret scan of the new commits (`secrets`), and `tools`: a `bash -n` and Python 3.9 syntax pass over every tracked script, the tool unit tests (`tools/**/test_*.py`, `macos/scripts/test_stats_summary.py`) and the script self-tests (`scripts/test-check-rules.sh`, `tools/emulator/preflight-test.sh`, `macos/scripts/install_test.sh`). K1 and Android lint (against `android/app/lint-baseline.xml`) run when `android/**` changes. A new tool test is added to `ci.yml`'s `tools` job in the same commit. Every other tier runs on a developer's Mac.
+
 E2E runs one check at a time; `all` is a rare final gate. On a developer's Mac, e2e runs quiet: never `PD_E2E_VISIBLE=1` or the real pointer.
 
 ## Test rules

@@ -40,11 +40,35 @@ jobs:
           ./gitleaks git --redact --log-opts="$base..HEAD" .
   tools:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - name: Shell and Python syntax (tools are Python 3.9 stdlib)
+        run: |
+          git ls-files -z '*.sh' | xargs -0 -n1 bash -n
+          git ls-files -z '*.py' | xargs -0 python3 -c '
+          import ast, sys
+          bad = 0
+          for path in sys.argv[1:]:
+              try:
+                  ast.parse(open(path, encoding="utf-8").read(), path, feature_version=(3, 9))
+              except SyntaxError as err:
+                  bad += 1
+                  print(f"{path}:{err.lineno}: not Python 3.9: {err.msg}")
+          sys.exit(1 if bad else 0)
+          '
       - name: Tool unit tests
         run: |
           sudo apt-get install -y -qq python3-openssl
           python3 -m unittest discover -s tools/fakephone -p 'test_*.py'
           python3 tools/test_phone_install_check.py
+          for t in tools/pdpathfault/test_*.py tools/stream-bench/test_*.py \
+                   tools/emulator/test_poc_wait.py macos/scripts/test_stats_summary.py; do
+            echo "::group::$t"; python3 "$t"; echo "::endgroup::"
+          done
+      - name: Script self-tests
+        run: |
+          for t in scripts/test-check-rules.sh tools/emulator/preflight-test.sh \
+                   macos/scripts/install_test.sh; do
+            echo "::group::$t"; bash "$t"; echo "::endgroup::"
+          done
