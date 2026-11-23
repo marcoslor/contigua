@@ -19,9 +19,13 @@ final class ControlsHost {
     private weak var controller: ConnectionController?
     private var server: MCPSocketServer?
     private var timer: Timer?
+    /// The last snapshot written, without its stamp: the change check
+    /// compares values only (CTRL-17).
     private var last: ControlsSnapshot?
     /// One reload at a time, off the main actor.
     private var reloadQueued = false
+    /// Snapshot writes since launch (CTRL-17's check reads it).
+    private(set) var writes = 0
 
     init?(controller: ConnectionController, directory: URL?) {
         guard let directory else { return nil }
@@ -82,7 +86,10 @@ final class ControlsHost {
         var stamped = snapshot
         stamped.updated = Date().timeIntervalSince1970
         guard stamped.write(to: ControlsPaths.snapshotURL(in: directory)) else { return }
-        last = stamped
+        writes += 1
+        // Not `stamped`: the next fresh snapshot has no stamp, so comparing
+        // against a stamped one never matched and every tick wrote (#213).
+        last = snapshot
         reloadControls()
     }
 
