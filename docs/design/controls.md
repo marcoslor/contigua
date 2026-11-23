@@ -32,8 +32,9 @@ opened, registered or copied on this Mac. It is verified only in the `pd-e2e` VM
 
 - `dnd`: the `state.dnd` wire name, absent when the phone does not report it.
 - `ringer`: the `state.ringer` wire name, absent when the phone cannot set it.
-- Written when a value changes (a one-second comparison in the app), by atomic
-  rename over the old file, in a 0700 folder, file 0600.
+- Written when a value changes (a one-second comparison in the app that
+  ignores `updated`, CTRL-17), by atomic rename over the old file, in a 0700
+  folder, file 0600. `updated` is the time of the last real change.
 - `ControlCenter.shared.reloadControls(ofKind:)` is called after a change, off
   the main actor: the XPC round trip can block for seconds and must not delay a
   control's reply.
@@ -222,7 +223,8 @@ not persisted by design.
 ## Checks
 
 - Unit: `macos` `ControlsCoreTests` (snapshot round trip, 0600 atomic write,
-  request validation, reply codes, ringer cycle), Android
+  request validation, reply codes, ringer cycle), `ControlsHostTests` (written
+  only on a change, CTRL-17), Android
   `RingerControlTest` / `RingerSessionTest` (wire modes, DND refusal, old phone)
   and `StreamEpisodeTest` / `KeepAliveTest` (the app-window episode and the
   displays a keep-alive step pokes, CTRL-14).
