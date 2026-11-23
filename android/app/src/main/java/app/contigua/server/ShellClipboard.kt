@@ -30,7 +30,7 @@ internal class ShellClipboard(
     private val service: ClipboardService? = BinderClipboardService(log),
     /** The shell-user reader for a root process; null when there is none. */
     private val helper: ClipboardHelperPort? = null,
-) : ClipboardPort, ClipboardImagePort {
+) : ClipboardPort, ClipboardImagePort, ClipKeeper {
 
     /** The one live registration; only its handle may stop it (ISS-13). */
     @Volatile private var live: ClipRegistration? = null
@@ -59,6 +59,8 @@ internal class ShellClipboard(
         val svc = service ?: return null
         val clip = svc.getPrimaryClip(SHELL_PACKAGE, callerUid) ?: return null
         if (clip.itemCount == 0) return null
+        // The person's typing's own clip (WIN-80): never shared (SHARE-1).
+        if (isTypingClip(clip.description)) return null
         val text = clip.getItemAt(0).text?.toString() ?: return null
         return ClipText(text, isSensitive(clip.description))
     }
@@ -67,6 +69,30 @@ internal class ShellClipboard(
         val svc = service ?: return
         val clip = ClipData.newPlainText(CLIP_LABEL, text)
         svc.setPrimaryClip(clip, SHELL_PACKAGE, callerUid)
+    }
+
+    // ---- the person's typing (WIN-80): borrow the clipboard, give it back whole
+
+    /**
+     * Only the shell user reads the clip whole: root reads through the helper,
+     * which hands back text or an image, never the clip itself. A read the
+     * system answers with no clip is not "there was none": on a locked phone
+     * the clipboard hides its clip from every reader, so null is unreadable.
+     */
+    override fun saveClip(): ClipData? {
+        if (reader() != ClipReader.Direct) return null
+        val svc = service ?: return null
+        return svc.readPrimaryClip(SHELL_PACKAGE, callerUid)
+    }
+
+    override fun putBack(clip: ClipData): Boolean {
+        val svc = service ?: return false
+        return svc.putPrimaryClip(clip, SHELL_PACKAGE, callerUid)
+    }
+
+    override fun setTyping(text: String): Boolean {
+        val svc = service ?: return false
+        return svc.putPrimaryClip(ClipData.newPlainText(TYPING_LABEL, text), SHELL_PACKAGE, callerUid)
     }
 
     // ---- images (docs/design/dragdrop.md): first image item only ---------------
@@ -231,6 +257,14 @@ internal interface ClipboardService {
     fun getPrimaryClip(packageName: String, uid: Int): ClipData?
     fun getPrimaryClipDescription(packageName: String, uid: Int): ClipDescription?
     fun setPrimaryClip(clip: ClipData, packageName: String, uid: Int)
+
+    /** The whole primary clip, or null when there is none to read or the read failed. */
+    fun readPrimaryClip(packageName: String, uid: Int): ClipData? =
+        runCatching { getPrimaryClip(packageName, uid) }.getOrNull()
+
+    /** Sets [clip]; false when the system refused it (a URI the caller may not hand on). */
+    fun putPrimaryClip(clip: ClipData, packageName: String, uid: Int): Boolean =
+        runCatching { setPrimaryClip(clip, packageName, uid) }.isSuccess
     fun addClipListener(listener: ClipChangeListener): Boolean
     fun removeClipListener(listener: ClipChangeListener)
 }
@@ -308,10 +342,15 @@ internal class BinderClipboardService(private val log: (String) -> Unit) : Clipb
     }
 
     override fun setPrimaryClip(clip: ClipData, packageName: String, uid: Int) {
-        val svc = binder ?: return
-        val set = api.set ?: return
-        runCatching { set.invoke(svc, *argsFor(set, ClipData::class.java, clip, packageName)) }
+        putPrimaryClip(clip, packageName, uid)
+    }
+
+    override fun putPrimaryClip(clip: ClipData, packageName: String, uid: Int): Boolean {
+        val svc = binder ?: return false
+        val set = api.set ?: return false
+        return runCatching { set.invoke(svc, *argsFor(set, ClipData::class.java, clip, packageName)) }
             .onFailure { log("clipboard: setPrimaryClip failed: ${failureClasses(it)}") }
+            .isSuccess
     }
 
     override fun addClipListener(listener: ClipChangeListener): Boolean {
@@ -435,6 +474,29 @@ private fun argsFor(m: Method, valueType: Class<*>?, value: Any?, packageName: S
         }
     }
 }
+
+/**
+ * The clipboard as the person's typing borrows it for a paste (WIN-80): the
+ * whole clip saved, the run set as a clip of the phone's own, the saved clip
+ * put back.
+ */
+internal interface ClipKeeper {
+    /** The whole primary clip, or null when it cannot be read whole here. */
+    fun saveClip(): ClipData?
+
+    /** Sets [clip] again as it was; false when the system refused it. */
+    fun putBack(clip: ClipData): Boolean
+
+    /** Sets [text] as the typing's own clip, which SHARE-1 never sends; false when refused. */
+    fun setTyping(text: String): Boolean
+}
+
+/** The label of the clip the person's typing pastes from (WIN-80). */
+internal const val TYPING_LABEL = "Contigua typing"
+
+/** The echo rule for the typing's clip, as [isOurClip] is for images: never synced to the Mac. */
+internal fun isTypingClip(description: ClipDescription?): Boolean =
+    description?.label?.toString() == TYPING_LABEL
 
 /**
  * The echo rule for app-owned clipboard images (SHARE-2/16): a clip pointing at

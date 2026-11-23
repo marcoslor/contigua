@@ -657,9 +657,12 @@ that already holds text without `clear` — the call fails `not_supported` with 
 sentence naming the way through, and types nothing; with no focused field it
 fails `no_field`. There is no clipboard fallback. `submit` sends ENTER after.
 
-The person's own keyboard still uses the `text` message and its clipboard
-paste for non-ASCII runs; moving it to the same route is an open question in
-the spec.
+The person's own keyboard uses the `text` message, and since plan T14 its
+non-ASCII runs take the same `ACTION_SET_TEXT` route (WIN-80). Only a focused
+field with no set text gets a paste, and then the phone saves the person's whole
+clip, proves it can put it back, pastes one run at a time and puts the clip back
+afterwards; a clip it cannot save or put back is never overwritten, and the run
+is dropped.
 
 `input_probe` is the measurement tool built for the pmaxx epic, listed only
 while the app runs with `--mcp-dev-tools` (the stream bench, the e2e `mcp`

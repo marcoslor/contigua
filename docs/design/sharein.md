@@ -41,9 +41,10 @@ helper is ready:
 | 0 (with root privileges) | not ready or absent | `Off("uid 0, no helper")` | never calls `getPrimaryClip`; one log line names the uid and the missing helper |
 | any other | any | `Off(reason)` | the same: no read, one line with the reason |
 
-`ShellClipboard`, the image poll (`Session.clipImageLoop`) and `AndroidInjector`'s
-save/restore around a non-ASCII paste all take reads through it; on `Helper` or `Off`
-nothing in the server process calls `getPrimaryClip`. Writes are safe at any UID and
+`ShellClipboard` and the image poll (`Session.clipImageLoop`) take reads through it; on
+`Helper` or `Off` nothing in the server process calls `getPrimaryClip`. `AndroidInjector`'s
+paste fallback for the person's typing (WIN-80) saves the whole clip only on `Direct`; on
+`Helper` or `Off` it cannot, so it never pastes. Writes are safe at any UID and
 still go through `setPrimaryClip`.
 
 Images are probed first: `getPrimaryClipDescription` is safe at every UID, and no

@@ -29,7 +29,7 @@ import java.util.concurrent.TimeUnit
  * `UiAutomationConnection` is the platform's own. Nothing here reads a node's
  * text into a log; only counts and codes leave.
  */
-internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSource, UiPressSource, UiTypeSource {
+internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSource, UiPressSource, UiTypeSource, FocusedFieldSource {
 
     private val lock = Any()
     private val startLock = Any()
@@ -134,17 +134,24 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
         clear: Boolean,
         submit: Boolean,
         keys: TextEntry.Keys,
-    ): TextEntry.Outcome = synchronized(readLock) {
-        val failed = TextEntry.Outcome.Refused(UiCodes.FAILED, "This phone cannot read the focused field right now.")
-        if (disconnected) return@synchronized failed
-        val automation = ensureAutomation() ?: return@synchronized failed
+    ): TextEntry.Outcome = withFocus(displayId) { focus -> TextEntry.type(window, text, clear, submit, focus, keys) }
+        ?: TextEntry.Outcome.Refused(UiCodes.FAILED, "This phone cannot read the focused field right now.")
+
+    /**
+     * [displayId]'s node with input focus, under the one read at a time: the
+     * field `ui.type` and the person's typing (WIN-80) act on. Null when the
+     * tree cannot be read.
+     */
+    override fun <T> withFocus(displayId: Int, block: (TextEntry.Focus?) -> T): T? = synchronized(readLock) {
+        if (disconnected) return@synchronized null
+        val automation = ensureAutomation() ?: return@synchronized null
         // A connection just made lists its windows only after its flags land
         // (read() waits for the same reason): one wait, then once more.
         val node = inputFocusOn(automation, displayId) ?: run {
             Thread.sleep(SETTLE_MS)
             inputFocusOn(automation, displayId)
         }
-        TextEntry.type(window, text, clear, submit, node?.let { NodeFocus(it) }, keys)
+        block(node?.let { NodeFocus(it) })
     }
 
     /** The node with input focus in [displayId]'s active layer, or null. */
