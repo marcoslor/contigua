@@ -637,6 +637,92 @@ final class MCPActMachineTests: XCTestCase {
         XCTAssertEqual(actions2, [.fail("phone_offline")])
     }
 
+    // MARK: Review follow-ups (#262): the turn drains while the phone acts
+
+    /// MCP-84: a deadline while the phone's `ui.press` is out fails the call at
+    /// once, but the window's turn is held until the phone answers (or the
+    /// request's own bound): the next call's input cannot land during the press.
+    func testADeadlineWhilePressingDrainsBeforeTheTurnIsFree_MCP84() {
+        for answer in [M.Event.pressOK, .pressFailed("timeout"), .pressFailed("gone")] {
+            var (state, actions, m) = step(machine(.pressing, path: .press), .deadline(waitedMs: nil))
+            XCTAssertEqual(state, .draining)
+            XCTAssertEqual(actions, [.fail("timeout")])
+            (state, actions, m) = step(m, .otherInput("person"))
+            XCTAssertEqual(state, .draining)
+            XCTAssertEqual(actions, [])
+            (state, actions, m) = step(m, answer)
+            XCTAssertEqual(state, .done, "\(answer)")
+            XCTAssertEqual(actions, [], "\(answer)")
+        }
+    }
+
+    /// MCP-84: the same for `ui.type`.
+    func testADeadlineWhileTypingDrainsBeforeTheTurnIsFree_MCP84() {
+        for answer in [M.Event.typeOK(entry: "inserted", via: "keys"), .typeFailed("timeout"),
+                       .typeFailed("no_field")] {
+            var (state, actions, m) = step(machine(.typing, path: .type), .deadline(waitedMs: nil))
+            XCTAssertEqual(state, .draining)
+            XCTAssertEqual(actions, [.fail("timeout")])
+            (state, actions, m) = step(m, answer)
+            XCTAssertEqual(state, .done, "\(answer)")
+            XCTAssertEqual(actions, [], "\(answer)")
+        }
+    }
+
+    /// MCP-84: a client that leaves while its press is out gets no answer, and
+    /// its turn is held until the phone answers the press.
+    func testAClientGoneWhilePressingDrainsBeforeTheTurnIsFree_MCP84() {
+        var (state, actions, m) = step(machine(.pressing, path: .press), .clientGone)
+        XCTAssertEqual(state, .draining)
+        XCTAssertEqual(actions, [])
+        (state, actions, m) = step(m, .deadline(waitedMs: nil))
+        XCTAssertEqual(state, .draining)
+        XCTAssertEqual(actions, [])
+        (state, actions, m) = step(m, .pressOK)
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [])
+    }
+
+    /// MCP-84: the same for `ui.type`.
+    func testAClientGoneWhileTypingDrainsBeforeTheTurnIsFree_MCP84() {
+        var (state, actions, m) = step(machine(.typing, path: .type), .clientGone)
+        XCTAssertEqual(state, .draining)
+        XCTAssertEqual(actions, [])
+        (state, actions, m) = step(m, .typeFailed("phone_offline"))
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [])
+    }
+
+    /// MCP-84 through the runner: A's deadline ends its call while its
+    /// `ui.press` is still out; B's input waits until the phone has answered A.
+    @MainActor
+    func testTheNextCallWaitsForAPressInFlight_MCP84() async {
+        let queue = WindowActQueue()
+        let shared = SharedLog()
+        let a = FakeActEnvironment(name: "A")
+        a.pressMs = 300
+        a.shared = shared
+        let b = FakeActEnvironment(name: "B")
+        b.shared = shared
+        let first = Task {
+            await MCPActRunner.run(MCPActMachine(path: .press, wait: .settle, observe: .none),
+                                   window: 3, queue: queue, deadline: .milliseconds(100), env: a, ref: true)
+        }
+        for _ in 0..<500 where a.log.isEmpty {
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(2)) // real-time: let A's press go out
+        }
+        let second = Task {
+            await MCPActRunner.run(MCPActMachine(path: .input, wait: .none, observe: .none),
+                                   window: 3, queue: queue, deadline: .seconds(5), env: b)
+        }
+        let outcome = await first.value
+        XCTAssertEqual(outcome, .fail("timeout"))
+        _ = await second.value
+        XCTAssertEqual(shared.lines, ["A.press", "A.pressed", "B.input"],
+                       "B's input went out while A's press was on the phone")
+    }
+
     // [MCP-86] T10: the phone answers `ui.press` gone → stale_ref, and no
     // input frame went out.
     @MainActor

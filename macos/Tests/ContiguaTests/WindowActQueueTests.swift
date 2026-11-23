@@ -29,12 +29,20 @@ final class FakeActEnvironment: MCPActEnvironment {
     func refusal() -> String? { refusalCode }
     func sendInput() async {
         log.append("\(name).input")
+        shared?.lines.append("\(name).input")
         if inputMs > 0 { try? await Task.sleep(for: .milliseconds(inputMs)) } // real-time: an input that takes a while to send
         inputEnded = .now
     }
     var pressEvent: MCPActMachine.Event = .pressOK
+    /// How long the phone takes to answer a press.
+    var pressMs = 0
+    /// One order across several environments, when a test needs it.
+    var shared: SharedLog?
     func sendPress() async -> MCPActMachine.Event {
         log.append("\(name).press")
+        shared?.lines.append("\(name).press")
+        if pressMs > 0 { try? await Task.sleep(for: .milliseconds(pressMs)) } // real-time: a press the phone answers late
+        shared?.lines.append("\(name).pressed")
         return pressEvent
     }
     func sendType() async -> MCPActMachine.Event { .typeOK(entry: "inserted", via: "keys") }
