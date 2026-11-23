@@ -450,6 +450,51 @@ final class MCPToolHostTests: XCTestCase {
         }
     }
 
+    /// [MCP-52] [MCP-53] A live window the phone forgot (`no_stream`) closes
+    /// with a close record, `phone_closed` by `phone`, and leaves the ledger's
+    /// open windows.
+    @MainActor
+    func testAWindowThePhoneForgotKeepsItsClose_MCP52() throws {
+        let (controller, profile) = offlineController()
+        defer { dispose(controller, profile) }
+        let window = controller.windows.openOrRaise(pkg: "com.android.settings")
+        window.noteFirstFrame()
+        let stream = window.stream
+        controller.windows.handle(.phoneError(code: "no_stream", message: nil, stream: stream))
+        XCTAssertNil(controller.windows.controller(for: stream), "the forgotten window stayed open")
+
+        let now = ProcessInfo.processInfo.systemUptime
+        let ledger = controller.windows.ledger
+        XCTAssertNil(ledger.row(stream, asker: MCPClientID(1), now: now), "its open entry stayed")
+        let record = try XCTUnwrap(ledger.closeRecord(stream, asker: MCPClientID(1), now: now), "no close record")
+        XCTAssertEqual(record.reason, "phone_closed")
+        XCTAssertEqual(record.closedBy, "phone")
+        let closed = MCPToolHost(controller: controller, client: MCPClientID(1)).noWindow(Int(stream))
+        XCTAssertEqual((closed.extra["closed"] as? [String: Any])?["reason"] as? String, "phone_closed")
+    }
+
+    /// [MCP-52] [MCP-53] A handoff the phone refused (`nothing_to_continue`)
+    /// closes with a close record, `open_failed` by `phone`, and leaves the
+    /// ledger's open windows.
+    @MainActor
+    func testARefusedHandoffKeepsItsClose_MCP52() throws {
+        let (controller, profile) = offlineController()
+        defer { dispose(controller, profile) }
+        let stream = controller.windows.openHandoffWindow().stream
+        controller.windows.closeFailedHandoff(stream: stream)
+        XCTAssertNil(controller.windows.controller(for: stream), "the refused handoff stayed open")
+
+        let now = ProcessInfo.processInfo.systemUptime
+        let ledger = controller.windows.ledger
+        XCTAssertNil(ledger.row(stream, asker: MCPClientID(1), now: now), "its open entry stayed")
+        let record = try XCTUnwrap(ledger.closeRecord(stream, asker: MCPClientID(1), now: now), "no close record")
+        XCTAssertEqual(record.reason, "open_failed")
+        XCTAssertEqual(record.closedBy, "phone")
+        let rows = MCPToolHost(controller: controller, client: MCPClientID(1)).listWindows()["recentlyClosed"]
+            as? [[String: Any]] ?? []
+        XCTAssertEqual(rows.first?["id"] as? Int, Int(stream))
+    }
+
 }
 
 /// A real controller online with the fake phone server, which answers
