@@ -718,7 +718,10 @@ final class ConnectionController {
         }
         mcp.configure(profile: profile, forced: options.mcpEnable, devTools: options.mcpDevTools)
         mcp.hostProvider = { [weak self] in self.map { MCPToolHost(controller: $0) } }
-        mcp.onClientClosed = { [weak self] client in self?.windowActs.clientGone(client) }
+        mcp.onClientClosed = { [weak self] client in
+            self?.windowActs.clientGone(client)
+            self?.uiTreeBroker.forget(client: client)
+        }
         // A phone-side change has to reach the Finder UI even when no extension
         // process is running, and a replicated extension may only be signalled
         // through its working set (NSFileProviderManager.h, design "S5 round 3").

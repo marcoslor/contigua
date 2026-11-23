@@ -564,6 +564,12 @@ final class UITreeBroker {
         for client in answered.keys { answered[client]?[stream] = nil }
     }
 
+    /// An MCP connection closed: the labels it was answered are screen text
+    /// and go with it (MCP-86). Other connections' labels stay.
+    func forget(client: MCPClientID) {
+        answered[client] = nil
+    }
+
     func latestSnapshot(stream: UInt32) -> Int? { refs.latestSnapshot(for: stream) }
 
     /// The pixel space of the window's latest tree (MCP-50, MCP-63).
