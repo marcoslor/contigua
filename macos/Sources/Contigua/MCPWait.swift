@@ -84,10 +84,6 @@ enum MCPWaitPlan {
         remainingMs < settleFloorMs ? nil : min(remainingMs, settleCapMs)
     }
 
-    /// MCP-97: a `busy` read is retried at the next poll; any other failure
-    /// ends the call.
-    static func retries(_ code: String) -> Bool { code == "busy" }
-
     /// The first node whose text or description contains `text`, ignoring
     /// case and accents as `find` does (MCP-75), as `match`: its ref and its
     /// own text.
@@ -133,12 +129,10 @@ enum MCPWaitRunner {
             let end = start + timeoutMs
             var lastReadAt: Int?
             var lastTree: [String: Any]?
-            var lastBusy: String?
             while true {
                 let next = MCPWaitPlan.nextRead(lastReadAt: lastReadAt, now: env.nowMs())
                 if lastReadAt != nil && next > end {
                     // A timeout means the screen was read and did not match.
-                    if let lastBusy { return .fail(lastBusy) }
                     await env.pause(untilMs: end)
                     var answer = MCPWaitAnswer(waitedMs: env.nowMs() - start, until: "timeout")
                     if observe == .tree { answer.tree = lastTree }
@@ -148,10 +142,9 @@ enum MCPWaitRunner {
                 lastReadAt = env.nowMs()
                 switch await env.readTree(untilMs: until) {
                 case .failed(let code):
-                    guard MCPWaitPlan.retries(code) else { return .fail(code) }
-                    lastBusy = code
+                    // MCP-97: any failed read ends the call with its error.
+                    return .fail(code)
                 case .tree(let tree):
-                    lastBusy = nil
                     lastTree = tree
                     let found = MCPWaitPlan.match(text, in: tree)
                     if gone ? found == nil : found != nil {

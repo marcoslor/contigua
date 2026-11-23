@@ -169,28 +169,6 @@ final class MCPWaitTests: XCTestCase {
     }
 
     // [MCP-97]
-    func testABusyReadIsRetriedAtTheNextPoll() async throws {
-        let env = FakeWait()
-        env.readScript = [.failed("busy"), .tree(tree([("e4", "Continue")]))]
-        let result = try answer(await MCPWaitRunner.run(.text("Continue", gone: false), timeoutMs: 10000,
-                                                        observe: .tree, env: env))
-        XCTAssertEqual(env.reads, [0, 500])
-        XCTAssertEqual(result.until, "met")
-        XCTAssertEqual(result.match?["ref"] as? String, "e4")
-    }
-
-    // [MCP-97]
-    func testABusyAtTheDeadlineIsTheError() async throws {
-        let env = FakeWait()
-        env.readScript = [.failed("busy")]
-        let outcome = await MCPWaitRunner.run(.text("Continue", gone: false), timeoutMs: 1500,
-                                              observe: .tree, env: env)
-        guard case .fail(let code) = outcome else { return XCTFail("expected busy, got \(outcome)") }
-        XCTAssertEqual(code, "busy")
-        XCTAssertEqual(env.reads, [0, 500, 1000, 1500])
-    }
-
-    // [MCP-97]
     func testAnotherReadFailureEndsTheWait() async throws {
         let env = FakeWait()
         env.readScript = [.failed("no_display"), .tree(tree([("e4", "Continue")]))]
