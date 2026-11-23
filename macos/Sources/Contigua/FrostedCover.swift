@@ -282,6 +282,11 @@ class FrostedCoverView: NSView {
     private var fadeTimer: Timer?
     private var picture = CoverPicture()
 
+    /// Reduce Motion, read when the cover comes or goes (tests set it).
+    var reduceMotion: () -> Bool = {
+        Motion.reduce(system: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+    }
+
     /// The fade's state, for the tests and the chrome state.
     var isShowing: Bool { content != nil }
 
@@ -394,7 +399,7 @@ class FrostedCoverView: NSView {
     private func run(_ event: CoverFade.Event, at now: TimeInterval) {
         let before = fade.state
         var actions = fade.handle(event, at: now)
-        if Motion.reduce(system: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion), fade.isAnimating {
+        if reduceMotion(), fade.isAnimating {
             actions += fade.handle(.tick(now + CoverFade.duration), at: now + CoverFade.duration)
         }
         if fade.state != before {
@@ -520,7 +525,7 @@ class FrostedCoverView: NSView {
         sweepLayer.frame = sweep.bounds
         sweepLayer.removeAnimation(forKey: "sweep")
         guard active else { return }
-        guard !Motion.reduce(system: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion) else {
+        guard !reduceMotion() else {
             sweepLayer.locations = [0.3, 0.45, 0.6]
             return
         }

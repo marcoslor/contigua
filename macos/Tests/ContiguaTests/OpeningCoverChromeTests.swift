@@ -58,6 +58,21 @@ final class OpeningCoverChromeTests: XCTestCase {
         OpeningCover.display(.opening, name: "Chrome", phone: "Pixel 9", phoneMode: false)!
     }
 
+    /// Reduce Motion: the cover comes and goes at once, with no fade
+    /// (CONV-MAC-22). The other tests here fix full motion, so this one forces
+    /// the reduced path whatever the machine's setting.
+    func testTheCoverComesAndGoesAtOnceUnderReduceMotion() throws {
+        let (window, chrome) = makeChrome(coverUp: false)
+        defer { window.close() }
+        chrome.openingCover.reduceMotion = { true }
+        chrome.openingCover.show(openingDisplay(), icon: nil)
+        XCTAssertEqual(chrome.openingCover.fade.state, .shown, "the cover is up at once, with no fade-in")
+        XCTAssertFalse(chrome.openingCover.isHidden, "the cover shows")
+        chrome.openingCover.show(nil, icon: nil)
+        XCTAssertEqual(chrome.openingCover.fade.state, .hidden, "the cover goes at once, with no fade-out")
+        XCTAssertTrue(chrome.openingCover.isHidden, "no sheet is left fading out")
+    }
+
     /// The cover is one sheet over the whole content, the stream keeps the
     /// stored style's rect, and nothing of the style's chrome shows. The first
     /// frame brings the Framed frame back exactly as it was.
