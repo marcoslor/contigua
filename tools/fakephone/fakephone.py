@@ -2274,6 +2274,9 @@ class WindowStream(object):
         self._configured = False
         self._csd = None
         self._sent = None
+        # A resume re-sends the last config (PROTOCOL `window.resume`: CONFIG +
+        # keyframe), even though the encoder's parameter sets are unchanged.
+        self._force_config = False
         self._config_thread = None
         self._config_stop = threading.Event()
         self._resize_timer = None
@@ -2496,6 +2499,8 @@ class WindowStream(object):
         While STALLED every cause is ignored: a stalled encoder does not come
         back because it was asked.
         """
+        if cause == "resume" and resume:
+            self._force_config = True
         self._handle(EncoderEvent.START, cause, resume=resume)
 
     def black_for(self, seconds, alive):
@@ -2621,8 +2626,10 @@ class WindowStream(object):
             # same parameter sets, so the Mac needs no config: the IDR alone
             # restarts the decoder. A resize's new sets are sent as before.
             sent = self._sent
-            same = (sent is not None and sets == sent[0] and self.w == sent[1]
-                    and self.h == sent[2] and codec == sent[3])
+            force = self._force_config
+            self._force_config = False
+            same = (not force and sent is not None and sets == sent[0]
+                    and self.w == sent[1] and self.h == sent[2] and codec == sent[3])
             self._sent = (sets, self.w, self.h, codec)
             if not same:
                 # Same lane as the config, so the Mac has the picture rect when the config lands.

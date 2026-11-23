@@ -64,6 +64,20 @@ def round16(value):
     return value - (value % 16)
 
 
+def phone_aligned(device, w, h):
+    """The size a phone-mode stream gets: the phone's own encoder alignment
+    (ISS-39's `welcome.device.encoder`), or 16 px when it announces none."""
+    encoder = (device or {}).get("encoder") or {}
+    align_w = int(encoder.get("widthAlign") or 16)
+    align_h = int(encoder.get("heightAlign") or 16)
+    w, h = int(w), int(h)
+    if w < align_w:
+        w = align_w
+    if h < align_h:
+        h = align_h
+    return (w - (w % align_w), h - (h % align_h))
+
+
 # --- persisted client identity + per-Mac pins (v2) --------------------------
 class ClientState(object):
     def __init__(self, path):
@@ -1037,7 +1051,7 @@ def cmd_open(client, args):
     if args.phone and opened.get("w") and opened.get("h"):
         want = (int(opened["w"]), int(opened["h"]))
     else:
-        want = (round16(args.w), round16(args.h))
+        want = phone_aligned(client.device, args.w, args.h)
     if (w, h) != want:
         raise proto.ProtocolError("VIDEO_CONFIG is %dx%d, expected %dx%d" % (w, h, want[0], want[1]))
     if stats["frames"] == 0:
