@@ -287,9 +287,12 @@ internal class AndroidInjector(
             val t = SystemClock.uptimeMillis()
             key(displayId, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_PASTE, 0, t, t)
             key(displayId, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_PASTE, 0, t, t + 1)
+            // The app reads the clip when it handles the paste, which on a slow
+            // app is later than any fixed delay: wait until it has.
+            awaitKeys(displayId)
             val restore = Runnable {
                 try {
-                    if (!keeper.putBack(saved)) log("typing: the clip was not put back after a paste")
+                    putBackUnlessNewer(keeper, saved)
                 } finally {
                     pasteTurn.release()
                 }
@@ -299,11 +302,26 @@ internal class AndroidInjector(
             }.isSuccess
             if (!handedOff) {
                 // No executor to defer it: put it back now rather than never.
-                if (!keeper.putBack(saved)) log("typing: the clip was not put back after a paste")
+                putBackUnlessNewer(keeper, saved)
             }
         } finally {
             if (!handedOff) pasteTurn.release()
         }
+    }
+
+    /**
+     * Puts [saved] back unless a newer clip replaced the typing clip during the
+     * paste (the person copied, or the Mac's clipboard arrived): that one is
+     * the newest and stays. A clip that cannot be read here counts as still
+     * the typing clip, so the person's clip goes back.
+     */
+    private fun putBackUnlessNewer(keeper: ClipKeeper, saved: ClipData) {
+        val now = keeper.saveClip()
+        if (now != null && now.description?.label?.toString() != TYPING_LABEL) {
+            log("typing: a newer clip arrived during a paste; it stays")
+            return
+        }
+        if (!keeper.putBack(saved)) log("typing: the clip was not put back after a paste")
     }
 
     private fun carriesUri(clip: ClipData): Boolean = (0 until clip.itemCount).any { clip.getItemAt(it).uri != null }
