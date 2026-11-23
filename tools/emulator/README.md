@@ -158,9 +158,13 @@ first. Output is counts, keys and durations only.
 ## What start.sh does
 
 1. Boots the AVD `contigua-api36` headless (`-no-window -no-audio -no-boot-anim
-   -gpu swiftshader_indirect`) and waits for `sys.boot_completed`. If a rig PIN
-   is set it unlocks first: userdata (and so `run-as`) is only reachable after
-   the first unlock.
+   -gpu swiftshader_indirect`, 4 cores and 3 GB: `CONTIGUA_EMU_CORES`,
+   `CONTIGUA_EMU_MEMORY`) and waits for `sys.boot_completed`. If a rig PIN is
+   set it unlocks first: userdata (and so `run-as`) is only reachable after the
+   first unlock. Its last step, after the install, waits up to 300 s
+   (`CONTIGUA_SETTLE_S`) for the guest's 1-minute load to fall under the core
+   count, warning when it never does, and fails the run when a not-responding
+   dialog has focus: a hung guest fails checks on its own (#252).
 2. Installs, from `~/.cache/contigua-emulator/` (`$CONTIGUA_FIXTURES`; downloaded once and shared by every checkout, so a new worktree needs no network):
    - **Shizuku** — newest release APK from its GitHub release feed;
    - **app.contigua** — `./gradlew :app:assembleDebug` + `adb install -r -d -g`,
