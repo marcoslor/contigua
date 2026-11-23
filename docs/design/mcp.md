@@ -131,7 +131,7 @@ that names the next step. Extra fields depend on the code:
 | `too_many_windows` | the phone's window cap is reached | The phone allows <n> app windows at once. Close one with close_window, then try again. | `maxWindows` |
 | `bad_url` | LinkPolicy refused the URL | That link can't be opened: only http, https, geo, tel and mailto links up to 8 KiB are allowed. | — |
 | `bad_file` | the path is missing, unreadable, not a regular file or over the cap | That file can't be sent: it must be an absolute path to a readable regular file of at most <cap>. | — |
-| `no_frame` | no keyframe arrived within 2 s | Window <id> is <state word>: no new picture arrived in 2 s. Use ui_tree, or try again. | `window`, `state` |
+| `no_frame` | no keyframe arrived within 2 s | Window <id> is <state word>: no new picture arrived in 2 s. Use ui_tree, or try again. — or, for an `opening` window: Window <id> is opening: no picture yet. Try again in a few seconds. | `window`, `state` |
 | `not_supported` | this phone, or the focused field, cannot do it (no tree, no foreground read, a field that takes no set text) | <phone> can't <read this window's accessibility tree \| …>. — or, for `type_text`: The focused field on window <id> can't take this text: type only letters, digits and symbols a keyboard has, or pass clear: true to replace what is there. | `window` for a field |
 | `timeout` | the phone did not answer within the call's bound | <phone> did not answer in time. Try again; if it keeps failing, check phone_status. | — |
 | `failed` | anything else, and `close_window` on the person's window without `force` | The phone's or the app's own sentence. — or: Window <id> was opened by the person. Pass force: true to close it anyway. | `window` when one is named |
@@ -336,6 +336,11 @@ Content: the PNG block, then the text block of
 display pixels, the ref's `box` plus 8 on each side, clamped to `size`; the
 Mac scales it by frame/`size` to cut the decoded frame. `crop` only with `ref`, `blank` only when true, `settle` only with
 `wait: "settle"`.
+
+A screenshot on a phone that is not online fails `phone_offline` at once,
+before its `ref` is judged, asking for no keyframe (MCP-61). No keyframe
+within 2 s fails `no_frame` with the window's `state`; a window closed at
+that bound fails `no_window`.
 
 ### `wait` (MCP-96, MCP-97, MCP-111)
 
