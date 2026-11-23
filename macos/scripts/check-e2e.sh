@@ -6437,7 +6437,7 @@ PY
 }
 
 # --- Automation server (MCP) -------------------------------------------------
-# check_mcp — the app's private socket, the stdio shim and the 13 tools: state,
+# check_mcp — the app's private socket, the stdio shim and the 15 tools: state,
 # open an app, a screenshot, input frames, a link and a 1 MiB file. With the
 # setting off the shim must print the Settings hint and fail. The peer-uid check
 # cannot be exercised without a second local account; the unit tests cover the
