@@ -4,8 +4,9 @@
 #   tools/emulator/start.sh [--window] [--no-build]
 #
 # Does, in order (all idempotent):
-#   1. boot the AVD headless and wait for sys.boot_completed (unlocks the rig PIN
-#      if a previous run set one)
+#   1. boot the AVD headless (4 cores) and wait for sys.boot_completed and then
+#      for the guest to settle (#252) (unlocks the rig PIN if a previous run set
+#      one)
 #   2. install the apps: Shizuku, app.contigua (built here) and the two F-Droid
 #      test apps, all cached under tools/emulator/.cache/
 #   3. grant app.contigua its runtime permissions - notably the Shizuku
@@ -49,6 +50,9 @@ SHIZUKU_PKG="moe.shizuku.privileged.api"
 BROWSER_PKG="${CONTIGUA_BROWSER:-acr.browser.lightning}"
 MESSENGER_PKG="${CONTIGUA_MESSENGER:-org.fossify.messages}"
 DEVICE_ID="${CONTIGUA_DEVICE_ID:-e0e0e0e0e0e0e0e0}"
+# Four cores: two kept a cold-booted guest saturated for minutes (#252).
+EMU_CORES="${CONTIGUA_EMU_CORES:-4}"
+SETTLE_S="${CONTIGUA_SETTLE_S:-300}"
 
 [ -x "$EMULATOR" ] || die "emulator not installed - run tools/emulator/setup.sh first"
 
@@ -71,7 +75,7 @@ if ! device_present; then
   else
     GPU_ARGS="-gpu swiftshader_indirect"
     [ "$WINDOW" -eq 1 ] && GPU_ARGS=""
-    ARGS="-avd $AVD_NAME -port $EMU_PORT -memory 2048 -cores 2 -no-audio -no-boot-anim -no-snapshot -no-metrics -netdelay none -netspeed full"
+    ARGS="-avd $AVD_NAME -port $EMU_PORT -memory 2048 -cores $EMU_CORES -no-audio -no-boot-anim -no-snapshot -no-metrics -netdelay none -netspeed full"
     [ "$WINDOW" -eq 0 ] && ARGS="$ARGS -no-window"
     step "starting $AVD_NAME on $EMU_PORT (headless=$((1 - WINDOW)))"
     # shellcheck disable=SC2086
@@ -83,6 +87,29 @@ fi
 step "waiting for boot"
 wait_boot 420 || die "emulator did not finish booting (see $AGENT_DIR/emulator.log)"
 step "booted: Android $(emu shell getprop ro.build.version.release | tr -d '\r') (api $(emu shell getprop ro.build.version.sdk | tr -d '\r'))"
+
+# A cold boot keeps the guest busy for minutes after boot_completed; a check
+# started then meets "System UI isn't responding" over the app and first frames
+# seconds late (#252). Wait until the 1-minute load is under the core count and
+# no not-responding dialog has focus.
+guest_load() { emu shell cat /proc/loadavg 2>/dev/null | awk '{print $1}'; }
+settled() {
+  local load
+  load=$(guest_load)
+  [ -n "$load" ] || return 1
+  awk -v l="$load" -v c="$EMU_CORES" 'BEGIN { exit !(l < c) }' || return 1
+  ! emu shell dumpsys window 2>/dev/null | grep mCurrentFocus | grep -q 'Application Not Responding'
+}
+settle_t0=$(date +%s)
+step "waiting for the guest to settle (load under $EMU_CORES, up to ${SETTLE_S}s)"
+until settled; do
+  if [ $(( $(date +%s) - settle_t0 )) -ge "$SETTLE_S" ]; then
+    step "WARNING: the guest is still busy after ${SETTLE_S}s (load $(guest_load)); checks may fail on it"
+    break
+  fi
+  sleep 5
+done
+settled && step "settled in $(( $(date +%s) - settle_t0 ))s (load $(guest_load))"
 
 # The rig is a test device: keep its screen on (lock.sh sleeps it explicitly
 # when a check needs a locked phone). A sleeping screen freezes the app, and a
