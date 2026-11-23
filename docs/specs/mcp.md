@@ -187,7 +187,7 @@ A pure `(state, event) -> (state, actions)` run once per input-tool, `open_app`,
 
 Ignored: a second `settle.reply` (its `seq` is spent), a `tree.reply` before `sendTree`, `otherInput` after Done.
 
-Until T10 ships `ui.press`, a ref tap takes the Sent path: the Mac checks the ref against the window's latest tree (S1, F9), fails `stale_ref` or `off_screen` from Queued, and sends TOUCH at the node's `at`.
+A ref tap takes the Pressing path: the Mac sends `ui.press` with the ref's `k` and the phone refreshes the node and presses its current bounds (MCP-86); `type_text` takes the Typing path (`ui.type`, MCP-109).
 
 ### Settling a display (phone, `SettleWatch`, target)
 
