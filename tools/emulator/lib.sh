@@ -208,7 +208,13 @@ apk_version_code() { # apk_version_code <apk>
 
 # The versionCode the device reports for an installed package.
 installed_version_code() { # installed_version_code <pkg>
-  emu shell dumpsys package "$1" 2>/dev/null |
+  local dump status
+  dump="$(emu shell dumpsys package "$1" 2>/dev/null)" || {
+    status=$?
+    echo "dumpsys package $1 failed (status $status)" >&2
+    return 1
+  }
+  printf '%s\n' "$dump" |
     sed -n 's/.*versionCode=\([0-9][0-9]*\).*/\1/p' | sed -n '1p' | tr -d '\r'
 }
 

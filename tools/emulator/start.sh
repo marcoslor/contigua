@@ -211,7 +211,7 @@ fi
 # Fail fast and loudly: a silent downgrade failure leaves the previous build
 # answering on the port, and every later check would report the wrong code.
 WANT_CODE="$(apk_version_code "$APK")"
-GOT_CODE="$(installed_version_code "$PKG")"
+GOT_CODE="$(installed_version_code "$PKG")" || die "cannot read the installed versionCode of $PKG (see the line above)"
 [ -n "$WANT_CODE" ] || die "cannot read the APK's versionCode (aapt2 at $AAPT2)"
 [ "$GOT_CODE" = "$WANT_CODE" ] ||
   die "installed $PKG versionCode '${GOT_CODE:-none}' but the APK is '$WANT_CODE' (install -r -d did not land; check the signature and the log above)"
