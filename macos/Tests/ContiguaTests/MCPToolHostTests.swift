@@ -414,6 +414,42 @@ final class MCPToolHostTests: XCTestCase {
         XCTAssertEqual(code(shot), .phoneOffline)
     }
 
+    /// [MCP-84] Two agents on one window: the second call waits for the
+    /// first's turn, and neither answer names the other in `alsoActed`, since
+    /// every agent input is sent by the call that holds the window's turn.
+    @MainActor
+    func testTwoAgentsOnOneWindowNeverReportEachOther_MCP84() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        let window = try await fixture.liveWindow()
+        let id = Int(window.stream)
+        fixture.hold("ui.type")
+        let first = Task {
+            await fixture.call("type_text", ["window": id, "text": "one", "observe": "none"],
+                               client: MCPClientID(1))
+        }
+        let typed = await fixture.wait { fixture.sent("ui.type").count == 1 }
+        XCTAssertTrue(typed, "the first call sent no ui.type: \(fixture.sentTypes())")
+        let second = Task {
+            await fixture.call("type_text", ["window": id, "text": "two", "observe": "none"],
+                               client: MCPClientID(2), clearSent: false)
+        }
+        let tapped = Task {
+            await fixture.call("tap", ["window": id, "x": 0.5, "y": 0.5, "observe": "none"],
+                               client: MCPClientID(3), clearSent: false)
+        }
+        try await Task.sleep(for: .milliseconds(200))  // real-time: give the queued calls time to (wrongly) go out
+        XCTAssertEqual(fixture.sent("ui.type").count, 1, "a second call typed during the first's turn")
+        fixture.release("ui.type")
+        let answers = [await first.value.0, await second.value.0, await tapped.value.0]
+        XCTAssertEqual(fixture.sent("ui.type").count, 2)
+        for answer in answers {
+            XCTAssertEqual(answer["isError"] as? Bool, false, "\(answer)")
+            let structured = answer["structuredContent"] as? [String: Any] ?? [:]
+            XCTAssertNil(structured["alsoActed"], "an agent was reported: \(structured)")
+        }
+    }
+
 }
 
 /// A real controller online with the fake phone server, which answers
