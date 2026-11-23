@@ -410,7 +410,15 @@ settled() {
   [ -n "$load" ] || return 1
   awk -v l="$load" -v c="$EMU_CORES" 'BEGIN { exit !(l < c) }'
 }
-not_responding() { emu shell dumpsys window 2>/dev/null | grep mCurrentFocus | grep -q 'Application Not Responding'; }
+# The focused window when it is a not-responding dialog, e.g.
+# "Application Not Responding: com.android.systemui"; empty otherwise.
+not_responding() {
+  local focus
+  focus="$(emu shell dumpsys window 2>/dev/null | grep mCurrentFocus || true)"
+  case "$focus" in
+    *'Application Not Responding'*) printf '%s\n' "$focus" | sed -n 's/.*\(Application Not Responding: [^} ]*\).*/\1/p' ;;
+  esac
+}
 settle_t0=$(date +%s)
 step "waiting for the guest to settle (load under $EMU_CORES, up to ${SETTLE_S}s)"
 while :; do
@@ -424,8 +432,9 @@ while :; do
   fi
   sleep 5
 done
-if not_responding; then
-  die "a not-responding dialog has focus on this boot (#252): the guest is hung, so no check runs on it"
+HUNG="$(not_responding)"
+if [ -n "$HUNG" ]; then
+  die "a not-responding dialog has focus on this boot ($HUNG; #252): the guest is too loaded to trust, so no check runs on it"
 fi
 
 # The emulator is behind NAT and mDNS does not cross it, so reach the server
