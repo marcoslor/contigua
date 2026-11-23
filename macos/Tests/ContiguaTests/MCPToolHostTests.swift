@@ -619,6 +619,78 @@ final class MCPToolHostTests: XCTestCase {
         XCTAssertEqual(structured["opened"] as? String, "raised")
         XCTAssertEqual(windows.appWindows(pkg: "com.android.settings").first?.stream, front.stream)
     }
+
+    /// [MCP-42] `newWindow: true` at the window cap fails `too_many_windows`,
+    /// as the phone's own refusal does, and opens nothing.
+    @MainActor
+    func testANewWindowAtTheCapFailsTooManyWindows_MCP42() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        let first = try await fixture.liveWindow()
+        await fixture.sendApps([Self.settingsMulti])
+        let windows = fixture.controller.windows
+        let second = try XCTUnwrap(windows.openAdditional(pkg: "com.android.settings"))
+        second.noteFirstFrame()
+        windows.setMaxWindows(2)
+        let before = windows.openStreams
+
+        let (answer, _) = await fixture.call("open_app", ["app": "Settings", "newWindow": true,
+                                                          "wait": "none", "observe": "none"])
+        let failure = try XCTUnwrap(error(answer), "open_app at the cap did not fail: \(answer)")
+        XCTAssertEqual(failure["code"] as? String, "too_many_windows")
+        XCTAssertEqual(failure["maxWindows"] as? Int, 2)
+        XCTAssertEqual(failure["message"] as? String,
+                       "The phone allows 2 app windows at once. Close one with close_window, then try again.")
+        XCTAssertEqual(windows.openStreams, before, "a window opened at the cap")
+        XCTAssertNotEqual(first.stream, 0)
+    }
+
+    /// [MCP-42] `newWindow: true` while a window of the app is still opening
+    /// fails `not_ready` naming that window, and opens nothing.
+    @MainActor
+    func testANewWindowWhileOneIsOpeningFailsNotReady_MCP42() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        _ = try await fixture.liveWindow()
+        await fixture.sendApps([Self.settingsMulti])
+        let windows = fixture.controller.windows
+        let opening = try XCTUnwrap(windows.openAdditional(pkg: "com.android.settings"))
+        XCTAssertEqual(opening.mcpLifecycle, .opening)
+        let before = windows.openStreams
+
+        let (answer, _) = await fixture.call("open_app", ["app": "Settings", "newWindow": true,
+                                                          "wait": "none", "observe": "none"])
+        let failure = try XCTUnwrap(error(answer), "open_app while opening did not fail: \(answer)")
+        XCTAssertEqual(failure["code"] as? String, "not_ready")
+        XCTAssertEqual(failure["window"] as? Int, Int(opening.stream))
+        XCTAssertEqual(failure["state"] as? String, "opening")
+        XCTAssertEqual(windows.openStreams, before, "a window opened while one was opening")
+    }
+
+    /// [MCP-42] `newWindow: true` for an app that opens one window raises the
+    /// window it has, and says `opened: "raised"` because it raised it.
+    @MainActor
+    func testANewWindowOfAOneWindowAppRaisesItsWindow_MCP42() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        let other = try await fixture.liveWindow()
+        await fixture.sendApps([Self.settingsMulti, Self.clockOne])
+        let windows = fixture.controller.windows
+        let clock = windows.openOrRaise(pkg: "com.android.deskclock")
+        clock.noteFirstFrame()
+        windows.noteFront(other.stream)
+        XCTAssertEqual(windows.appWindows().first?.stream, other.stream)
+        let before = windows.openStreams
+
+        let (answer, _) = await fixture.call("open_app", ["app": "Clock", "newWindow": true,
+                                                          "wait": "none", "observe": "none"])
+        XCTAssertEqual(answer["isError"] as? Bool, false, "open_app failed: \(answer)")
+        let structured = try XCTUnwrap(answer["structuredContent"] as? [String: Any])
+        XCTAssertEqual(structured["window"] as? Int, Int(clock.stream))
+        XCTAssertEqual(structured["opened"] as? String, "raised")
+        XCTAssertEqual(windows.appWindows().first?.stream, clock.stream, "it said raised but raised nothing")
+        XCTAssertEqual(windows.openStreams, before)
+    }
 }
 
 /// A real controller online with the fake phone server, which answers
