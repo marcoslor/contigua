@@ -14,10 +14,15 @@
 #     the empty search field is `hint: true` with no `text` (MCP-104); with the
 #     keyboard up the IME layer is not `active` and the one `focus` row is the
 #     app's field, in the active layer (MCP-105).
-#  2. Contacts' new-contact editor (a long scrolling form; nothing is saved):
-#     a scrollable carries `hidden`, the reply's `omitted` equals the hidden
-#     rows, no `off` row is sent (MCP-106); a tap by ref on one of its rows
-#     still presses, and the phone logged `expect=yes` (MCP-86).
+#  2. The Files picker (OPEN_DOCUMENT; cancelled with BACK, nothing opened):
+#     its settled read answers, and the phone's settle and read times print.
+#  3. Settings' home, a view-based list longer than the screen (Contacts'
+#     editor is Compose, which sends no off-screen node, so it has nothing to
+#     count): a scrollable carries `hidden`, the reply's `omitted` equals the
+#     hidden rows, no `off` row is sent (MCP-106); a tap by ref on one of its
+#     rows (a page link, no switch) still presses, and the phone logged
+#     `expect=yes` (MCP-86). The keyboard is down first, so the list is the
+#     whole screen's.
 # Pass/fail and counts only: no screen text is printed. Never unlocks: a
 # keyguard showing fails the run. Kills the emulator with
 # `adb -s emulator-5554 emu kill`.
@@ -27,7 +32,7 @@ MODE=run
 for arg in "$@"; do
     case "$arg" in
         --check) MODE=check ;;
-        -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
         *) echo "treeshow.sh: unknown flag $arg" >&2; exit 2 ;;
     esac
 done
@@ -262,6 +267,32 @@ def evidence(name, tree):
                                  | {"label": len(label(r))}) + "\n")
         out.write(json.dumps({"layers": tree.get("layers"), "omitted": tree.get("omitted")}) + "\n")
 
+def phone_ui(kind):
+    """The phone's latest ui.<kind> line after its tag: codes, counts and durations only."""
+    log = subprocess.run([adb, "-s", serial, "logcat", "-d", "-s", "ContiguaSvc:I"],
+                         capture_output=True, text=True, timeout=30).stdout
+    lines = [l for l in log.splitlines() if ("ui.%s stream=" % kind) in l]
+    return lines[-1].split("ContiguaSvc: ")[-1] if lines else "no line"
+
+def keyboard_down():
+    if "mInputShown=true" in shell("dumpsys", "input_method"):
+        shell("input", "keyevent", "KEYCODE_BACK")
+        time.sleep(1)
+    return "mInputShown=true" not in shell("dumpsys", "input_method")
+
+def picker(client, window):
+    """The Files picker, read with a settle; prints the Mac's and the phone's times."""
+    shell("am", "start", "-W", "--display", "0", "-a", "android.intent.action.OPEN_DOCUMENT",
+          "-c", "android.intent.category.OPENABLE", "-t", "*/*")
+    started = time.time()
+    tree = tree_of(client, window, wait="settle")
+    took = int((time.time() - started) * 1000)
+    evidence("files", tree)
+    print("  files: resumed %s, %d rows, ui_tree settle+read %d ms on the Mac" % (resumed(), len(rows(tree)), took))
+    print("  files: phone %s" % phone_ui("settle"))
+    print("  files: phone %s" % phone_ui("tree"))
+    return tree, took
+
 def search_of(tree):
     return next((r for r in rows(tree) if r.get("ref") and r.get("at") and not r.get("edit")
                  and ("search" in label(r).lower() or "search" in (r.get("id") or "").lower())), None)
@@ -289,16 +320,15 @@ try:
     evidence("contacts", tree)
     search = search_of(tree)
     print("  contacts: resumed %s, %d rows, search %s" % (resumed(), len(rows(tree)), search is not None))
+    files = None
     if search is None:
         # The Files picker's search, when Contacts shows none (a first-run screen
         # is left alone: never an account step).
         shell("input", "keyevent", "KEYCODE_BACK")
-        shell("am", "start", "-W", "--display", "0", "-a", "android.intent.action.OPEN_DOCUMENT",
-              "-c", "android.intent.category.OPENABLE", "-t", "*/*")
-        tree = tree_of(client, mirror, wait="settle")
-        evidence("files", tree)
+        tree, took = picker(client, mirror)
+        files = (len(rows(tree)), took)
         search = search_of(tree)
-        print("  files: resumed %s, %d rows, search %s" % (resumed(), len(rows(tree)), search is not None))
+        print("  files: search %s" % (search is not None))
     report(search is not None, "a search control is on screen (%d rows)" % len(rows(tree)))
     if search is not None:
         client.tool("tap", {"window": mirror, "ref": search["ref"], "wait": "settle", "observe": "none"}, timeout=30)
@@ -329,12 +359,19 @@ try:
         shell("input", "keyevent", "KEYCODE_BACK")
         shell("input", "keyevent", "KEYCODE_BACK")
 
-    # 2. A long form: the new-contact editor. Nothing is typed or saved.
-    shell("am", "start", "-W", "--display", "0", "-a", "android.intent.action.INSERT",
-          "-t", "vnd.android.cursor.dir/contact")
+    # 2. The Files picker, when step 1 did not already read it; nothing is opened.
+    if files is None:
+        tree, took = picker(client, mirror)
+        files = (len(rows(tree)), took)
+        shell("input", "keyevent", "KEYCODE_BACK")
+    report(files[0] > 0, "the Files picker's settled tree answers (%d rows, %d ms)" % files)
+
+    # 3. A long view-based list: Settings' home. Nothing is switched.
+    report(keyboard_down(), "the keyboard is down before the list is read")
+    shell("am", "start", "-W", "--display", "0", "-a", "android.settings.SETTINGS")
     tree = tree_of(client, mirror, wait="settle")
-    evidence("editor", tree)
-    print("  editor: resumed %s, %d rows, omitted %s" % (resumed(), len(rows(tree)), tree.get("omitted")))
+    evidence("settings", tree)
+    print("  settings: resumed %s, %d rows, omitted %s" % (resumed(), len(rows(tree)), tree.get("omitted")))
     by_i = {r["i"]: r for r in rows(tree)}
     def has_hidden_ancestor(r):
         p = r.get("p")
@@ -358,9 +395,15 @@ try:
                 return True
             p = by_i[p].get("p")
         return False
+    # A page link: a clickable row whose title row is labelled, with no
+    # clickable, checkable or editable row under it (never a switch).
+    def below(r):
+        return [c for c in rows(tree) if under(c, r["i"])]
     target = next((r for r in rows(tree) if lists and under(r, lists[0]["i"]) and r.get("ref")
-                   and r.get("at") and not r.get("covered") and (r.get("edit") or label(r))
-                   and (r.get("click") or r.get("edit"))), None)
+                   and r.get("at") and not r.get("covered") and r.get("click") and "check" not in r
+                   and not r.get("edit")
+                   and any(c.get("id") == "title" and label(c) for c in below(r))
+                   and not any(c.get("click") or "check" in c or c.get("edit") for c in below(r))), None)
     report(target is not None, "a labelled row of the list is tappable by ref")
     if target is not None:
         answer = client.tool("tap", {"window": mirror, "ref": target["ref"], "wait": "none",
@@ -374,7 +417,7 @@ try:
                and bool(presses) and "pressed expect=yes" in presses[-1],
                "[MCP-86] a tap by ref on a list row presses, expect sent (phone: %s)"
                % (presses[-1].split("ui.press ")[-1] if presses else "no line"))
-    shell("input", "keyevent", "KEYCODE_BACK")
+        shell("input", "keyevent", "KEYCODE_BACK")
     shell("input", "keyevent", "KEYCODE_BACK")
 finally:
     client.close()
