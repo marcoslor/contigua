@@ -241,7 +241,7 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
                 connect()
             } catch (t: Throwable) {
                 synchronized(lock) { failure = sentence(t) } // WIN-79 F10: under the lock
-                log("ui.tree: connect ${t.javaClass.simpleName}") // log-ok: class only
+                log(connectFailureLine(t)) // log-ok: class names only
                 null
             }
             synchronized(lock) {
@@ -463,6 +463,17 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
     }
 
     companion object {
+        /**
+         * The log line for a failed connect: the thrown class and the root
+         * cause's class (reflection wraps the platform's refusal in an
+         * `InvocationTargetException`), never a message. B6's rig runs failed
+         * here after pairing and logged only the wrapper.
+         */
+        internal fun connectFailureLine(t: Throwable): String {
+            val root = generateSequence(t) { it.cause }.last()
+            return "ui.tree: connect ${t.javaClass.simpleName} root=${root.javaClass.simpleName}"
+        }
+
         /**
          * The connection's flags (MCP-107): interactive windows, every view,
          * view ids, and no event types: a watch asks for the five content
