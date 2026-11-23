@@ -1600,7 +1600,9 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
    `TYPE_WINDOWS_CHANGED`, `TYPE_VIEW_TEXT_CHANGED`, `TYPE_VIEW_SCROLLED` — whose window is on
    the stream's display (by window id, from the latest `windowsOnAllDisplays` read, refreshed
    when the watch starts, on every `TYPE_WINDOWS_CHANGED`, and once for each window id it does
-   not know); every other event type is ignored. The connection asks for no event type at all
+   not know; an event whose window that refresh no longer lists counts when the read before it
+   placed the window on the display, so a window removed from the display is a change); every
+   other event type is ignored. The connection asks for no event type at all
    while no watch runs, and for only these five while one does. A display listed with no window, or not listed yet, is still opening: it counts as loading at the start and at every check, and its first window is a counted change. When no counted event came for
    `Q` ms it checks the display for a loading signal (item 9's `loading`) and answers only
    when there is none, else watches on and checks again after every later quiet period; at

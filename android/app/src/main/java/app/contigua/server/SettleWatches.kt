@@ -167,8 +167,13 @@ internal class SettleWatches(
         }
 
         fun onEvent(type: Int, windowId: Int) {
+            // A window removed from the display (a dialog closing, the keyboard
+            // hiding) is no longer listed after the re-read: it counts when it
+            // was on the display before the read or is after it (MCP-107).
+            val before = windows.displayOf(windowId)
             if (windows.needsRead(type, windowId)) readWindows()
-            drive(SettleWatch.Event.A11y(type, windows.displayOf(windowId) == displayId, now()))
+            val onDisplay = before == displayId || windows.displayOf(windowId) == displayId
+            drive(SettleWatch.Event.A11y(type, onDisplay, now()))
         }
 
         fun finish(value: SettleAnswer) {
