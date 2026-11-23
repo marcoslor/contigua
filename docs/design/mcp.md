@@ -637,6 +637,11 @@ are the session `nav` action (home and recents act only in a phone-mode
 window, WIN-47); the other keys are KEY down/up frames with Android keycodes
 (enter 66, delete 67, tab 61, escape 111, arrows 19–22). `type_text` is the
 `ui.type` exchange (MCP-109), and never touches the clipboard (MCP-110).
+The call answers by its 5 s bound (MCP-8), but the Mac waits for the phone's
+answer 5 s plus 10 ms per code point from the send (25 s for 2000), holding
+the window's turn and the phone's read queue meanwhile: text sent as keys can
+take longer than the read deadline, and the next call's input must not land
+inside it (MCP-84).
 
 **Typing without the clipboard (#173).** Before T13 the tool sent the `text`
 message, whose non-ASCII runs go through the phone's clipboard and a paste key:
