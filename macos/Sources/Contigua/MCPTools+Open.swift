@@ -27,18 +27,44 @@ extension MCPToolHost {
     func openApp(_ query: String, newWindow: Bool, shape: MCPWindowShape = .phone, wait: MCPWait, observe: MCPObserve) async throws -> [String: Any] {
         let phone = try onlinePhone()
         let app = try Self.chooseApp(query, in: IntentsBridge.apps(for: phone, in: controller))
+        let addWindow = try newWindow && addsWindow(app, phone: phone.id)
         let before = Set(controller.windows.openStreams)
         // MCP-51: a window this call creates is this connection's. The answer
         // is the window the open made or raised (MCP-41), never another of
         // the app's windows.
         let window = controller.windows.opening(by: opener, shape: shape) {
-            controller.intentsOpenApp(app.pkg, on: phone.id, newWindow: newWindow)
+            controller.intentsOpenApp(app.pkg, on: phone.id, newWindow: addWindow)
         }
         guard let stream = window?.stream else {
             throw MCPToolError.failed("The app couldn't open a window. Call list_windows, then try open_app again.")
         }
         return try await opened(stream, kind: .app, opened: before.contains(stream) ? .raised : .new,
                                 wait: wait, observe: observe)
+    }
+
+    /// MCP-42: `newWindow: true` when the Mac itself cannot add the window.
+    /// True adds one; false raises the app's window, for an app that opens
+    /// one window at a time (the answer says `raised` because it was). At
+    /// the cap it fails `too_many_windows`, as the phone's own refusal does;
+    /// while a window of the app is still opening, `not_ready` naming it.
+    /// With no window of the app open the flag opens the first (MCP-40).
+    private func addsWindow(_ app: AppInfo, phone: String) throws -> Bool {
+        let windows = controller.windows
+        let existing = windows.appWindows(pkg: app.pkg, deviceId: phone)
+        guard !existing.isEmpty else { return true }
+        switch windows.newWindowItem(for: app.pkg, deviceId: phone).blocker {
+        case .oneWindow:
+            return false
+        case .atCap:
+            throw MCPOpenAnswer.atCap(windows.maxWindows)
+        case .opening:
+            let opening = existing.first(where: \.isOpening) ?? existing[0]
+            throw MCPOpenAnswer.stillOpening(window: Int(opening.stream))
+        case .link:
+            throw IntentFailure.phoneNotConnected
+        case .noApp, nil:
+            return true
+        }
     }
 
     /// MCP-43: the link opens in a new window on the live link path; the
@@ -158,6 +184,20 @@ enum MCPOpenAnswer {
         }
         if let treeError = result.treeError { answer["treeError"] = treeError }
         return answer
+    }
+
+    /// The Mac at the phone's window cap refuses `newWindow: true` itself
+    /// (MCP-42), with design/mcp.md's sentence.
+    static func atCap(_ maxWindows: Int) -> MCPToolError {
+        MCPToolError(.tooManyWindows,
+                     "The phone allows \(maxWindows) app windows at once. Close one with close_window, then try again.",
+                     ["maxWindows": maxWindows])
+    }
+
+    /// `newWindow: true` while a window of the app is still opening (MCP-42).
+    static func stillOpening(window: Int) -> MCPToolError {
+        MCPToolError(.notReady, "Window \(window) is still opening. Call wait on it, then try again.",
+                     ["window": window, "state": "opening"])
     }
 
     /// The phone refused the window it was opening (MCP-42, MCP-43).
