@@ -242,8 +242,8 @@ struct FrontReadMachine: Equatable {
 /// continuations and their 1 s timers. Every decision is the machine's.
 @MainActor
 final class FrontReadGate {
-    static let budget = FrontReadMachine.budget
-    static let wait: Duration = .seconds(1)
+    nonisolated static let budget = FrontReadMachine.budget
+    nonisolated static let wait: Duration = .seconds(1)
 
     /// Sends one `task.front` with this seq.
     var send: ((Int) -> Void)?
