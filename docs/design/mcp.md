@@ -651,8 +651,9 @@ The person's own keyboard uses the `text` message, and since plan T14 its
 non-ASCII runs take the same `ACTION_SET_TEXT` route (WIN-80). Only a focused
 field with no set text gets a paste, and then the phone saves the person's whole
 clip, proves it can put it back, pastes one run at a time and puts the clip back
-afterwards; a clip it cannot save or put back is never overwritten, and the run
-is dropped.
+afterwards; a clip it cannot save or put back, and any clip carrying a URI (an
+image, a file), is never overwritten, and the run is dropped. A set-text run waits
+for the keys sent before it to be handled first, and for a busy tree 150 ms at most.
 
 `input_probe` is the measurement tool built for the pmaxx epic, listed only
 while the app runs with `--mcp-dev-tools` (the stream bench, the e2e `mcp`

@@ -1,5 +1,6 @@
 package app.contigua.server
 
+import android.content.ClipData
 import android.os.SystemClock
 import android.view.InputDevice
 import android.view.InputEvent
@@ -30,6 +31,8 @@ internal class AndroidInjector(
     private val clipboard: ClipboardPort? = null,
     /** The focused field of each display, which the person's typing sets text on first; null: none. */
     private val fields: FocusedFieldSource? = null,
+    /** Like [sink], with the injection mode too (async or wait-for-finish); takes precedence over it. */
+    private val injected: ((InputEvent, Int, Int) -> Unit)? = null,
 ) : Injector {
 
     private val inputManager: Any? =
@@ -62,6 +65,12 @@ internal class AndroidInjector(
     private val pasteTurn = Semaphore(1)
 
     @Volatile private var runsDropped = 0
+
+    /**
+     * A key went out async since the last barrier: the app may not have
+     * handled it yet, so a set-text run must wait for it first (WIN-80).
+     */
+    @Volatile private var keysInFlight = false
 
     override fun touch(
         displayId: Int,
@@ -225,6 +234,8 @@ internal class AndroidInjector(
      */
     private fun route(displayId: Int, text: String): Route {
         val source = fields ?: return Route.PASTE
+        // Set text reads the field: every key sent before this run lands first.
+        awaitKeys(displayId)
         return runCatching { source.withFocus(displayId) { focus -> setTextRoute(focus, text) } }
             .getOrNull() ?: Route.PASTE
     }
@@ -240,10 +251,29 @@ internal class AndroidInjector(
     }
 
     /**
+     * The barrier (WIN-80): a key that does nothing, its up injected with
+     * wait-for-finish, so the app has handled every key sent before it, in
+     * order, when this returns. Injected events reach the app in order, and
+     * the app finishes them in order. Only when a key went out since the last
+     * barrier, so plain set-text runs cost nothing.
+     */
+    private fun awaitKeys(displayId: Int) {
+        if (!keysInFlight) return
+        keysInFlight = false
+        val t = SystemClock.uptimeMillis()
+        deliver(KeyEvent(t, t, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_UNKNOWN, 0), displayId)
+        deliver(KeyEvent(t, t, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_UNKNOWN, 0), displayId, INJECT_MODE_WAIT_FOR_FINISH)
+        keysInFlight = false
+    }
+
+    /**
      * The fallback, one at a time: save the whole clip, prove it can be put
      * back by putting it back, set the run, paste, and put the clip back a
      * moment later. A clip that cannot be saved or put back is never
-     * overwritten: the run is dropped.
+     * overwritten: the run is dropped. A clip that carries a URI is never
+     * written at all, not even with itself: the shell may set a URI clip back
+     * only while it is the current clip, so once the run replaced it no trial
+     * proves it would come back (emulator boot 1).
      */
     private fun pasteKeepingTheClip(displayId: Int, text: String) {
         val keeper = clipboard as? ClipKeeper ?: return dropped(text, "no_clipboard")
@@ -251,6 +281,7 @@ internal class AndroidInjector(
         var handedOff = false
         try {
             val saved = keeper.saveClip() ?: return dropped(text, "clip_unreadable")
+            if (carriesUri(saved)) return dropped(text, "clip_carries_uri")
             if (!keeper.putBack(saved)) return dropped(text, "clip_not_restorable")
             if (!keeper.setTyping(text)) return dropped(text, "clip_write_refused")
             val t = SystemClock.uptimeMillis()
@@ -274,6 +305,8 @@ internal class AndroidInjector(
             if (!handedOff) pasteTurn.release()
         }
     }
+
+    private fun carriesUri(clip: ClipData): Boolean = (0 until clip.itemCount).any { clip.getItemAt(it).uri != null }
 
     /** A run that went nowhere: its length and the reason only, never its text. */
     private fun dropped(text: String, reason: String) {
@@ -306,7 +339,12 @@ internal class AndroidInjector(
         }
     }
 
-    private fun deliver(e: InputEvent, displayId: Int) {
+    private fun deliver(e: InputEvent, displayId: Int, mode: Int = INJECT_MODE_ASYNC) {
+        if (e is KeyEvent && mode == INJECT_MODE_ASYNC) keysInFlight = true
+        injected?.let {
+            it(e, displayId, mode)
+            return
+        }
         sink?.let {
             it(e, displayId)
             return
@@ -314,7 +352,7 @@ internal class AndroidInjector(
         setDisplayId?.let { runCatching { it.invoke(e, displayId) } }
         val m = injectMethod ?: return
         try {
-            m.invoke(inputManager, e, INJECT_MODE_ASYNC)
+            m.invoke(inputManager, e, mode)
         } catch (t: Throwable) {
             if (!loggedFailure) {
                 loggedFailure = true
@@ -325,6 +363,8 @@ internal class AndroidInjector(
 
     private companion object {
         const val INJECT_MODE_ASYNC = 0
+        /** `InputManager.INJECT_INPUT_EVENT_MODE_WAIT_FOR_FINISH`: returns once the app handled the event. */
+        const val INJECT_MODE_WAIT_FOR_FINISH = 2
         const val CLIPBOARD_RESTORE_DELAY_MS = 400L
 
         /** How long a run waits for an earlier paste's clip to be put back. */
@@ -346,7 +386,9 @@ internal class AndroidInjector(
 internal interface FocusedFieldSource {
     /**
      * Runs [block] on [displayId]'s node with input focus (null: none has it)
-     * and answers its result, or null when the tree cannot be read.
+     * and answers its result, or null when the tree cannot be read. The
+     * caller is the session's reader thread, so a tree busy with another
+     * read is waited on for a short bound only, and then is unreadable.
      */
     fun <T> withFocus(displayId: Int, block: (TextEntry.Focus?) -> T): T?
 }
