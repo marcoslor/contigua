@@ -136,8 +136,9 @@ display id on every injected event.
 - On resize the phone sends a **new VIDEO_CONFIG** (new size) followed by a
   keyframe, then `window.resize.ack`. The Mac must rebuild its format description on
   every CONFIG. Frames received before the new CONFIG are old-size frames and may be
-  shown or dropped. `window.resume` and `window.keyframe` may also be answered with
-  CONFIG + keyframe. A resize that changes only the dpi keeps the frame size, so it
+  shown or dropped. `window.resume` of a paused stream is always answered with
+  CONFIG + keyframe (the encoder resends its config, or is rebuilt); `window.keyframe`
+  asks for a keyframe (one sent moments before already answers it). A resize that changes only the dpi keeps the frame size, so it
   answers with the ack alone ("density"): every app relayouts onto the surface the
   running encoder still reads. A request the display already shows answers "same",
   and one the phone cannot apply (no such stream, or a size of zero) answers
