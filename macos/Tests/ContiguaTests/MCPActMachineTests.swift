@@ -115,6 +115,47 @@ final class MCPActMachineTests: XCTestCase {
         }
     }
 
+    /// The Typing state's rows (plan T13): a turn types, the phone's answer
+    /// goes on to the settle with its `entry` and `via`, its refusal ends the
+    /// call with its code, and a window or link gone while typing fails
+    /// ([MCP-109]).
+    func testTypingWalksItsRows_MCP109() {
+        var (state, actions, m) = step(machine(.queued, path: .type), .turn(.live))
+        XCTAssertEqual(state, .typing)
+        XCTAssertEqual(actions, [.sendType])
+        (state, actions, m) = step(m, .typeOK(entry: "inserted", via: "set_text"))
+        XCTAssertEqual(state, .settling(1))
+        XCTAssertEqual(actions, [.sendSettle(req: 1, quietMs: 300, timeoutMs: 2000)])
+        XCTAssertEqual(m.entry, "inserted")
+        XCTAssertEqual(m.via, "set_text")
+
+        (state, actions, _) = step(machine(.typing), .typeFailed("no_field"))
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [.fail("no_field")])
+
+        (state, actions, _) = step(machine(.typing), .windowClosed(reason: "app_exited", by: "phone"))
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [.fail("no_window")])
+
+        (state, actions, _) = step(machine(.typing), .linkLost)
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [.fail("phone_offline")])
+    }
+
+    /// The phone's `ui.type` codes that are no closed MCP code (`busy`) fail
+    /// `failed`; the closed ones keep their code ([MCP-109], [MCP-6]).
+    func testATypeRefusalMapsToAClosedCode_MCP109() {
+        let cases = [("no_field", "no_field"), ("not_supported", "not_supported"),
+                     ("no_window", "no_window"), ("timeout", "timeout"),
+                     ("phone_offline", "phone_offline"), ("busy", "failed"), ("failed", "failed"),
+                     ("something_new", "failed")]
+        for (phone, code) in cases {
+            let (state, actions, _) = step(machine(.typing), .typeFailed(phone))
+            XCTAssertEqual(state, .done, phone)
+            XCTAssertEqual(actions, [.fail(code)], phone)
+        }
+    }
+
     // MARK: Sent
 
     func testSettledThenTreeAnswersWithTheTree_MCP81() {

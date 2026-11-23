@@ -301,10 +301,14 @@ def suite(args):
                (swipe_moves[0]["nx"] < swipe_moves[-1]["nx"] and swipe_moves[0]["ny"] > swipe_moves[-1]["ny"])),
                "MCP swipe moves run from the start towards the end")
 
+        # [MCP-92] type_text is one ui.type (its `type` event carries the
+        # count, never the text) and never the `text` message.
+        typed = [e for e in log if e.get("ev") == "type" and e.get("stream") == window]
         texts = [e for e in log if e.get("ev") == "rx" and isinstance(e.get("msg"), dict)
-                 and e["msg"].get("t") == "text" and e["msg"].get("text") == "mcp test 123"
-                 and e["msg"].get("stream") == window]
-        report(bool(texts), "MCP type_text reaches the phone as the text frame")
+                 and e["msg"].get("t") == "text" and e["msg"].get("stream") == window]
+        report(len(typed) == 1 and typed[0].get("characters") == 12 and not texts,
+               "[MCP-92] MCP type_text reaches the phone as one ui.type and no text frame "
+               "(%d type, %d text)" % (len(typed), len(texts)))
 
         enter_down = [e for e in log if e.get("ev") == "input" and e.get("kind") == "key"
                       and e.get("stream") == window and e.get("action") == 0 and e.get("keycode") == 66]
