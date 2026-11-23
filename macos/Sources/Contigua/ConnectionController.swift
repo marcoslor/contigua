@@ -1271,19 +1271,16 @@ final class ConnectionController {
 
     // MARK: Foreground app (PANEL-26)
 
-    /// A card opened: ask once now, then at most once every 2 s while it stays
-    /// open. The count covers both hosts (the menu-bar panel and the Deck
-    /// popover); the timer stops when the last one closes, so a closed card
-    /// never reads the phone.
+    /// A card opened: ask once now, then again 2 s after the last request
+    /// while it stays open, whoever sent that request (the card or an MCP
+    /// read): the next ask is scheduled from the shared budget, so the budget
+    /// never refuses it (PANEL-26). The count covers both hosts (the menu-bar
+    /// panel and the Deck popover); the timer stops when the last one closes,
+    /// so a closed card never reads the phone.
     func beginPanelFrontWatch() {
         frontWatchCount += 1
         guard frontWatchCount == 1 else { return }
-        askFront()
-        let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.askFront() }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        frontTimer = timer
+        frontTick()
     }
 
     func endPanelFrontWatch() {
@@ -1291,6 +1288,22 @@ final class ConnectionController {
         guard frontWatchCount == 0 else { return }
         frontTimer?.invalidate()
         frontTimer = nil
+    }
+
+    /// One card ask, then the next one at the budget's `nextAsk`: 2 s after
+    /// the last request (2 s from now while offline, when nothing was asked).
+    private func frontTick() {
+        frontTimer?.invalidate()
+        frontTimer = nil
+        guard frontWatchCount > 0 else { return }
+        askFront()
+        let due = frontReads.nextAsk.map { $0 - .now } ?? FrontReadGate.budget
+        let seconds = Double(due.components.seconds) + Double(due.components.attoseconds) / 1e18
+        let timer = Timer(timeInterval: max(seconds, 0.05), repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.frontTick() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        frontTimer = timer
     }
 
     private func askFront() {
