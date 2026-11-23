@@ -16,6 +16,7 @@ import org.robolectric.annotation.Config
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -30,6 +31,9 @@ import java.util.concurrent.atomic.AtomicInteger
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class AndroidInjectorTest {
+
+    /** `InputManager.INJECT_INPUT_EVENT_MODE_WAIT_FOR_FINISH`. */
+    private val waitForFinish = 2
 
     private fun keysDelivered(): Pair<AndroidInjector, MutableList<KeyEvent>> {
         val events = mutableListOf<KeyEvent>()
@@ -363,5 +367,70 @@ class AndroidInjectorTest {
         assertNull("the temporary clip is not shared", shared[0])
         assertTrue("the person's clip is back", eventually { service.text() == "synthetic-person-clip" })
         assertEquals("the person's clip is shared as before", "synthetic-person-clip", port.getText()?.text)
+    }
+
+    /**
+     * Review of #176 (lead, 2026-11-23): the app handles the paste key when
+     * its turn comes, which on a slow app is after the restore's 400 ms, so
+     * it pasted the person's own clip into the field. The clip goes back only
+     * once the app has finished the paste key.
+     */
+    @Test(timeout = 15_000)
+    fun testTheClipComesBackOnlyAfterTheAppHandledThePaste() { // [WIN-80]
+        val previous = textClip("synthetic-previous-" + "h".repeat(4))
+        val service = FakeService(previous)
+        val pasted = CopyOnWriteArrayList<String?>()
+        // The app: one input queue, handled in order; its paste reads the clip 600 ms late.
+        val app = Executors.newSingleThreadExecutor()
+        val injector = AndroidInjector(
+            log = {},
+            sink = { e, mode ->
+                val handled = app.submit {
+                    if (e is KeyEvent && e.action == KeyEvent.ACTION_DOWN && e.keyCode == KeyEvent.KEYCODE_PASTE) {
+                        Thread.sleep(600) // real-time: a slow app
+                        pasted += service.text()
+                    }
+                }
+                // Wait-for-finish returns once the app handled the event.
+                if (mode == waitForFinish) handled.get()
+            },
+            clipboard = shell(service),
+            fields = Fields(noSetText()),
+        )
+        try {
+            injector.text(0, "\u00e9")
+            assertTrue("the app handled the paste", eventually { pasted.isNotEmpty() })
+            assertEquals("the app pasted the run, not the person's clip", listOf<String?>("\u00e9"), pasted.toList())
+            assertTrue("the person's clip is back",
+                eventually { service.clip?.description?.label == previous.description.label })
+        } finally {
+            app.shutdownNow()
+        }
+    }
+
+    /**
+     * Review of #176 (lead, 2026-11-23): a clip copied while the paste runs
+     * (by the person, or from the Mac) is the newest clip. The restore leaves
+     * it and never writes the older clip over it.
+     */
+    @Test
+    fun testAClipCopiedDuringThePasteIsNotOverwritten() { // [WIN-80]
+        val service = FakeService(textClip("synthetic-previous-" + "k".repeat(4)))
+        val newer = ClipData(ClipDescription("person-newer", arrayOf("text/plain")), ClipData.Item("synthetic-newer"))
+        val injector = AndroidInjector(
+            log = {},
+            sink = { e, _ ->
+                if (e is KeyEvent && e.action == KeyEvent.ACTION_UP && e.keyCode == KeyEvent.KEYCODE_PASTE) {
+                    service.clip = newer
+                }
+            },
+            clipboard = shell(service),
+            fields = Fields(noSetText()),
+        )
+
+        injector.text(0, "\u00e9")
+
+        Thread.sleep(900) // real-time: past the deferred restore
+        assertEquals("the newer clip stays", "synthetic-newer", service.text())
     }
 }
