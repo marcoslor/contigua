@@ -10,12 +10,32 @@ import XCTest
 
 @MainActor
 final class OpeningCoverChromeTests: XCTestCase {
+    /// A window that keeps the size it was given. AppKit fits a titled window
+    /// to the screen's visible frame when it is ordered front, and the Framed
+    /// window here (643 pt of content under the title bar) is taller than a
+    /// 768 pt screen's visible frame (the CI runner's: 674 pt, with a 32 pt
+    /// title bar), which cut the stream to 599 pt. These tests are about the
+    /// chrome's geometry, not about fitting a screen (WindowFrameLimitTests).
+    private final class UnconstrainedWindow: NSWindow {
+        override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
+    }
+
+    override func setUp() {
+        super.setUp()
+        // The fade assertions are written for full motion. Under the system's
+        // Reduce Motion (the CI runner has it on) the cover goes at once, so the
+        // tests fix the setting instead of reading it.
+        let motion = Motion.overrideFull
+        Motion.overrideFull = true
+        addTeardownBlock { Motion.overrideFull = motion }
+    }
+
     private func makeChrome(style: WindowStyle = .framed, actions: [HeaderAction] = [],
                             coverUp: Bool = true) -> (NSWindow, StreamChromeView) {
         let size = style.windowSize(stream: CGSize(width: 900, height: 600))
-        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
-                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
-                              backing: .buffered, defer: false)
+        let window = UnconstrainedWindow(contentRect: NSRect(origin: .zero, size: size),
+                                         styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                                         backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.appearance = NSAppearance(named: .darkAqua)
         let video = VideoLayerView(frame: NSRect(x: 0, y: 0, width: 900, height: 600))
@@ -24,6 +44,7 @@ final class OpeningCoverChromeTests: XCTestCase {
         chrome.frame = NSRect(origin: .zero, size: size)
         window.contentView = chrome
         window.makeKeyAndOrderFront(nil)
+        XCTAssertEqual(chrome.bounds.size, size, "the test window keeps the content size it was given")
         chrome.setActions(actions)
         if coverUp {
             chrome.openingCover.show(OpeningCover.display(.opening, name: "Chrome", phone: "Pixel 9",
