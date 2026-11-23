@@ -641,14 +641,20 @@ enum MCPArguments {
     }
 
     /// A ref is the phone's key, `e<k>` (MCP-71); anything else is an argument
-    /// error, never a refusal from the tool.
+    /// error, never a refusal from the tool. The phone's key is a 32-bit int,
+    /// so a ref with more than `maxKey` is no key either.
     static func key(_ args: [String: Any], _ key: String) throws -> String {
         let value = try string(args, key, maximum: 32)
-        guard value.count >= 2, value.first == "e", value.dropFirst().allSatisfy({ $0.isASCII && $0.isNumber }) else {
+        let digits = value.dropFirst()
+        guard value.count >= 2, value.first == "e", digits.allSatisfy({ $0.isASCII && $0.isNumber }),
+              let k = Int(digits), k <= maxKey else {
             throw MCPArgumentError(message: "ref must look like e12: use a ref from ui_tree")
         }
         return value
     }
+
+    /// The largest key the phone gives (its keys are a 32-bit int, MCP-71).
+    static let maxKey = Int(Int32.max)
 
     /// MCP-96, MCP-97, MCP-111: exactly one of `ms`, `text` or `settle: true`.
     private static func waitCall(_ args: [String: Any]) throws -> MCPCall {
