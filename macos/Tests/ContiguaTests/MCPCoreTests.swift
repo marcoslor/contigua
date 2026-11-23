@@ -731,6 +731,17 @@ final class MCPActArgumentTests: XCTestCase {
         XCTAssertThrowsError(try MCPArguments.call("ui_tree", ["window": 3, "observe": "tree"]))
     }
 
+    /// [MCP-84] `alsoActed` can name only the person: every agent input is
+    /// sent by the call holding the window's turn, so no call can see another
+    /// agent's input (#262).
+    func testAlsoActedNamesOnlyThePerson_MCP84() {
+        for tool: MCPToolName in [.tap, .longPress, .swipe, .typeText, .pressKey] {
+            let properties = MCPOutputSchemas.schema(for: tool)["properties"] as? [String: Any] ?? [:]
+            let items = (properties["alsoActed"] as? [String: Any])?["items"] as? [String: Any]
+            XCTAssertEqual(items?["enum"] as? [String], ["person"], "\(tool)")
+        }
+    }
+
     func testInputAnswersDeclareTheEnvelopeAndNoOk_MCP80() {
         for tool: MCPToolName in [.tap, .swipe, .typeText, .pressKey] {
             let schema = MCPOutputSchemas.schema(for: tool)
