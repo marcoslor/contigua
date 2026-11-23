@@ -3452,7 +3452,8 @@ class Session(object):
     def send_state(self):
         """The `state` message, with `dnd` only when the phone supports it."""
         state = {"t": "state", "locked": True, "battery": BATTERY, "charging": False,
-                 "screen": self.phone.screen_state, "panel": self.phone.panel_state}
+                 "screen": self.phone.screen_state, "panel": self.phone.panel_state,
+                 "lockSource": self.phone.lock_source}
         # The most app windows this phone allows at once (WIN-32). The Phone
         # Mirror is a separate encoder and is not counted.
         if self.phone.args.max_windows is not None:
@@ -5604,6 +5605,8 @@ class FakePhone(object):
         self.panel_state = "on"
         # None until --secure-after puts a secure surface over display 0.
         self.secure_state = None
+        # `state.lockSource`: which source reported the locked value.
+        self.lock_source = args.lock_source
         # --drop-after drops the first session once; later ones stay up.
         self.dropped_once = False
         # How many app lists the Mac has asked for: --apps-revise answers the
@@ -6537,6 +6540,11 @@ def build_parser():
                         "deltas that follow reference the pre-config chain")
     p.add_argument("--max-windows", type=int, default=4, metavar="N",
                    help="state.maxWindows: the most app windows at once (WIN-32)")
+    p.add_argument("--lock-source", choices=["keyguard_listener", "broadcast",
+                                             "app_relay", "initial_read"],
+                   default="initial_read", metavar="SOURCE",
+                   help="state.lockSource: which source reported the locked value "
+                        "(default initial_read)")
     p.add_argument("--report-task-after", type=float, default=0.0, metavar="SECONDS",
                    dest="report_task_after",
                    help="once per process, N seconds after the first app window: report a "

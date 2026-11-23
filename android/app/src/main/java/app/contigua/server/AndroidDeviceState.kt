@@ -73,7 +73,7 @@ internal class AndroidDeviceState(
                     else -> {
                         val locked = locked()
                         log("state: ${intent?.action} -> locked=$locked")
-                        tracker.onLockChanged(locked)
+                        tracker.onLockChanged(locked, LockSource.BROADCAST)
                     }
                 }
             }
@@ -82,7 +82,7 @@ internal class AndroidDeviceState(
         hiddenKeyguard = registerKeyguardListener()
         if (!hiddenKeyguard) registerScreenFallback(h)
         registerDisplayListener(h)
-        tracker.update(DeviceState(locked(), battery, charging, screen = ScreenState.read(ctx)))
+        tracker.update(DeviceState(locked(), battery, charging, screen = ScreenState.read(ctx), lockSource = LockSource.INITIAL_READ))
         return AutoCloseable { stop() }
     }
 
@@ -110,7 +110,7 @@ internal class AndroidDeviceState(
      * has no hidden window-manager listener: otherwise the accurate source wins.
      */
     fun onLockEvent(locked: Boolean) {
-        if (!hiddenKeyguard) tracker.onLockChanged(locked)
+        if (!hiddenKeyguard) tracker.onLockChanged(locked, LockSource.APP_RELAY)
     }
 
     // ------------------------------------------------------------------
@@ -150,7 +150,7 @@ internal class AndroidDeviceState(
                     data.enforceInterface(iface.name)
                     val locked = data.readInt() != 0
                     log("state: keyguard event locked=$locked")
-                    tracker.onLockChanged(locked)
+                    tracker.onLockChanged(locked, LockSource.KEYGUARD_LISTENER)
                     return true
                 }
                 return super.onTransact(code, data, reply, flags)

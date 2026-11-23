@@ -522,6 +522,7 @@ class DeckService(private val appContext: Context?) :
             screen = ScreenState.read(appContext),
             volume = level?.first,
             volumeMax = level?.second,
+            lockSource = LockSource.INITIAL_READ,
         )
     }
 

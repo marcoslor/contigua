@@ -516,6 +516,7 @@ class Session(
         state.ringer?.let { message["ringer"] = it.wire }
         state.screen?.let { message["screen"] = it.wire }
         state.secure?.let { message["secure"] = it }
+        state.lockSource?.let { message["lockSource"] = it.wire }
         // Both or neither: an old phone omits the pair, and the Mac then
         // disables its slider with a reason instead of guessing a level.
         if (state.volume != null && state.volumeMax != null) {
