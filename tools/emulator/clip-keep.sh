@@ -9,16 +9,16 @@
 # clipboard switch on (clip.enable) so SHARE-1's watcher is live:
 #   1. The debug activity's plain EditText, a text clip copied by the app:
 #      `text` "ação" lands by set text; the clip still pastes the same after it;
-#      no clip.set carried the run.
+#      no clip.set carried the run. Then, in a fresh field, a KEY frame "a" and
+#      a `text` "é" sent back to back read "aé": the key landed before the set.
 #   2. Its field with no ACTION_SET_TEXT, the same text clip: `text` "é" lands
 #      by paste; a paste key afterwards pastes the person's clip again; no
 #      clip.set carried the run.
 #   3. The same field, an image the Mac put on the clipboard (clip.image.*,
-#      the app's own provider URI): `text` "é" either lands by paste or is
-#      dropped because the shell cannot hand the URI back (an INFO line says
-#      which); either way the image field must then receive the same image.
-#      Boot 1 (2026-11-22, display 0): the shell's trial put-back of the image
-#      was taken, the put-back after the paste was refused.
+#      the app's own provider URI): `text` "é" is not pasted (a clip carrying a
+#      URI is never written: boot 1 measured that the shell cannot put it
+#      back once replaced), the drop is logged as clip_carries_uri, and the
+#      image field then receives the same image.
 #   4. The phone's "typing:" log lines carry no typed text.
 # The rig is awake and past its PIN for the debug activity (a locked phone hides
 # its clip from every reader, so the fallback would never paste there).
@@ -128,8 +128,18 @@ def debug_lines():
 
 def last_length(field):
     marker = "%s text length=" % field
-    values = [l.split(marker)[-1].strip() for l in debug_lines() if marker in l]
+    values = [l.split(marker)[-1].split()[0] for l in debug_lines() if marker in l]
     return int(values[-1]) if values else None
+
+
+def last_match(field):
+    marker = "%s text length=" % field
+    values = [l.split(" match=")[-1].strip() for l in debug_lines() if marker in l and " match=" in l]
+    return values[-1] == "true" if values else None
+
+
+def cps(s):
+    return ".".join("%x" % ord(c) for c in s)
 
 
 def typing_lines():
@@ -145,7 +155,7 @@ def png():
 
 
 CLIP = "pdclip7731"  # the person's text clip: 10 characters
-KEYCODE_DEL, KEYCODE_PASTE = 67, 279
+KEYCODE_A, KEYCODE_DEL, KEYCODE_PASTE = 29, 67, 279
 
 
 def main():
@@ -171,14 +181,16 @@ def main():
     drain(client, deckctl, 1.0)
 
     # 1. An EditText takes "ação" by set text; the person's text clip stays.
-    debug(client, deckctl, "plain", "--es", "action", "copy", "--es", "text", CLIP)
+    debug(client, deckctl, "plain", "--es", "action", "copy", "--es", "text", CLIP, "--es", "expect", cps("ação"))
     CLIPS.clear()
     adb("logcat", "-c")
     text(client, deckctl, "ação")
     typed = last_length("plain")
+    matched = last_match("plain")
     dropped = typing_lines()
-    check(typed == 4 and not dropped, "WIN-80 set text",
-          "\"ação\" landed in the EditText (length 4=%s), no run dropped (%d lines)" % (typed == 4, len(dropped)))
+    check(typed == 4 and matched and not dropped, "WIN-80 set text",
+          "\"ação\" landed in the EditText (length 4=%s, in order=%s), no run dropped (%d lines)"
+          % (typed == 4, matched, len(dropped)))
     run_clips = [n for n in CLIPS if n in (1, 2, 4)]
     key(client, deckctl, KEYCODE_PASTE)
     drain(client, deckctl, 1.0)
@@ -186,6 +198,18 @@ def main():
     check(after == 4 + len(CLIP) and not run_clips, "WIN-80 set text",
           "the person's clip pastes the same after it (length %s, match=%s); clip.set carrying the run: %d"
           % (after, after == 4 + len(CLIP), len(run_clips)))
+
+    # 1b. A KEY frame then a `text` run, back to back: the key lands first.
+    if debug(client, deckctl, "plain", "--es", "expect", cps("aé")):
+        adb("logcat", "-c")
+        client.send_raw(proto.pack_key(1, proto.KEY_DOWN, KEYCODE_A, 0))
+        client.send_raw(proto.pack_key(1, proto.KEY_UP, KEYCODE_A, 0))
+        client.send_json({"t": "text", "stream": 1, "text": "é"})
+        drain(client, deckctl, 1.5)
+        typed = last_length("plain")
+        matched = last_match("plain")
+        check(typed == 2 and matched, "WIN-80 order",
+              "a KEY \"a\" then `text` \"é\" read \"aé\" (length 2=%s, in order=%s)" % (typed == 2, matched))
 
     # 2. A field with no set text: "é" by paste; the text clip is put back.
     debug(client, deckctl, "noset", "--es", "action", "copy", "--es", "text", CLIP)
@@ -222,9 +246,9 @@ def main():
     text(client, deckctl, "é")
     typed = last_length("noset")
     dropped = typing_lines()
-    pasted = typed == 1
-    line("INFO", "WIN-80 image", "\"é\" with an image clip: %s; dropped lines: %s" % (
-        "landed by paste" if pasted else "not pasted", dropped))
+    check(typed is None and any("clip_carries_uri" in l for l in dropped), "WIN-80 image",
+          "\"é\" is not pasted over the image clip (field length %s) and the drop says clip_carries_uri (%s)"
+          % (typed, dropped))
     debug(client, deckctl, "rich")
     key(client, deckctl, KEYCODE_PASTE)
     drain(client, deckctl, 1.5)
