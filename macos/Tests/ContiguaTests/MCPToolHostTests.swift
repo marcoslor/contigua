@@ -303,6 +303,25 @@ final class MCPToolHostTests: XCTestCase {
         XCTAssertEqual(refreshed, FrontRead.none)
     }
 
+    /// #266 item 3: the link drops while `phone_status` waits for `task.front`.
+    /// The answer reads `connected` and the lock after the wait, together, so
+    /// it never says `connected: true` for a phone that is gone ([MCP-30], [MCP-31]).
+    @MainActor
+    func testALinkDropDuringTheForegroundWaitAnswersNotConnected_MCP31() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        _ = try await fixture.liveWindow()
+        let host = MCPToolHost(controller: fixture.controller)
+        let call = Task { await host.phoneStatus() }
+        let asked = await fixture.wait { !fixture.sent("task.front").isEmpty }
+        XCTAssertTrue(asked, "phone_status sent no task.front: \(fixture.sentTypes())")
+        fixture.server.stop()
+        let answer = await call.value
+        XCTAssertFalse(fixture.controller.link.isOnline, "the link did not drop: \(fixture.controller.link)")
+        XCTAssertEqual(answer["connected"] as? Bool, false, "a phone gone during the wait answered \(answer)")
+        XCTAssertTrue(answer["locked"] is NSNull, "no phone: locked must be null, got \(String(describing: answer["locked"]))")
+    }
+
     // MARK: type_text goes through ui.type (plan T13)
 
     /// `type_text {window, text: "café", clear: true, submit: true}` goes to
@@ -427,7 +446,7 @@ private final class TypeTextFixture {
 
     /// Polls while yielding the main actor, so the controller's own main-actor
     /// work runs (an async test cannot spin the run loop for it).
-    private func wait(until condition: () -> Bool, timeout: TimeInterval = 10) async -> Bool {
+    func wait(until condition: () -> Bool, timeout: TimeInterval = 10) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while !condition(), Date() < deadline { try? await Task.sleep(for: .milliseconds(20)) }  // real-time: polls the live controller's pairing with the fake server, to the deadline
         return condition()
