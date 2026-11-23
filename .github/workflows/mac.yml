@@ -13,6 +13,11 @@ concurrency:
   cancel-in-progress: true
 permissions:
   contents: read
+# bash -eo pipefail: without it `swift test | tee` reports tee's exit, and a
+# failed or crashed test run passed the job.
+defaults:
+  run:
+    shell: bash
 jobs:
   k2:
     runs-on: macos-26
@@ -35,4 +40,4 @@ jobs:
       - name: Failing tests
         if: failure()
         working-directory: macos
-        run: grep -E "error:|failed \(" k2.log | head -100 || true
+        run: grep -E "error:|Fatal error|' failed \(" k2.log | head -100 || true
