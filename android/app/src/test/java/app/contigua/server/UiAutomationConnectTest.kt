@@ -39,14 +39,15 @@ class UiAutomationConnectTest {
     fun aSlowConnectIsKeptAndNeverMadeTwice() {
         val made = automation()
         val calls = AtomicInteger()
-        val tree = UiAutomationTree(log = {}, connector = {
+        val tree = UiAutomationTree(log = {})
+        tree.connector = {
             if (calls.incrementAndGet() == 1) {
                 Thread.sleep(3_000) // real-time: longer than the read's wait
                 made
             } else {
                 throw IllegalStateException("one connection at a time")
             }
-        })
+        }
         try {
             assertNull("the first read gives up at 2.5 s", tree.ensureAutomation())
             assertSame("the slow connect lands during the next read's wait", made, tree.ensureAutomation())

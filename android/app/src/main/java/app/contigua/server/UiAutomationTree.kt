@@ -31,13 +31,12 @@ import kotlin.concurrent.withLock
  * `UiAutomationConnection` is the platform's own. Nothing here reads a node's
  * text into a log; only counts and codes leave.
  */
-internal class UiAutomationTree(
-    private val log: (String) -> Unit,
-    /** Tests only: stands in for [connect] (the platform's hidden connection). */
-    private val connector: (() -> UiAutomation)? = null,
-) : UiTreeSource, UiPressSource, UiTypeSource, FocusedFieldSource {
+internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSource, UiPressSource, UiTypeSource, FocusedFieldSource {
 
     private val lock = Any()
+
+    /** Tests only: stands in for [connect] (the platform's hidden connection). */
+    @Volatile internal var connector: (() -> UiAutomation)? = null
     private val startLock = Any()
     /**
      * One read or action at a time. Internal so the JVM tests can hold it:
