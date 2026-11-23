@@ -15,6 +15,28 @@ struct MCPToolHost {
 
     /// `client` is the connection the call came on; no tool uses it yet.
     func perform(_ call: MCPCall, client: MCPClientID) async -> MCPToolResult {
+        // MCP-22: the hold runs from the call's start until 15 s after its end.
+        hold(call)
+        defer { hold(call) }
+        return stamped(await run(call), for: call)
+    }
+
+    /// MCP-20/21: the tree and every input answer carry the window's `state`
+    /// and `frame` as they are when the answer is made.
+    private func stamped(_ result: MCPToolResult, for call: MCPCall) -> MCPToolResult {
+        switch call {
+        case .uiTree, .tap, .tapRef, .longPress, .swipe, .typeText, .pressKey, .inputProbe:
+            guard case .answer(let answer) = result, let id = call.window,
+                  let window = controller.windows.controller(for: UInt32(id)) else { return result }
+            return .answer(MCPFreshness.stamp(answer, state: stateToken(for: window),
+                                              frame: frameObject(for: window)))
+        case .phoneStatus, .listApps, .openApp, .listWindows, .screenshot, .closeWindow,
+             .sendLink, .sendFile:
+            return result
+        }
+    }
+
+    private func run(_ call: MCPCall) async -> MCPToolResult {
         do {
             switch call {
             case .phoneStatus:
@@ -25,8 +47,8 @@ struct MCPToolHost {
                 return .answer(try openApp(query, newWindow: newWindow))
             case .listWindows:
                 return .answer(listWindows())
-            case .screenshot(let window):
-                return try await screenshot(window)
+            case .screenshot(let window, let ref):
+                return try await screenshot(window, ref: ref)
             case .uiTree(let window):
                 return .answer(try await uiTree(window))
             case .tap(let window, let x, let y):
@@ -57,6 +79,33 @@ struct MCPToolHost {
     }
 
     // MARK: Helpers
+
+    /// MCP-22: a call naming an open window holds its stream unpaused.
+    func hold(_ call: MCPCall) {
+        guard let id = call.window, let window = controller.windows.controller(for: UInt32(id))
+        else { return }
+        window.agentCalled()
+    }
+
+    /// MCP-20: the window's `frame` object now.
+    func frameObject(for window: StreamWindowController) -> [String: Any] {
+        window.frameClock.object(now: ProcessInfo.processInfo.systemUptime)
+    }
+
+    /// MCP-50/62: the window's pixel space, the one `ui_tree`'s `box` is in:
+    /// the display's pixels for that window, not the stream's.
+    func pixelSize(of window: StreamWindowController) -> (Int, Int) {
+        let stream = (Int(window.videoView.videoSize.width.rounded()),
+                      Int(window.videoView.videoSize.height.rounded()))
+        return MCPWindowSize.pixels(treeSize: controller.uiTreeSize(stream: window.stream),
+                                    mirrorScreen: (window as? PhoneWindowController)?.phoneScreen,
+                                    stream: stream)
+    }
+
+    /// MCP-21: the window's closed state token.
+    func stateToken(for window: StreamWindowController) -> String {
+        MCPWindowState.token(window.mcpLifecycle)
+    }
 
     /// The phone's name for a sentence's blank; never logged (MCP-14).
     var phoneName: String? {
@@ -93,5 +142,34 @@ struct MCPToolHost {
         case .ambiguous(let matches): throw MCPToolError.ambiguous(query, matches: matches)
         case .none: throw MCPToolError.notFound(query)
         }
+    }
+}
+
+/// MCP-21: a window's closed set of state tokens. The three link-down steps
+/// all read `offline` to a client.
+enum MCPWindowState {
+    enum Lifecycle: Equatable {
+        case opening, live, paused, stalled, linkDown, reconnecting, offline, closed
+    }
+
+    static func token(_ state: Lifecycle) -> String {
+        switch state {
+        case .opening: return "opening"
+        case .live: return "live"
+        case .paused: return "paused"
+        case .stalled: return "stalled"
+        case .linkDown, .reconnecting, .offline: return "offline"
+        case .closed: return "closed"
+        }
+    }
+}
+
+/// MCP-20/21: the freshness fields an answer about a window's screen carries.
+enum MCPFreshness {
+    static func stamp(_ answer: [String: Any], state: String, frame: [String: Any]) -> [String: Any] {
+        var answer = answer
+        answer["state"] = state
+        answer["frame"] = frame
+        return answer
     }
 }

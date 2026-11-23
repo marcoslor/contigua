@@ -1123,8 +1123,10 @@ final class WindowManager {
             let controller = controller(for: stream)
             controller?.stats.noteReceived(now: ProcessInfo.processInfo.systemUptime,
                                            bytes: frame.annexB.count)
-            controller?.videoView.enqueue(frame)
-            controller?.frameClock.note()
+            // MCP-20: count the complete access unit; the snapshot decoder
+            // gets its stamp so a screenshot names the frame it decoded.
+            let stamp = controller?.frameClock.note()
+            controller?.videoView.enqueue(frame, stamp: stamp)
             // The opening cover ends at the stream's first frame; the note is
             // main-thread state, sent once per stream.
             if markFirstFrame(stream: stream, hasWindow: controller != nil), let controller {

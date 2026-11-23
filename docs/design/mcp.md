@@ -263,8 +263,9 @@ A `press_key back` that ends the app:
 `package` and `label` are null until the phone names the app it opened in
 (`window.title`), and the answer waits for that within the open bound.
 `opened` is `new` or `raised`; a raised window keeps its first `openedBy` and
-its shape. `size` is the stream's pixels: what `shape` gave a new window, what a
-raised one already had (MCP-100, MCP-101). An
+its shape. `size` is the window's display pixels, the space of `ui_tree`'s
+`box` (for an app window, equal to its stream: what `shape` gave a new window,
+what a raised one already had; MCP-50, MCP-100, MCP-101). An
 open with no first frame at the 10 s bound answers `state: "opening"` and
 `settle: {"state": "not_ready"}` — the window exists; call `wait` or
 `ui_tree` on it.
@@ -327,8 +328,11 @@ Content: the PNG block, then the text block of
  "settle": {"state": "settled", "waitedMs": 300}}
 ```
 
-`image` is the PNG's pixels and `size` the window's (the space of `box`).
-`crop` only with `ref`, `blank` only when true, `settle` only with
+`image` is the PNG's pixels and `size` the display's pixels for the window
+(the space of `box`, MCP-50): for the Phone Mirror that is the phone's screen
+(say 1080×2340), larger than its stream (592×1280). `crop` is in the same
+display pixels, the ref's `box` plus 8 on each side, clamped to `size`; the
+Mac scales it by frame/`size` to cut the decoded frame. `crop` only with `ref`, `blank` only when true, `settle` only with
 `wait: "settle"`.
 
 ### `wait` (MCP-96, MCP-97)
@@ -413,6 +417,9 @@ changes close it:
   keyframe and decodes the first one that arrives with the window's snapshot
   decoder (`beginFrameSnapshot`), stamped with its `seq`. The display layer's
   buffer is never the answer, so a screenshot cannot be older than the call.
+  The decoder is one per window, shared with Live Text's freeze: each begin
+  gets a token, a cancel acts only on its own token, and a newer begin
+  displaces the older request, which fails at once.
   The cost is one keyframe per screenshot. A window that sends none in 2 s
   fails `no_frame` with its state.
 
@@ -676,7 +683,7 @@ author can update in one pass.
 | A field showing its hint carried the hint as `text` | `hint: true`, `hintText`, no `text`. |
 | `type_text` answered `ok` and pasted non-ASCII text through the phone's clipboard | `did.entry` (`inserted`, `replaced`, `unknown`) and `did.via` (`keys`, `set_text`); the clipboard is never used, and a field that cannot take the text fails `not_supported` or `no_field`. |
 | `open_app`/`send_link` opened a 900×600 pt landscape window | A new window has the phone's shape and a ≤ 1280 px stream unless `shape: "window"`; the answer carries `size`. |
-| `screenshot` `windowSize: {width, height}`, `list_windows` `width`/`height` | `size: [w, h]` in both; `image: [w, h]`. |
+| `screenshot` `windowSize: {width, height}`, `list_windows` `width`/`height` | `size: [w, h]` in both, in the display's pixels (the space of `box`; the Phone Mirror's is its phone's screen, not its stream); `image: [w, h]`. |
 | `input_probe` always listed | Listed only when the app runs with `--mcp-dev-tools`. |
 | Tool errors were a bare sentence | `{"error": {"code", "message", …}}` JSON text, `isError: true`. |
 | Results had only `content` | `structuredContent` too, and `outputSchema` in `tools/list`. |

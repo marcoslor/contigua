@@ -6473,7 +6473,8 @@ import os, sys
 with open(sys.argv[1], "wb") as f:
     f.write(os.urandom(1024 * 1024))
 PY
-    launch --mcp-enable --connect "127.0.0.1:$PORT" --quit-after 240
+    rm -rf "$WORK-control"; mkdir -p "$WORK-control"
+    launch --mcp-enable --connect "127.0.0.1:$PORT" --quit-after 300 --debug-control "$WORK-control"
     if ! wait_until 30 test -S "$sock"; then
         bad "MCP --mcp-enable did not create $sock"
         stop_app
@@ -6488,6 +6489,7 @@ PY
         if "$FAKE_PY" "$MACOS/scripts/mcp/driver.py" --suite "$name" \
                 --shim "$shim" --profile "$PROFILE" --events "$WORK/events.jsonl" \
                 --file "$WORK/mcp-1mb.bin" --link "https://example.com/mcp" \
+                --control "$WORK-control" \
                 > "$WORK/mcp-suite-$name.log" 2>&1; then
             :
         else

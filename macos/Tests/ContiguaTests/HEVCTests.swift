@@ -143,7 +143,10 @@ final class HEVCTests: XCTestCase {
         return Array(UnsafeBufferPointer(start: pointer, count: size))
     }
 
-    func testTheVideoToolboxRoundTripDecodesHEVC() throws {
+    /// Four HEVC frames encoded here (the first a keyframe), the format the
+    /// receive path builds from their config, and each as the sample the
+    /// receive path feeds a decoder.
+    private func hevcFixture() throws -> (format: CMVideoFormatDescription, encoded: [CMSampleBuffer], built: [CMSampleBuffer]) {
         let width = 320
         let height = 240
         var encoder: VTCompressionSession?
@@ -199,6 +202,20 @@ final class HEVCTests: XCTestCase {
         let format = try XCTUnwrap(VideoLayerView.makeFormatDescription(config))
         XCTAssertEqual(CMFormatDescriptionGetMediaSubType(format), kCMVideoCodecType_HEVC)
         XCTAssertEqual(CMVideoFormatDescriptionGetDimensions(format).width, Int32(width))
+        var built: [CMSampleBuffer] = []
+        for (index, sample) in encoded.enumerated() {
+            let accessUnit = try XCTUnwrap(annexB(fromAVCC: sample))
+            // Every unit of this key frame is kept; the builder only drops the
+            // parameter sets and AUDs a decoder gets from the format description.
+            let avcc = AnnexB.avcc(from: AnnexB.units(accessUnit), codec: .hevc)
+            built.append(try XCTUnwrap(VideoLayerView.makeSampleBuffer(
+                avcc: avcc, format: format, ptsUs: UInt64(index))))
+        }
+        return (format, encoded, built)
+    }
+
+    func testTheVideoToolboxRoundTripDecodesHEVC() throws {
+        let (format, encoded, built) = try hevcFixture()
         var decoder: VTDecompressionSession?
         let decoderStatus = VTDecompressionSessionCreate(
             allocator: kCFAllocatorDefault,
@@ -212,16 +229,7 @@ final class HEVCTests: XCTestCase {
         defer { VTDecompressionSessionInvalidate(decompression) }
 
         var decoded = 0
-        var built: [CMSampleBuffer] = []
-        for (index, sample) in encoded.enumerated() {
-            let accessUnit = try XCTUnwrap(annexB(fromAVCC: sample))
-            let units = AnnexB.units(accessUnit)
-            // Every unit of this key frame is kept; the builder only drops the
-            // parameter sets and AUDs a decoder gets from the format description.
-            let avcc = AnnexB.avcc(from: units, codec: .hevc)
-            let input = try XCTUnwrap(VideoLayerView.makeSampleBuffer(
-                avcc: avcc, format: format, ptsUs: UInt64(index)))
-            built.append(input)
+        for input in built {
             let status = VTDecompressionSessionDecodeFrame(
                 decompression, sampleBuffer: input, flags: [], infoFlagsOut: nil
             ) { status, _, imageBuffer, _, _ in
@@ -237,7 +245,7 @@ final class HEVCTests: XCTestCase {
         let snapshotter = KeyframeSnapshotter()
         let snapshot = expectation(description: "snapshot")
         var snapshotBuffer: CVPixelBuffer?
-        snapshotter.begin(format: format) { buffer in
+        snapshotter.begin(format: format) { buffer, _ in
             snapshotBuffer = buffer
             snapshot.fulfill()
         }
@@ -245,5 +253,70 @@ final class HEVCTests: XCTestCase {
         wait(for: [snapshot], timeout: 3)
         XCTAssertNotNil(snapshotBuffer, "KeyframeSnapshotter decoded the HEVC keyframe")
         snapshotter.cancel()
+    }
+
+    // [MCP-60] A screenshot's frame is from after the call: only a keyframe
+    // counted later than `after` starts the decode; an older keyframe and a
+    // delta before any keyframe give nothing.
+    func testOnlyAKeyframeCountedAfterTheCallStartsTheDecode() throws {
+        let (format, _, built) = try hevcFixture()
+        let snapshotter = KeyframeSnapshotter()
+        defer { snapshotter.cancel() }
+        let lock = NSLock()
+        var stamps: [FrameStamp?] = []
+        let decoded = expectation(description: "the keyframe stamped 7 decodes")
+        snapshotter.begin(format: format, after: 5) { buffer, stamp in
+            lock.lock()
+            stamps.append(stamp)
+            lock.unlock()
+            if buffer != nil { decoded.fulfill() }
+        }
+        snapshotter.feed(built[0], stamp: FrameStamp(seq: 5, at: 1), keyframe: true)
+        snapshotter.feed(built[1], stamp: FrameStamp(seq: 6, at: 2), keyframe: false)
+        // Give an async decode the time it would take to call back.
+        Thread.sleep(forTimeInterval: 0.3)  // real-time: an async VideoToolbox decode has no clock to drive; this proves it never calls back
+        lock.lock()
+        XCTAssertEqual(stamps.count, 0, "a keyframe stamped 5 and a delta stamped 6 give no callback")
+        lock.unlock()
+        snapshotter.feed(built[0], stamp: FrameStamp(seq: 7, at: 3), keyframe: true)
+        wait(for: [decoded], timeout: 3)
+        lock.lock()
+        XCTAssertEqual(stamps, [FrameStamp(seq: 7, at: 3)])
+        lock.unlock()
+    }
+
+    // [MCP-60] Each snapshot cancels only its own decoder: a newer begin
+    // displaces the older one, whose caller hears (nil, nil) at once, and the
+    // displaced caller's late cancel leaves the newer decoder running.
+    func testADisplacedSnapshotFailsAtOnceAndItsCancelSparesTheNewOne() throws {
+        let (format, _, built) = try hevcFixture()
+        let slot = SnapshotSlot()
+        let lock = NSLock()
+        var aCalls: [Bool] = []
+        var bBuffer: CVPixelBuffer?
+        let bDecoded = expectation(description: "B decodes")
+        let a = slot.begin(format: format, after: 0) { buffer, stamp in
+            lock.lock()
+            aCalls.append(buffer == nil && stamp == nil)
+            lock.unlock()
+        }
+        let b = slot.begin(format: format, after: 0) { buffer, _ in
+            lock.lock()
+            bBuffer = buffer
+            lock.unlock()
+            bDecoded.fulfill()
+        }
+        XCTAssertNotEqual(a, b)
+        lock.lock()
+        XCTAssertEqual(aCalls, [true], "the displaced snapshot hears (nil, nil) at once")
+        lock.unlock()
+        slot.cancel(a)
+        slot.feed(built[0], stamp: FrameStamp(seq: 1, at: 1), keyframe: true)
+        wait(for: [bDecoded], timeout: 3)
+        lock.lock()
+        XCTAssertNotNil(bBuffer, "A's cancel must not kill B's decoder")
+        XCTAssertEqual(aCalls.count, 1, "A is told once")
+        lock.unlock()
+        slot.cancel(b)
     }
 }
