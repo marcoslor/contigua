@@ -46,7 +46,9 @@ import java.io.File
  * `--es field noset` focuses a third field that offers no `ACTION_SET_TEXT`,
  * as a view that draws its own text does, so the person's typing takes the
  * clipboard fallback there (WIN-80, tools/emulator/clip-keep.sh); it logs
- * `noset text length=…`.
+ * `noset text length=…`. `--es expect 61.e9` (hex code points) adds
+ * ` match=true|false` to each length line: whether the field now holds
+ * exactly that text, so an order can be checked without logging the text.
  */
 class PasteDebugActivity : Activity() {
 
@@ -83,14 +85,14 @@ class PasteDebugActivity : Activity() {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
             override fun afterTextChanged(s: Editable?) {
-                Log.i(TAG, "plain text length=${s?.length ?: 0}")
+                Log.i(TAG, "plain text length=${s?.length ?: 0}${match(s)}")  // log-ok: a length and a boolean, never the text
             }
         })
         noset.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
             override fun afterTextChanged(s: Editable?) {
-                Log.i(TAG, "noset text length=${s?.length ?: 0}")
+                Log.i(TAG, "noset text length=${s?.length ?: 0}${match(s)}")  // log-ok: a length and a boolean, never the text
             }
         })
         ViewCompat.setOnReceiveContentListener(rich, arrayOf("image/*"),
@@ -127,6 +129,17 @@ class PasteDebugActivity : Activity() {
         Log.i(TAG, "ready field=$name " +  // log-ok: fixed state names, never text
             "item=${intent.getStringExtra("item") ?: "keep"}")
     }
+
+    /** `--es expect`'s text, from dot-separated hex code points; null without it. */
+    private val expected: String? by lazy {
+        intent.getStringExtra("expect")?.let { cps ->
+            runCatching {
+                cps.split('.').filter { it.isNotEmpty() }.joinToString("") { String(Character.toChars(it.toInt(16))) }
+            }.getOrNull()
+        }
+    }
+
+    private fun match(s: Editable?): String = expected?.let { " match=${s?.toString() == it}" } ?: ""
 
     /** The exists probe runs once, only after this activity's window has focus. */
     private var existsReported = false
