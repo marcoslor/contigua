@@ -26,17 +26,22 @@ struct MCPToolHost {
         // MCP-22: the hold runs from the call's start until 15 s after its end.
         host.hold(call)
         defer { host.hold(call) }
-        return host.stamped(await host.run(call), for: call)
+        // The window is resolved before the call: one that closes during it
+        // still answers `state: "closed"` and the frame it last had.
+        let window = call.window.flatMap { controller.windows.controller(for: UInt32($0)) }
+        return host.stamped(await host.run(call), for: call, window: window)
     }
 
     /// MCP-20/21: the tree and every input answer carry the window's `state`
-    /// and `frame` as they are when the answer is made.
-    private func stamped(_ result: MCPToolResult, for call: MCPCall) -> MCPToolResult {
+    /// and `frame` as they are when the answer is made. `window` is the one
+    /// the call named, looked up when the call began.
+    private func stamped(_ result: MCPToolResult, for call: MCPCall,
+                         window: StreamWindowController?) -> MCPToolResult {
         switch call {
         case .uiTree, .inputProbe:
-            guard case .answer(let answer) = result, let id = call.window,
-                  let window = controller.windows.controller(for: UInt32(id)) else { return result }
-            return .answer(MCPFreshness.stamp(answer, state: stateToken(for: window),
+            guard case .answer(let answer) = result, let window else { return result }
+            let open = controller.windows.controller(for: window.stream) === window
+            return .answer(MCPFreshness.stamp(answer, state: open ? stateToken(for: window) : "closed",
                                               frame: frameObject(for: window)))
         case .phoneStatus, .listApps, .openApp, .listWindows, .screenshot, .closeWindow,
              .sendLink, .sendFile, .wait:
