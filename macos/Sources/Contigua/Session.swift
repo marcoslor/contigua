@@ -1072,6 +1072,9 @@ final class Session {
             case .deliver(let inner):
                 handleFrame(inner, path: id)
             case .pong(let path, let rtt, let rankingSample):
+                // PATH-54 (#248): an orphaned session goes live on the first
+                // attached path that answers a ping.
+                if pathMachine.isOrphaned { handlePath(.standbyAnswered(id: path)) }
                 // E-8/RRR-4: a pong on a path that carried bulk within the
                 // last second measures the queue, not the link. It proved the
                 // path alive above; it never enters the score.
