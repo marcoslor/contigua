@@ -2056,7 +2056,7 @@ class Session(
                         "ui.tree stream=$stream display=$displayId layers=${layers.size} " +
                             "nodes=${layers.sumOf { it.nodes.size }} took_ms=${now() - started}",
                     )
-                    sendUiTree(stream, seq, UiTree.reply(displayId, size, layers))
+                    sendUiTree(stream, seq, UiTree.reply(displayId, size, layers, answer.keys))
                 }
                 is UiTree.Answer.Failure -> {
                     log("ui.tree stream=$stream display=$displayId failed=${answer.code}")

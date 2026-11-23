@@ -2757,6 +2757,8 @@ class Session(object):
         # One ui.* request at a time (PROTOCOL.md "UI tree" item 6): a settle
         # holds it until it answers.
         self._ui_busy = False
+        # ui.tree reads this session made (--tree-variant's second read differs).
+        self._tree_reads = 0
         self.sender = None
         self.client_id = None
         self.client_name = None
@@ -5327,17 +5329,40 @@ class Session(object):
             return [round((box[0] + box[2]) / 2.0 / max(w, 1), 3),
                     round((box[1] + box[3]) / 2.0 / max(h, 1), 3)]
 
+        # `k` is each node's key (PROTOCOL.md "UI tree" item 9, MCP-71): the same
+        # node keeps it in every read, so the fixed tree's rows are always 1…4.
         nodes = [
-            {"i": 0, "l": 0, "role": "TextView", "text": "Fake phone screen",
+            {"i": 0, "k": 1, "l": 0, "role": "TextView", "text": "Fake phone screen",
              "box": box_label, "at": at(box_label)},
-            {"i": 1, "p": 0, "l": 0, "role": "Button", "text": "Continue",
+            {"i": 1, "k": 2, "p": 0, "l": 0, "role": "Button", "text": "Continue",
              "id": "continue", "box": box_button, "at": at(box_button), "click": True},
             # A password field carries no text at all, only that it is one.
-            {"i": 2, "p": 0, "l": 0, "role": "EditText", "pwd": True, "edit": True,
+            {"i": 2, "k": 3, "p": 0, "l": 0, "role": "EditText", "pwd": True, "edit": True,
              "box": box_password, "at": at(box_password)},
             # Below the display (a cart's lower rows): its text, no tap point.
-            {"i": 3, "p": 0, "l": 0, "role": "TextView", "text": "Below the fold", "off": True},
+            {"i": 3, "k": 4, "p": 0, "l": 0, "role": "TextView", "text": "Below the fold", "off": True},
         ]
+        self._tree_reads += 1
+        if self.phone.args.tree_variant:
+            # A heading (MCP-72), a button under a banner's close button drawn
+            # after it (MCP-73: `covered` is the banner's `k`), and from the
+            # second read on the Continue button is gone: k 2 is never reused.
+            box_heading = [0, int(h * 0.16), w, int(h * 0.2)]
+            box_offer = [int(w * 0.1), int(h * 0.9), int(w * 0.9), int(h * 0.95)]
+            box_banner = [0, int(h * 0.88), w, int(h * 0.97)]
+            nodes += [
+                {"k": 5, "p": 0, "l": 0, "role": "TextView", "text": "Settings", "heading": True,
+                 "box": box_heading, "at": at(box_heading)},
+                {"k": 6, "p": 0, "l": 0, "role": "Button", "text": "Accept offer", "click": True,
+                 "box": box_offer, "at": at(box_offer), "covered": 7},
+                {"k": 7, "l": 0, "role": "ImageButton", "desc": "Close banner", "click": True,
+                 "box": box_banner, "at": at(box_banner)},
+            ]
+            if self._tree_reads >= 2:
+                nodes = [n for n in nodes if n["k"] != 2]
+            # Rows are renumbered in reading order; `p` names the row, not the key.
+            for index, node in enumerate(nodes):
+                node["i"] = index
         self.phone.events.ui_tree(stream, len(nodes))
         reply = {
             "t": "ui.tree",
@@ -5354,7 +5379,7 @@ class Session(object):
         # and the reply says the tree is still loading (MCP-103).
         if self.phone.args.settle_loading:
             box_spinner = [int(w * 0.45), int(h * 0.32), int(w * 0.55), int(h * 0.38)]
-            nodes.append({"i": 4, "p": 0, "l": 0, "role": "ProgressBar",
+            nodes.append({"i": len(nodes), "k": 8, "p": 0, "l": 0, "role": "ProgressBar",
                           "box": box_spinner, "at": at(box_spinner), "loading": True})
             reply["loading"] = True
         if seq is not None:
@@ -6550,6 +6575,9 @@ def build_parser():
                         "('none' means nothing continuable)")
     p.add_argument("--ignore-ui-tree", action="store_true",
                    help="never answer ui.tree (the MCP tool must say so, not hang)")
+    p.add_argument("--tree-variant", action="store_true",
+                   help="ui.tree adds a heading row and a covered button, and from the "
+                        "second read drops the row with k 2 (MCP-71/72/73)")
     p.add_argument("--ignore-ui-settle", action="store_true",
                    help="never answer ui.settle (a phone that cannot watch a display)")
     p.add_argument("--settle-ms", type=int, default=120, metavar="MS",

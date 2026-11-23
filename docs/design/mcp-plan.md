@@ -480,14 +480,19 @@ The task sections below are grouped by area; the schedule above is the order.
   `tools/fakephone/fakephone.py` (`ui.press`: logs a `touch` event at the
   node's `at`, answers `box`/`at`/`role`/`text`; `gone` for a `k` not in its
   latest tree; `covered` for the `--tree-variant` covered button; `--relabel`:
-  the button's text at the press differs from the tree's).
+  the button's text at the press differs from the tree's, so a press with the
+  tree's `expect` answers `changed`).
 - **Tests**
   - K1 `UiPressTest.testAPresentVisibleNodeIsPressedAtItsCentreNow` `[MCP-86]`:
     latest read had k 5 at `[0,0,100,100]`; refresh gives `[0,500,100,600]` →
     decision `Press(50, 550)`, answer `box [0,500,100,600]`.
   - K1 `UiPressTest.testThePressAnswersTheLabelItPressed` `[MCP-108]`: text
-    "Add to cart" at the read, "Buy now" at `refresh()` → the reply's `text` is
-    "Buy now", `role` "Button"; a password node → no `text`.
+    "Add to cart" at the read and at `refresh()` → the reply's `text` is
+    "Add to cart", `role` "Button"; a password node → no `text`.
+  - K1 `UiPressTest.testANodeThatNowReadsDifferentlyIsNotPressed` `[MCP-86]`
+    (#188): `expect` "Add to cart", "Buy now" at `refresh()` → `changed`, `now`
+    "Buy now", nothing injected; a row with no label of its own compares the
+    first labelled node under it.
   - K1 `UiPressTest.testAnOffScreenNodeIsNotPressed` `[MCP-86]`: bounds now
     below the display → `off_screen`, nothing injected.
   - K1 `UiPressTest.testAGoneNodeIsNotPressed` `[MCP-86]`: refresh false →

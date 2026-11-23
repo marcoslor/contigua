@@ -299,17 +299,36 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
         if (windows.isEmpty()) {
             return UiTree.Answer.Failure(UiCodes.NO_DISPLAY, "That display has no windows.")
         }
+        // A display no longer listed drops its table, never its next key (MCP-71).
+        val keys = tables.table(displayId) { all.get(it) != null }
+        synchronized(latest) { latest.keys.retainAll { all.get(it) != null } }
+        val nodes = HashMap<Any, AccessibilityNodeInfo>()
         val trees = windows.map { window ->
+            val bounds = Rect().also { window.getBoundsInScreen(it) }
             UiTree.Layer(
                 title = UiTree.label(window.title?.toString()),
                 type = typeName(window.type),
                 focused = window.isFocused,
                 active = window.isActive,
-                nodes = window.root?.let { children(it, 0) } ?: emptyList(),
+                nodes = window.root?.let { children(it, 0, nodes) } ?: emptyList(),
+                windowLayer = window.layer,
+                bounds = UiTree.Box(bounds.left, bounds.top, bounds.right, bounds.bottom),
             )
         }
-        return UiTree.Answer.Tree(trees)
+        // The latest read's nodes, by identity, for `ui.press` (B3).
+        synchronized(latest) { latest[displayId] = nodes }
+        return UiTree.Answer.Tree(trees, keys)
     }
+
+    /** Each display's key table (MCP-71). */
+    private val tables = UiTreeKeyTables()
+
+    /** Each display's latest read: identity → node, for `ui.press` to refresh (B3). */
+    private val latest = HashMap<Int, Map<Any, AccessibilityNodeInfo>>()
+
+    /** The node [identity] names in [displayId]'s latest read, or null. */
+    fun latestNode(displayId: Int, identity: Any): AccessibilityNodeInfo? =
+        synchronized(latest) { latest[displayId]?.get(identity) }
 
     /**
      * Drops the connection's node cache before a walk (MCP-107): a guard
@@ -325,18 +344,24 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
         runCatching { automation.clearCache() }
     }
 
-    private fun children(node: AccessibilityNodeInfo, depth: Int): List<UiTree.Node> {
+    private fun children(
+        node: AccessibilityNodeInfo,
+        depth: Int,
+        seen: MutableMap<Any, AccessibilityNodeInfo>,
+    ): List<UiTree.Node> {
         if (depth >= UiTree.MAX_DEPTH) return emptyList()
         val out = ArrayList<UiTree.Node>(node.childCount)
         for (index in 0 until node.childCount) {
             val child = runCatching { node.getChild(index) }.getOrNull() ?: continue
-            out.add(node(child, depth))
+            out.add(node(child, depth, seen))
         }
         return out
     }
 
-    private fun node(node: AccessibilityNodeInfo, depth: Int): UiTree.Node {
+    private fun node(node: AccessibilityNodeInfo, depth: Int, seen: MutableMap<Any, AccessibilityNodeInfo>): UiTree.Node {
         val box = Rect().also { node.getBoundsInScreen(it) }
+        val identity = NodeIdentity.of(node)
+        seen[identity] = node
         return UiTree.Node(
             role = node.className?.toString() ?: "?",
             text = node.text?.toString(),
@@ -354,8 +379,11 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
             password = node.isPassword,
             visibleToUser = node.isVisibleToUser,
             hasRange = node.rangeInfo != null,
-            children = children(node, depth + 1),
+            children = children(node, depth + 1, seen),
             childCount = node.childCount,
+            heading = node.isHeading,
+            drawingOrder = node.drawingOrder,
+            identity = identity,
         )
     }
 
@@ -398,6 +426,25 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
         private const val FINISH_MS = 500L
         private const val LOADING_WALK_NODES = 5_000
         private const val NO_WATCH = "This phone cannot watch the display right now."
+    }
+}
+
+/**
+ * A node's identity for its key (MCP-71): its window id and source node id,
+ * the pair `AccessibilityNodeInfo.equals` compares. The source node id is
+ * hidden, so it is read by reflection; where it cannot be, the node itself
+ * stands in, since its `equals` and `hashCode` compare the same pair.
+ */
+internal data class NodeIdentity(val window: Int, val source: Long) {
+    companion object {
+        private val sourceNodeId = runCatching {
+            AccessibilityNodeInfo::class.java.getDeclaredMethod("getSourceNodeId").apply { isAccessible = true }
+        }.getOrNull()
+
+        fun of(node: AccessibilityNodeInfo): Any {
+            val source = sourceNodeId?.let { runCatching { it.invoke(node) as Long }.getOrNull() }
+            return if (source != null) NodeIdentity(node.windowId, source) else node
+        }
     }
 }
 
