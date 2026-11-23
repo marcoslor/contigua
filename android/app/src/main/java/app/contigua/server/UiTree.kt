@@ -227,16 +227,17 @@ object UiTree {
     /**
      * Whether the trimmed tree keeps a node. What is on screen and can be read
      * or acted on: anything else is layout or invisible, and its children take
-     * its place. A node with no drawable bounds is not on screen (a collapsed
-     * row, a view behind another), so it is never offered as something to tap.
+     * its place. A node with no drawable bounds ([drawn]: no size of its own,
+     * a collapsed row) is not on screen, so it is never offered as something
+     * to tap.
      *
-     * A node whose box is off the display, or that is not visible to the user,
-     * is still kept when it has something to read: [Builder.row] marks it
-     * `off: true` with no tap point rather than dropping the text (F9).
+     * A node whose box is off the display, clipped out by its parent, or that
+     * is not visible to the user, is still kept when it has something to read:
+     * it is `off` (F9), counted (MCP-106), and sent marked only on an
+     * `offscreen` read.
      */
     private fun kept(node: Node): Boolean {
-        val box = node.box ?: return false
-        if (box.empty) return false
+        if (!drawn(node)) return false
         return node.password || node.clickable || node.editable || node.scrollable ||
             node.checkable || node.selected || node.focused ||
             label(node.text) != null || label(node.desc) != null ||
@@ -262,7 +263,17 @@ object UiTree {
 
     /** Whether a node with a box is one F9 marks `off` (WIN-79) and MCP-106 leaves out. */
     fun off(node: Node, size: IntSize): Boolean =
-        node.box?.empty == false && visible(node, size) == null
+        drawn(node) && visible(node, size) == null
+
+    /**
+     * Whether the node has drawable bounds (WIN-79): a box with an area, or an
+     * empty one the platform clipped out of a node that has a size of its own
+     * ([Node.sized]), which is `off`, not folded (MCP-106).
+     */
+    private fun drawn(node: Node): Boolean {
+        val box = node.box ?: return false
+        return !box.empty || node.sized
+    }
 
     /** The part of [box] on the display, or null when none (F9). */
     private fun clip(box: Box, size: IntSize): Box? {
@@ -478,9 +489,10 @@ object UiTree {
             }
             viewId(node.viewId)?.let { row["id"] = it }
             val box = node.box
-            if (box != null && !box.empty) {
+            if (box != null && drawn(node)) {
                 // `box` is the part on the display; `at` only when a person
-                // could tap it, else `off` with no tap point (F9).
+                // could tap it, else `off` with no tap point (F9). A box the
+                // platform clipped to nothing sends no `box` (MCP-106).
                 clip(box, size)?.let { row["box"] = listOf(it.left, it.top, it.right, it.bottom) }
                 val visible = visible(node, size)
                 if (visible == null) row["off"] = true else row["at"] = at(visible)

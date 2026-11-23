@@ -1549,8 +1549,12 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
      counted (item 9); a read that asks `offscreen: true` keeps it with `off: true` and no
      `at`, its text still there so a reader knows to scroll. A tap by its ref is refused
      either way. `box` is the clipped part and `at` the centre of it, never a clamped
-     outside point.
-   - A node with no text, label, action or state, or with no drawable bounds, is folded
+     outside point. The platform clips a view's screen bounds to its parent, so a row
+     scrolled out of its list arrives with an empty screen box: when its bounds in its
+     parent are not empty it is `off` like any other (counted, and sent with no `box` on an
+     `offscreen` read), not a node with no drawable bounds.
+   - A node with no text, label, action or state, or with no drawable bounds (no size of
+     its own: its screen box and its bounds in its parent are both empty), is folded
      away and its children take its place; only what a reader or a model can act on is
      sent. A password node carries no `text` or `desc` at all, only `pwd`. Code points in
      Unicode's private use areas (U+E000–U+F8FF and the two supplementary areas) are
