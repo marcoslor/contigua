@@ -133,9 +133,12 @@ screen-off rig: its display draws while display 0 stays off. The lines are
 ## What start.sh does
 
 1. Boots the AVD `contigua-api36` headless (`-no-window -no-audio -no-boot-anim
-   -gpu swiftshader_indirect`) and waits for `sys.boot_completed`. If a rig PIN
-   is set it unlocks first: userdata (and so `run-as`) is only reachable after
-   the first unlock.
+   -gpu swiftshader_indirect`, 4 cores: `CONTIGUA_EMU_CORES`) and waits for
+   `sys.boot_completed`, then for the guest to settle: its 1-minute load under
+   the core count and no not-responding dialog in focus, up to 300 s
+   (`CONTIGUA_SETTLE_S`), with a warning when it never does (#252). If a rig
+   PIN is set it unlocks first: userdata (and so `run-as`) is only reachable
+   after the first unlock.
 2. Installs, from `~/.cache/contigua-emulator/` (`$CONTIGUA_FIXTURES`; downloaded once and shared by every checkout, so a new worktree needs no network):
    - **Shizuku** — newest release APK from its GitHub release feed;
    - **app.contigua** — `./gradlew :app:assembleDebug` + `adb install -r -d -g`,
