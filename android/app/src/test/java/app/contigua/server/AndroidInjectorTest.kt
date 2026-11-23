@@ -384,7 +384,7 @@ class AndroidInjectorTest {
         val app = Executors.newSingleThreadExecutor()
         val injector = AndroidInjector(
             log = {},
-            sink = { e, mode ->
+            injected = { e, _, mode ->
                 val handled = app.submit {
                     if (e is KeyEvent && e.action == KeyEvent.ACTION_DOWN && e.keyCode == KeyEvent.KEYCODE_PASTE) {
                         Thread.sleep(600) // real-time: a slow app
