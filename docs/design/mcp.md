@@ -356,8 +356,9 @@ for a `settle: true` wait that timed out. `tree` (or `text`) is the `observe` re
 the clock or the settle, or the poll's last read for `text`; `treeError` when
 that read failed. The tree is read at most every 500 ms, each read in the
 phone's read queue (MCP-9) and bounded by the call (MCP-8): `ms` + 3 s, or
-`timeoutMs` + 3 s for `text` and `settle`. A `busy` read is retried at the next
-poll; a wait that ends on one fails `busy`. A settle longer than the wire's
+`timeoutMs` + 3 s for `text` and `settle`. A read that fails ends the wait
+with that read's error (one of the closed codes: the phone's own `busy` maps to
+`failed`, MCP-70, and never reaches a client, MCP-9). A settle longer than the wire's
 10 s is a chain of settles, each its own turn in the queue. With none of `ms`,
 `text` or `settle` the call is `-32602` "wait needs ms, text or settle".
 
