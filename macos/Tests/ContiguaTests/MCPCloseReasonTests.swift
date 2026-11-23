@@ -11,9 +11,12 @@ final class MCPCloseReasonTests: XCTestCase {
         XCTAssertEqual(MCPCloseReason.token(phone: "moved_to_phone"), "moved_to_phone")
     }
 
-    /// MCP-52: a stream the Mac closed is `closed`, by the person or an agent.
+    /// MCP-52: a stream the Mac closed is `closed`, by the person or by a
+    /// connection, `you` or `another_agent` to the asker (T7 settles T5's `agent`).
     func testTheMacsOwnCloseIsClosed_MCP52() {
-        XCTAssertEqual(MCPCloseReason.mac(byAgent: false), MCPActMachine.Closed(reason: "closed", by: "person"))
-        XCTAssertEqual(MCPCloseReason.mac(byAgent: true), MCPActMachine.Closed(reason: "closed", by: "agent"))
+        let one = MCPClientID(1), two = MCPClientID(2)
+        XCTAssertEqual(MCPCloseReason.mac(closer: nil, asker: one), MCPActMachine.Closed(reason: "closed", by: "person"))
+        XCTAssertEqual(MCPCloseReason.mac(closer: one, asker: one), MCPActMachine.Closed(reason: "closed", by: "you"))
+        XCTAssertEqual(MCPCloseReason.mac(closer: one, asker: two), MCPActMachine.Closed(reason: "closed", by: "another_agent"))
     }
 }

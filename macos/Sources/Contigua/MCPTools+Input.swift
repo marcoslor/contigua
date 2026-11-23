@@ -272,7 +272,7 @@ final class MCPHostActEnvironment: MCPActEnvironment {
         if let refusalError, refusalError.code.rawValue == code { return refusalError }
         let state = host.controller.windows.controller(for: UInt32(id)).map { host.stateToken(for: $0) }
         switch code {
-        case "no_window": return .noWindow(id)
+        case "no_window": return host.noWindow(id)
         case "phone_offline": return .phoneOffline(host.phoneName)
         case "timeout": return .timeout(host.phoneName)
         case "not_ready":
