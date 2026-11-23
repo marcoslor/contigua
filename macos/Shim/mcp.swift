@@ -8,8 +8,45 @@ import Darwin
 import Dispatch
 import Foundation
 
-private func fail(_ message: String) -> Never {
+private func usage() -> String {
+    let lines = [
+        "contigua-mcp — relays an MCP client's stdio to Contigua's automation socket.",
+        "",
+        "usage: contigua-mcp [--profile NAME]",
+        "",
+        "  --profile NAME  use NAME's socket (default: \"default\"); NAME is 1-32 of",
+        "                  a-z, 0-9 and -.",
+        "  --help, -h      print this usage and exit.",
+        "",
+        "The MCP client configuration line:",
+        "  {\"command\": \"/Applications/Contigua.app/Contents/Helpers/contigua-mcp\"}",
+        "For a named profile add \"args\": [\"--profile\", \"NAME\"].",
+        "",
+        "Socket paths:",
+        "  ~/Library/Application Support/Contigua/mcp.sock          (default profile)",
+        "  ~/Library/Application Support/Contigua-<profile>/mcp.sock (any other profile)",
+        "",
+        "Turn on Settings › Automation in Contigua",
+    ]
+    return lines.joined(separator: "\n")
+}
+
+private func writeStderr(_ message: String) {
     FileHandle.standardError.write(Data((message + "\n").utf8))
+}
+
+private func writeStdout(_ message: String) {
+    FileHandle.standardOutput.write(Data((message + "\n").utf8))
+}
+
+private func fail(_ message: String) -> Never {
+    writeStderr(message)
+    exit(1)
+}
+
+/// The reason, then the usage, on stderr (MCP-12).
+private func failUsage(_ reason: String) -> Never {
+    writeStderr("contigua-mcp: \(reason)\n" + usage())
     exit(1)
 }
 
@@ -30,23 +67,29 @@ private func writeAll(_ fd: Int32, _ bytes: [UInt8], _ count: Int) -> Bool {
     return true
 }
 
-// --profile NAME: the same 1-32 of a-z, 0-9 and - rule Profile uses.
+// --help / -h print the usage and exit 0 without connecting; an unknown
+// argument or a bad --profile prints the reason and usage to stderr and
+// exits 1 (MCP-12).
 var profile = "default"
 var index = 1
 while index < CommandLine.arguments.count {
-    switch CommandLine.arguments[index] {
+    let argument = CommandLine.arguments[index]
+    switch argument {
+    case "--help", "-h":
+        writeStdout(usage())
+        exit(0)
     case "--profile":
         index += 1
-        guard index < CommandLine.arguments.count else { fail("contigua-mcp: --profile needs a name") }
+        guard index < CommandLine.arguments.count else { failUsage("--profile needs a name") }
         profile = CommandLine.arguments[index]
     default:
-        fail("contigua-mcp: unknown argument \(CommandLine.arguments[index])")
+        failUsage("unknown argument \(argument)")
     }
     index += 1
 }
 let allowed = Set("abcdefghijklmnopqrstuvwxyz0123456789-")
 guard (1...32).contains(profile.count), profile.allSatisfy({ allowed.contains($0) }) else {
-    fail("contigua-mcp: --profile takes 1-32 of a-z, 0-9 and -")
+    failUsage("--profile takes 1-32 of a-z, 0-9 and -")
 }
 
 guard let base = FileManager.default.urls(for: .applicationSupportDirectory,
@@ -85,27 +128,50 @@ signal(SIGPIPE, SIG_IGN)
 let stdinFD = FileHandle.standardInput.fileDescriptor
 let stdoutFD = FileHandle.standardOutput.fileDescriptor
 
-// Socket → stdout. When the app closes its end (setting turned off, "Disconnect
-// agent", app quit) the relay ends and the shim exits cleanly.
+// Bytes relayed each way, guarded because the reader and writer run on
+// different threads. The exit decision is the transport table in
+// docs/design/mcp.md (MCP-11).
+let relayLock = NSLock()
+var halfClosed = false
+var wroteToSocket = 0
+var readFromSocket = 0
+
+// Socket → stdout. When the socket closes, leave per the table: exit 1 only
+// when the shim half-closed and relayed request bytes but got none back.
 DispatchQueue.global().async {
     var bytes = [UInt8](repeating: 0, count: 65536)
     while true {
         let count = read(socketFD, &bytes, bytes.count)
         if count <= 0 { break }
+        relayLock.lock(); readFromSocket += count; relayLock.unlock()
         if !writeAll(stdoutFD, bytes, count) { break }
+    }
+    relayLock.lock()
+    let closed = halfClosed
+    let wrote = wroteToSocket
+    let readBack = readFromSocket
+    relayLock.unlock()
+    if closed && wrote > 0 && readBack == 0 {
+        fail("contigua-mcp: the app closed the connection with no reply")
     }
     exit(0)
 }
 
-// stdin → socket. A client that closes its pipe ends the session; the app sees
-// EOF, closes its side and the reader above exits the process.
+// stdin → socket. On stdin EOF the shim half-closes its write side and keeps
+// relaying until the app closes, so a pending reply is drained (MCP-10).
 var bytes = [UInt8](repeating: 0, count: 65536)
 while true {
     let count = read(stdinFD, &bytes, bytes.count)
     if count <= 0 {
+        relayLock.lock(); halfClosed = true; relayLock.unlock()
         shutdown(socketFD, SHUT_WR)
         break
     }
-    if !writeAll(socketFD, bytes, count) { exit(0) }
+    relayLock.lock(); wroteToSocket += count; relayLock.unlock()
+    if !writeAll(socketFD, bytes, count) {
+        // The socket is gone (setting off, Disconnect, quit) while stdin is
+        // still open: the app closed first, so relay what arrived and exit 0.
+        exit(0)
+    }
 }
 dispatchMain()

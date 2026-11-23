@@ -17,6 +17,9 @@ final class MCPSocketServer {
         var buffer = Data()
         var pending: [Data] = []
         var busy = false
+        /// The client closed its write side (read EOF): keep running and replying,
+        /// then close once the queue drains (MCP-10).
+        var halfClosed = false
 
         init(fd: Int32, source: DispatchSourceRead) {
             self.fd = fd
@@ -27,6 +30,10 @@ final class MCPSocketServer {
     /// The socket file. Tests pass a temp path; the app uses the profile's.
     let path: String
     private let handler: (Data) async -> Data?
+
+    /// Whether a connecting process's uid is the app's own (MCP-2). Tests inject
+    /// "not ours" to exercise the refusal; the default is the real `getpeereid`.
+    private nonisolated let peerIsOurs: @Sendable (Int32) -> Bool
 
     private let queue = DispatchQueue(label: "app.contigua.mcp.io")
     private var listenFD: Int32 = -1
@@ -41,9 +48,14 @@ final class MCPSocketServer {
         didSet { if clientCount != oldValue { onClientCountChanged?(clientCount) } }
     }
 
-    init(path: String, handler: @escaping (Data) async -> Data?) {
+    init(path: String,
+         handler: @escaping (Data) async -> Data?,
+         peerIsOurs: @escaping @Sendable (Int32) -> Bool = { fd in
+             MCPSocketServer.checkPeerIsOurs(fd)
+         }) {
         self.path = path
         self.handler = handler
+        self.peerIsOurs = peerIsOurs
     }
 
     deinit {
@@ -113,7 +125,7 @@ final class MCPSocketServer {
         acceptSource?.cancel()
         acceptSource = nil
         listenFD = -1
-        for client in clients.values { client.source.cancel() }
+        for client in clients.values { closeClient(client) }
         clients.removeAll()
         clientCount = 0
         unlink(path)
@@ -122,7 +134,7 @@ final class MCPSocketServer {
     /// The menu bar's "Disconnect agent": close every accepted client but keep
     /// the listener (and the socket) in place for later clients.
     func disconnectClients() {
-        for client in clients.values { client.source.cancel() }
+        for client in clients.values { closeClient(client) }
         clients.removeAll()
         clientCount = 0
     }
@@ -139,7 +151,7 @@ final class MCPSocketServer {
         while true {
             let fd = accept(listenFD, nil, nil)
             guard fd >= 0 else { return } // EAGAIN when the backlog is empty
-            let ours = MCPSocketServer.peerIsOurs(fd)
+            let ours = self.peerIsOurs(fd)
             if !ours {
                 close(fd)
                 continue
@@ -150,7 +162,7 @@ final class MCPSocketServer {
         }
     }
 
-    private nonisolated static func peerIsOurs(_ fd: Int32) -> Bool {
+    nonisolated static func checkPeerIsOurs(_ fd: Int32) -> Bool {
         var uid: uid_t = 0
         var gid: gid_t = 0
         guard getpeereid(fd, &uid, &gid) == 0 else { return false }
@@ -165,6 +177,11 @@ final class MCPSocketServer {
         let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
         let client = Client(fd: fd, source: source)
         source.setEventHandler { [weak self] in self?.read(client: fd) }
+        // The fd closes only once the source's cancellation is done (libdispatch's
+        // rule: a number closed earlier can be reused by the next accept while the
+        // old source still watches it). closeClient() cancels from `queue`, after
+        // any write queued before it. A half-closed client suspends the source
+        // instead, so the fd stays open to write its pending replies.
         source.setCancelHandler { close(fd) }
         clients[fd] = client
         source.resume()
@@ -177,11 +194,23 @@ final class MCPSocketServer {
         var bytes = [UInt8](repeating: 0, count: 65536)
         let count = Darwin.read(fd, &bytes, bytes.count)
         guard count > 0 else {
-            Task { @MainActor [weak self] in self?.drop(fd) }
+            Task { @MainActor [weak self] in self?.halfClose(fd) }
             return
         }
         let chunk = Data(bytes: bytes, count: count)
         Task { @MainActor [weak self] in self?.receive(chunk, from: fd) }
+    }
+
+    /// The client's read side reached EOF (the shim half-closed after its stdin
+    /// closed). Keep the connection open to finish and write the requests already
+    /// read, then close (MCP-10).
+    private func halfClose(_ fd: Int32) {
+        // EOF keeps the source firing until it is suspended: suspend it once.
+        guard let client = clients[fd], !client.halfClosed else { return }
+        client.halfClosed = true
+        client.source.suspend()    // stop reading; the fd stays open to write
+        client.buffer.removeAll()  // a buffered tail without a newline is dropped
+        finishIfDone(client)
     }
 
     private func receive(_ chunk: Data, from fd: Int32) {
@@ -214,7 +243,11 @@ final class MCPSocketServer {
     }
 
     private func drain(_ client: Client) {
-        guard !client.busy, !client.pending.isEmpty else { return }
+        guard !client.busy else { return }
+        guard !client.pending.isEmpty else {
+            finishIfDone(client)
+            return
+        }
         let line = client.pending.removeFirst()
         client.busy = true
         Task { @MainActor [weak self] in
@@ -226,6 +259,12 @@ final class MCPSocketServer {
             client.busy = false
             self.drain(client)
         }
+    }
+
+    /// A half-closed client with nothing left to run or write is closed (MCP-10).
+    private func finishIfDone(_ client: Client) {
+        guard client.halfClosed, !client.busy, client.pending.isEmpty else { return }
+        drop(client.fd)
     }
 
     // MARK: Writing and closing
@@ -241,8 +280,20 @@ final class MCPSocketServer {
 
     private func drop(_ fd: Int32) {
         guard let client = clients.removeValue(forKey: fd) else { return }
-        client.source.cancel()
+        closeClient(client)
         clientCount = clients.count
+    }
+
+    /// Cancel a client's read source from `queue`, behind any queued write, so a
+    /// reply already queued is written before the cancel handler closes the fd.
+    /// A suspended source runs that handler only once resumed.
+    private func closeClient(_ client: Client) {
+        nonisolated(unsafe) let source = client.source
+        let suspended = client.halfClosed
+        queue.async {
+            source.cancel()
+            if suspended { source.resume() }
+        }
     }
 
     private nonisolated static func writeAll(_ fd: Int32, _ data: Data) -> Bool {

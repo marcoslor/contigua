@@ -182,4 +182,176 @@ final class MCPServerTests: XCTestCase {
         try server.start()
         XCTAssertTrue(FileManager.default.fileExists(atPath: socketPath))
     }
+
+    // MARK: MCP-2 (the peer-uid check) and MCP-10 (a client's read EOF)
+
+    @MainActor
+    func testAForeignUidIsClosed() async throws {
+        let socketPath = directory.appendingPathComponent("mcp.sock").path
+        let server = MCPSocketServer(path: socketPath,
+            handler: { line in
+                await MCPDispatcher.handle(line: line, perform: { _ in .text("ok") })
+            },
+            peerIsOurs: { _ in false })
+        try server.start()
+        defer { server.stop() }
+
+        // A foreign uid is closed at once: the client reads EOF with no byte,
+        // and is never counted as an accepted client.
+        let fd = try connect(to: socketPath)
+        defer { close(fd) }
+        let data = try await readLine(from: fd)
+        XCTAssertTrue(data.isEmpty)
+        XCTAssertEqual(server.clientCount, 0)
+    }
+
+    @MainActor
+    func testEOFAfterARequestStillGetsTheReply() async throws {
+        let socketPath = directory.appendingPathComponent("mcp.sock").path
+        let server = MCPSocketServer(path: socketPath) { line in
+            await MCPDispatcher.handle(line: line, perform: { _ in .text("ok") })
+        }
+        try server.start()
+        defer { server.stop() }
+        let fd = try connect(to: socketPath)
+        defer { close(fd) }
+        await waitFor { server.clientCount == 1 }
+
+        try send(#"{"jsonrpc":"2.0","id":1,"method":"ping"}"# + "\n", to: fd)
+        shutdown(fd, SHUT_WR)
+
+        // The reply arrives before the connection closes.
+        let reply = try await readLine(from: fd)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: reply) as? [String: Any])
+        XCTAssertEqual(object["id"] as? Int, 1)
+        let result = try XCTUnwrap(object["result"] as? [String: Any])
+        XCTAssertTrue(result.isEmpty)
+
+        let trailing = try await readLine(from: fd)
+        XCTAssertTrue(trailing.isEmpty, "the connection closes only after the reply is written")
+    }
+
+    @MainActor
+    func testEOFWithASlowCallWritesItsReplyFirst() async throws {
+        let socketPath = directory.appendingPathComponent("mcp.sock").path
+        let server = MCPSocketServer(path: socketPath) { line in
+            try? await Task.sleep(nanoseconds: 300_000_000)  // real-time: a slow tool call
+            return await MCPDispatcher.handle(line: line, perform: { _ in .text("ok") })
+        }
+        try server.start()
+        defer { server.stop() }
+        let fd = try connect(to: socketPath)
+        defer { close(fd) }
+        await waitFor { server.clientCount == 1 }
+
+        try send(#"{"jsonrpc":"2.0","id":1,"method":"ping"}"# + "\n", to: fd)
+        shutdown(fd, SHUT_WR)
+
+        let reply = try await readLine(from: fd)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: reply) as? [String: Any])
+        XCTAssertEqual(object["id"] as? Int, 1, "the slow call's reply arrives before EOF")
+        let trailing = try await readLine(from: fd)
+        XCTAssertTrue(trailing.isEmpty)
+    }
+
+    @MainActor
+    func testTwoRequestsBeforeEOFAreAnsweredInOrder() async throws {
+        let socketPath = directory.appendingPathComponent("mcp.sock").path
+        let server = MCPSocketServer(path: socketPath) { line in
+            await MCPDispatcher.handle(line: line, perform: { _ in .text("ok") })
+        }
+        try server.start()
+        defer { server.stop() }
+        let fd = try connect(to: socketPath)
+        defer { close(fd) }
+        await waitFor { server.clientCount == 1 }
+
+        // MCP-10: every request read before EOF is answered, in order.
+        try send(#"{"jsonrpc":"2.0","id":1,"method":"ping"}"# + "\n"
+            + #"{"jsonrpc":"2.0","id":2,"method":"ping"}"# + "\n", to: fd)
+        shutdown(fd, SHUT_WR)
+
+        for id in [1, 2] {
+            let reply = try await readLine(from: fd)
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: reply) as? [String: Any])
+            XCTAssertEqual(object["id"] as? Int, id)
+        }
+        let trailing = try await readLine(from: fd)
+        XCTAssertTrue(trailing.isEmpty)
+        await waitFor { server.clientCount == 0 }
+    }
+
+    @MainActor
+    func testDisconnectStillClosesAtOnce() async throws {
+        let socketPath = directory.appendingPathComponent("mcp.sock").path
+        let server = MCPSocketServer(path: socketPath) { line in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)  // real-time: a slow tool call
+            return await MCPDispatcher.handle(line: line, perform: { _ in .text("ok") })
+        }
+        try server.start()
+        defer { server.stop() }
+        let fd = try connect(to: socketPath)
+        defer { close(fd) }
+        await waitFor { server.clientCount == 1 }
+
+        try send(#"{"jsonrpc":"2.0","id":1,"method":"ping"}"# + "\n", to: fd)
+        try? await Task.sleep(nanoseconds: 50_000_000)  // real-time: let the slow call start
+
+        let start = ContinuousClock.now
+        server.disconnectClients()
+        let data = try await readLine(from: fd)
+        XCTAssertTrue(data.isEmpty, "disconnect closes with no reply")
+        XCTAssertLessThan(ContinuousClock.now - start, .milliseconds(500),
+                          "disconnect closes at once, not after the slow call")
+        await waitFor { server.clientCount == 0 }
+    }
+
+    /// A half-closed client's read source is suspended, not cancelled: closing
+    /// it (here by disconnect, mid-call) still closes its fd, and the server
+    /// keeps serving the next client (MCP-10).
+    @MainActor
+    func testDisconnectClosesAHalfClosedClient() async throws {
+        let socketPath = directory.appendingPathComponent("mcp.sock").path
+        let server = MCPSocketServer(path: socketPath) { line in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)  // real-time: a slow tool call
+            return await MCPDispatcher.handle(line: line, perform: { _ in .text("ok") })
+        }
+        try server.start()
+        defer { server.stop() }
+        let fd = try connect(to: socketPath)
+        defer { close(fd) }
+        await waitFor { server.clientCount == 1 }
+
+        try send(#"{"jsonrpc":"2.0","id":1,"method":"ping"}"# + "\n", to: fd)
+        shutdown(fd, SHUT_WR)
+        try? await Task.sleep(nanoseconds: 100_000_000)  // real-time: let the server read EOF
+
+        let start = ContinuousClock.now
+        server.disconnectClients()
+        let data = try await readLine(from: fd)
+        XCTAssertTrue(data.isEmpty, "the half-closed client is closed with no reply")
+        XCTAssertLessThan(ContinuousClock.now - start, .milliseconds(500))
+        await waitFor { server.clientCount == 0 }
+
+        // Churn: each client half-closes after its request; every one is
+        // answered and closed, and none is left counted.
+        let quick = directory.appendingPathComponent("quick.sock").path
+        let next = MCPSocketServer(path: quick) { line in
+            await MCPDispatcher.handle(line: line, perform: { _ in .text("ok") })
+        }
+        try next.start()
+        defer { next.stop() }
+        for id in 1...40 {
+            let client = try connect(to: quick)
+            defer { close(client) }
+            try send(#"{"jsonrpc":"2.0","id":"# + "\(id)" + #","method":"ping"}"# + "\n", to: client)
+            shutdown(client, SHUT_WR)
+            let reply = try await readLine(from: client)
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: reply) as? [String: Any])
+            XCTAssertEqual(object["id"] as? Int, id)
+            let trailing = try await readLine(from: client)
+            XCTAssertTrue(trailing.isEmpty)
+        }
+        await waitFor { next.clientCount == 0 }
+    }
 }
