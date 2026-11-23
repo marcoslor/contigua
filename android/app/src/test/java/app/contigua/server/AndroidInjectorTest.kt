@@ -211,10 +211,40 @@ class AndroidInjectorTest {
         assertEquals("no clipboard write", 0, service.sets.size)
     }
 
+    /**
+     * A clip that carries a URI (an image, a file) is never pasted over: the
+     * shell may set a URI clip back only while it is the current clip, so once
+     * the typing clip replaced it no trial proves it would come back (T14's
+     * emulator boot 1; lead, 2026-11-22). The run is dropped and the clip is
+     * never written, not even with itself.
+     */
     @Test
-    fun testANonTextClipSurvivesTheFallback() { // [WIN-80]
+    fun testAClipCarryingAUriIsNeverPastedOver() { // [WIN-80]
         val image = imageClip()
         val service = FakeService(image)
+        val logs = CopyOnWriteArrayList<String>()
+        val keys = CopyOnWriteArrayList<Int>()
+        val injector = AndroidInjector(
+            log = { logs += it },
+            sink = { e, _ -> if (e is KeyEvent) keys += e.keyCode },
+            clipboard = shell(service, log = { logs += it }),
+            fields = Fields(noSetText()),
+        )
+
+        injector.text(0, "\u00e9")
+
+        Thread.sleep(600) // real-time: past any deferred clipboard restore
+        assertFalse("nothing pasted over a uri clip", keys.contains(KeyEvent.KEYCODE_PASTE))
+        assertTrue("nothing written over a uri clip", service.sets.isEmpty())
+        sameClip(image, service.clip)
+        assertTrue("the drop is logged", logs.isNotEmpty())
+        assertTrue("the log carries no typed text", logs.none { it.contains("\u00e9") })
+    }
+
+    @Test
+    fun testATextClipGetsThePasteAndComesBack() { // [WIN-80]
+        val previous = textClip("synthetic-previous-" + "g".repeat(4))
+        val service = FakeService(previous)
         val pasted = CopyOnWriteArrayList<String?>()
         val injector = AndroidInjector(
             log = {},
@@ -227,11 +257,12 @@ class AndroidInjectorTest {
             fields = Fields(noSetText()),
         )
 
-        injector.text(0, "é")
+        injector.text(0, "\u00e9")
 
-        assertEquals("the run was pasted from a clip holding it", listOf<String?>("é"), pasted.toList())
-        assertTrue("the person's clip is back", eventually { service.clip?.getItemAt(0)?.uri != null })
-        sameClip(image, service.clip)
+        assertEquals("the run was pasted from a clip holding it", listOf<String?>("\u00e9"), pasted.toList())
+        assertTrue("the person's clip is back",
+            eventually { service.clip?.description?.label == previous.description.label })
+        sameClip(previous, service.clip)
     }
 
     @Test
