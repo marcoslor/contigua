@@ -1,5 +1,6 @@
 package app.contigua.server
 
+import android.content.ClipData
 import android.os.SystemClock
 import android.view.InputDevice
 import android.view.InputEvent
@@ -9,6 +10,7 @@ import android.view.MotionEvent
 import app.contigua.proto.Frames
 import java.lang.reflect.Method
 import java.util.concurrent.Executors
+import java.util.concurrent.Semaphore
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 
@@ -21,8 +23,16 @@ internal class AndroidInjector(
     private val log: (String) -> Unit,
     /** Receives every event and its display instead of the input service; the JVM tests capture them here. */
     private val sink: ((InputEvent, Int) -> Unit)? = null,
-    /** The clipboard the paste path saves and restores through; null leaves it alone. */
+    /**
+     * The clipboard the person's paste fallback borrows (WIN-80). Only a
+     * [ClipKeeper] can save the whole clip and put it back, so any other port,
+     * or null, means the fallback never pastes.
+     */
     private val clipboard: ClipboardPort? = null,
+    /** The focused field of each display, which the person's typing sets text on first; null: none. */
+    private val fields: FocusedFieldSource? = null,
+    /** Like [sink], with the injection mode too (async or wait-for-finish); takes precedence over it. */
+    private val injected: ((InputEvent, Int, Int) -> Unit)? = null,
 ) : Injector {
 
     private val inputManager: Any? =
@@ -37,8 +47,8 @@ internal class AndroidInjector(
         runCatching { InputEvent::class.java.getMethod("setDisplayId", Hidden.T_INT) }.getOrNull()
 
     /**
-     * Restores the previous clipboard text a moment after a paste. The paste key
-     * is processed asynchronously by the app, so restoring immediately would race
+     * Puts the person's clip back a moment after a paste. The paste key is
+     * processed asynchronously by the app, so restoring immediately would race
      * it; a scheduled single-thread executor defers the restore without a sleep.
      */
     private val clipboardScheduler: ScheduledExecutorService =
@@ -47,7 +57,20 @@ internal class AndroidInjector(
     private val touches = TouchTracker(log)
 
     private var loggedFailure = false
-    private var loggedClipboard = false
+
+    /**
+     * One paste at a time uses the clipboard (WIN-80): taken before the clip is
+     * saved, given back only after it is put back, on whichever thread that is.
+     */
+    private val pasteTurn = Semaphore(1)
+
+    @Volatile private var runsDropped = 0
+
+    /**
+     * A key went out async since the last barrier: the app may not have
+     * handled it yet, so a set-text run must wait for it first (WIN-80).
+     */
+    @Volatile private var keysInFlight = false
 
     override fun touch(
         displayId: Int,
@@ -178,24 +201,117 @@ internal class AndroidInjector(
         deliver(e, displayId)
     }
 
+    /**
+     * The person's typing (WIN-80). Key-map runs go as keys; any other run is
+     * set on the focused field by `ui.type`'s route (MCP-109), and only a
+     * field that offers no set text gets it by paste, with the person's whole
+     * clip saved and put back, or not at all. Runs go in order on the caller's
+     * thread, as the KEY frames around them do.
+     */
     override fun text(displayId: Int, s: String) {
-        val runs = TextRuns.split(s)
-        if (runs.all { it is TextRuns.Run.Keys }) {
-            typeAscii(displayId, s)
-            return
-        }
-        // Non-ASCII runs go through the clipboard: set the primary clip, inject
-        // paste, then put the user's previous clip back.
-        val previous = getClipText()
-        for (run in runs) {
+        for (run in TextRuns.split(s)) {
             when (run) {
                 is TextRuns.Run.Keys -> typeAscii(displayId, run.text)
-                is TextRuns.Run.Clip -> pasteViaClipboard(displayId, run.text)
+                is TextRuns.Run.Clip -> typeRun(displayId, run.text)
             }
         }
-        if (previous != null) {
-            clipboardScheduler.schedule({ setClipText(previous) }, CLIPBOARD_RESTORE_DELAY_MS, TimeUnit.MILLISECONDS)
+    }
+
+    private enum class Route { TYPED, PASTE, DROP }
+
+    private fun typeRun(displayId: Int, text: String) {
+        when (route(displayId, text)) {
+            Route.TYPED -> Unit
+            Route.PASTE -> pasteKeepingTheClip(displayId, text)
+            Route.DROP -> dropped(text, "set_text_refused")
         }
+    }
+
+    /**
+     * Where a run goes: set text when the focused field offers it, paste when
+     * it does not. No focused node, or a tree that cannot be read, is a field
+     * with no set text as far as the phone can tell.
+     */
+    private fun route(displayId: Int, text: String): Route {
+        val source = fields ?: return Route.PASTE
+        // Set text reads the field: every key sent before this run lands first.
+        awaitKeys(displayId)
+        return runCatching { source.withFocus(displayId) { focus -> setTextRoute(focus, text) } }
+            .getOrNull() ?: Route.PASTE
+    }
+
+    private fun setTextRoute(focus: TextEntry.Focus?, text: String): Route {
+        if (focus == null || !focus.field.setsText) return Route.PASTE
+        return when (TextEntry.type(0, text, clear = false, submit = false, focus = focus, keys = NO_KEYS)) {
+            is TextEntry.Outcome.Typed -> Route.TYPED
+            // The field offers set text but did not take this run (a password
+            // field holding text, or the app refused): no paste either.
+            is TextEntry.Outcome.Refused -> Route.DROP
+        }
+    }
+
+    /**
+     * The barrier (WIN-80): a key that does nothing, its up injected with
+     * wait-for-finish, so the app has handled every key sent before it, in
+     * order, when this returns. Injected events reach the app in order, and
+     * the app finishes them in order. Only when a key went out since the last
+     * barrier, so plain set-text runs cost nothing.
+     */
+    private fun awaitKeys(displayId: Int) {
+        if (!keysInFlight) return
+        keysInFlight = false
+        val t = SystemClock.uptimeMillis()
+        deliver(KeyEvent(t, t, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_UNKNOWN, 0), displayId)
+        deliver(KeyEvent(t, t, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_UNKNOWN, 0), displayId, INJECT_MODE_WAIT_FOR_FINISH)
+        keysInFlight = false
+    }
+
+    /**
+     * The fallback, one at a time: save the whole clip, prove it can be put
+     * back by putting it back, set the run, paste, and put the clip back a
+     * moment later. A clip that cannot be saved or put back is never
+     * overwritten: the run is dropped. A clip that carries a URI is never
+     * written at all, not even with itself: the shell may set a URI clip back
+     * only while it is the current clip, so once the run replaced it no trial
+     * proves it would come back (emulator boot 1).
+     */
+    private fun pasteKeepingTheClip(displayId: Int, text: String) {
+        val keeper = clipboard as? ClipKeeper ?: return dropped(text, "no_clipboard")
+        if (!pasteTurn.tryAcquire(PASTE_TURN_WAIT_MS, TimeUnit.MILLISECONDS)) return dropped(text, "busy")
+        var handedOff = false
+        try {
+            val saved = keeper.saveClip() ?: return dropped(text, "clip_unreadable")
+            if (carriesUri(saved)) return dropped(text, "clip_carries_uri")
+            if (!keeper.putBack(saved)) return dropped(text, "clip_not_restorable")
+            if (!keeper.setTyping(text)) return dropped(text, "clip_write_refused")
+            val t = SystemClock.uptimeMillis()
+            key(displayId, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_PASTE, 0, t, t)
+            key(displayId, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_PASTE, 0, t, t + 1)
+            val restore = Runnable {
+                try {
+                    if (!keeper.putBack(saved)) log("typing: the clip was not put back after a paste")
+                } finally {
+                    pasteTurn.release()
+                }
+            }
+            handedOff = runCatching {
+                clipboardScheduler.schedule(restore, CLIPBOARD_RESTORE_DELAY_MS, TimeUnit.MILLISECONDS)
+            }.isSuccess
+            if (!handedOff) {
+                // No executor to defer it: put it back now rather than never.
+                if (!keeper.putBack(saved)) log("typing: the clip was not put back after a paste")
+            }
+        } finally {
+            if (!handedOff) pasteTurn.release()
+        }
+    }
+
+    private fun carriesUri(clip: ClipData): Boolean = (0 until clip.itemCount).any { clip.getItemAt(it).uri != null }
+
+    /** A run that went nowhere: its length and the reason only, never its text. */
+    private fun dropped(text: String, reason: String) {
+        runsDropped += 1
+        log("typing: dropped a run of ${text.codePointCount(0, text.length)} characters ($reason, $runsDropped so far)")
     }
 
     /**
@@ -223,29 +339,12 @@ internal class AndroidInjector(
         }
     }
 
-    private fun pasteViaClipboard(displayId: Int, text: String) {
-        if (!setClipText(text)) {
-            if (!loggedClipboard) {
-                loggedClipboard = true
-                log("clipboard unavailable: cannot type non-ASCII text")
-            }
+    private fun deliver(e: InputEvent, displayId: Int, mode: Int = INJECT_MODE_ASYNC) {
+        if (e is KeyEvent && mode == INJECT_MODE_ASYNC) keysInFlight = true
+        injected?.let {
+            it(e, displayId, mode)
             return
         }
-        val t = SystemClock.uptimeMillis()
-        key(displayId, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_PASTE, 0, t, t)
-        key(displayId, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_PASTE, 0, t, t + 1)
-    }
-
-    /** The save/restore goes through the session's one clipboard port (ISS-27). */
-    private fun setClipText(s: String): Boolean {
-        val port = clipboard ?: return false
-        port.setText(s)
-        return true
-    }
-
-    private fun getClipText(): String? = clipboard?.getText()?.text
-
-    private fun deliver(e: InputEvent, displayId: Int) {
         sink?.let {
             it(e, displayId)
             return
@@ -253,7 +352,7 @@ internal class AndroidInjector(
         setDisplayId?.let { runCatching { it.invoke(e, displayId) } }
         val m = injectMethod ?: return
         try {
-            m.invoke(inputManager, e, INJECT_MODE_ASYNC)
+            m.invoke(inputManager, e, mode)
         } catch (t: Throwable) {
             if (!loggedFailure) {
                 loggedFailure = true
@@ -264,6 +363,32 @@ internal class AndroidInjector(
 
     private companion object {
         const val INJECT_MODE_ASYNC = 0
+        /** `InputManager.INJECT_INPUT_EVENT_MODE_WAIT_FOR_FINISH`: returns once the app handled the event. */
+        const val INJECT_MODE_WAIT_FOR_FINISH = 2
         const val CLIPBOARD_RESTORE_DELAY_MS = 400L
+
+        /** How long a run waits for an earlier paste's clip to be put back. */
+        const val PASTE_TURN_WAIT_MS = 2_000L
+
+        /** The set-text route's keyboard: a run that reaches it has no keys. */
+        val NO_KEYS = object : TextEntry.Keys {
+            override fun strokes(text: String): List<KeyStroke>? = null
+            override fun press(strokes: List<KeyStroke>) = Unit
+        }
     }
+}
+
+/**
+ * The focused field of a display as the person's typing reaches it (WIN-80):
+ * the UI tree's node with input focus, read and acted on under the tree's one
+ * read at a time.
+ */
+internal interface FocusedFieldSource {
+    /**
+     * Runs [block] on [displayId]'s node with input focus (null: none has it)
+     * and answers its result, or null when the tree cannot be read. The
+     * caller is the session's reader thread, so a tree busy with another
+     * read is waited on for a short bound only, and then is unreadable.
+     */
+    fun <T> withFocus(displayId: Int, block: (TextEntry.Focus?) -> T): T?
 }
