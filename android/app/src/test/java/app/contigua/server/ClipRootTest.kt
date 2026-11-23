@@ -130,7 +130,10 @@ class ClipRootTest : SessionFixture() {
         val service = service()
         val port = shell(2000, service)
         connect(clipboard = port, clipImages = port)
-        check(service.listening)
+        // The session registers its clipboard listener after `welcome` is out
+        // (Session.welcome → startClipboardSync), and connect() returns on the
+        // welcome: wait for the registration instead of racing it.
+        await { service.listening }
 
         service.copy("synthetic-gate-" + "d".repeat(5))
         Thread.sleep(1_300) // real-time: at least one 1 s image-poll tick
