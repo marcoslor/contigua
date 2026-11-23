@@ -621,4 +621,49 @@ final class LinkMachineTests: XCTestCase {
             }
         }
     }
+    // MARK: PAIR-36: the --connect launch's first pairing
+
+    /// A first dial that met `busy`, or a phone not yet listening, is retried
+    /// as a pairing dial: the launch's pairing is still unresolved.
+    func testALaunchMayPairUntilItsFirstOutcome_PAIR36() {
+        var machine = LinkMachine()
+        machine.handle(.launch(phone), at: t0)
+        XCTAssertTrue(machine.launchPairing)
+        machine.handle(.attemptFailed(reason: "busy"), at: at(1))
+        XCTAssertTrue(machine.launchPairing, "busy")
+        machine.handle(.attemptFailed(reason: "timeout"), at: at(16))
+        XCTAssertTrue(machine.launchPairing, "timeout")
+        machine.handle(.reachabilityHint, at: at(17))
+        XCTAssertTrue(machine.launchPairing, "a hint")
+    }
+
+    /// After the launch's first pairing outcome only the person's Pair Again
+    /// pairs: a cancelled sheet never leaves a quiet pairing dial (pairflow PF1).
+    func testTheLaunchsPairingEndsAtItsFirstOutcome_PAIR36() {
+        let outcomes: [(String, [LinkEvent])] = [
+            ("welcome", [.welcome(phone)]),
+            ("code shown", [.codeShown(phone, code: "123456")]),
+            ("cooldown", [.attemptFailed(reason: "pair_cooldown")]),
+            ("forgotten", [.attemptFailed(reason: "forgotten")]),
+            ("no-pin", [.attemptFailed(reason: "no-pin")]),
+            ("pin-mismatch", [.attemptFailed(reason: "pin-mismatch")]),
+            ("a person's pairing", [.beginPairing(phone)]),
+            ("a cancelled pairing", [.beginPairing(phone), .cancelPairing]),
+            ("another activation", [.activate(other)]),
+            ("forget", [.forget(deviceId: phone.id)]),
+            ("trust lost on launch", [.restoreTrustLost(phone, .told)]),
+        ]
+        for (name, events) in outcomes {
+            var machine = LinkMachine()
+            machine.handle(.launch(phone), at: t0)
+            for (n, event) in events.enumerated() { machine.handle(event, at: at(Double(n + 1))) }
+            XCTAssertFalse(machine.launchPairing, name)
+        }
+    }
+
+    func testALaunchWithNoPhoneNeverPairs_PAIR36() {
+        var machine = LinkMachine()
+        machine.handle(.launch(nil), at: t0)
+        XCTAssertFalse(machine.launchPairing)
+    }
 }
