@@ -918,6 +918,7 @@ final class WindowManager {
     /// connection's session already answered with a phone error.
     func closeFailedHandoff(stream: UInt32) {
         guard let controller = controller(for: stream), controller is HandoffWindowController else { return }
+        recordClose(stream, cause: .openFailed)  // MCP-52: the phone refused the handoff
         controller.closeFromRemote()
     }
 
@@ -1301,6 +1302,7 @@ final class WindowManager {
             controller.refuseOpening("no_stream")
             return .refusedOpening
         }
+        recordClose(stream, cause: .phone("phone_closed"))  // MCP-52: as the phone's own close
         controller.closeFromRemote()
         return .closedWindow
     }
