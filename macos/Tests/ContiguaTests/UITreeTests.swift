@@ -280,6 +280,52 @@ final class UITreeTests: XCTestCase {
         XCTAssertTrue(UITreeRefusal.noTree("e1").contains("Call ui_tree first."))
     }
 
+    /// #266 item 7: the Mac's own refusal before a press, as the pure
+    /// decision `refusal()` makes: a point tap and a ref on a window with a
+    /// tree go to the phone; a ref on a window with no tree read since it
+    /// opened, or since the phone reconnected, is refused here with WIN-79's
+    /// sentence and never claims the window closed ([WIN-79], MCP-86).
+    func test_WIN79_theMacRefusesARefOnlyWithoutATree() throws {
+        XCTAssertNil(MCPHostActEnvironment.refusal(ref: nil, window: 3, latestSnapshot: nil),
+                     "a point tap has no ref to refuse")
+        XCTAssertNil(MCPHostActEnvironment.refusal(ref: "e1", window: 3, latestSnapshot: 1),
+                     "a window with a tree: the phone judges the ref")
+        let refused = try XCTUnwrap(MCPHostActEnvironment.refusal(ref: "e1", window: 3, latestSnapshot: nil))
+        XCTAssertEqual(refused.code, .staleRef)
+        XCTAssertEqual(refused.message, UITreeRefusal.noTree("e1"))
+        XCTAssertEqual(refused.extra["window"] as? Int, 3)
+        XCTAssertEqual(refused.extra["ref"] as? String, "e1")
+        XCTAssertFalse(refused.message.contains("closed"))
+    }
+
+    /// The same decision over the broker's lifecycle: refused before the
+    /// first read, allowed after it, refused again once the session ended
+    /// (a reconnect) or the window's refs were forgotten (window closed,
+    /// its stream id reused) ([WIN-79]).
+    @MainActor
+    func test_WIN79_aRefIsRefusedBeforeTheFirstReadAndAfterAReconnect() async throws {
+        let broker = UITreeBroker()
+        func decide() -> MCPToolError? {
+            MCPHostActEnvironment.refusal(ref: "e1", window: 3, latestSnapshot: broker.latestSnapshot(stream: 3))
+        }
+        func read() async throws {
+            var seq = 0
+            let task = Task { try await broker.read(stream: 3, timeout: 5, send: { seq = $0 }) }
+            await waitUntil { seq != 0 }
+            broker.reply(try XCTUnwrap(UITree(message: phoneReply(seq: seq))))
+            _ = try await task.value
+        }
+        XCTAssertEqual(decide()?.code, .staleRef, "no tree since the window opened")
+        try await read()
+        XCTAssertNil(decide(), "a tree was read")
+        broker.fail(.notConnected)
+        XCTAssertEqual(decide()?.code, .staleRef, "no tree since the phone reconnected")
+        try await read()
+        XCTAssertNil(decide())
+        broker.forget(stream: 3)
+        XCTAssertEqual(decide()?.code, .staleRef, "the window's refs were forgotten")
+    }
+
     @MainActor
     func test_WIN79_refsForgottenWhenStreamIdReused() throws {
         // The window manager hands stream 3 out again: the old window's ref
