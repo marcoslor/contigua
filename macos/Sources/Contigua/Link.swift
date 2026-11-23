@@ -471,8 +471,30 @@ struct LinkMachine {
 
     var consecutiveFailures: Int { failures }
 
+    /// PAIR-36: the `--connect` launch's first pairing is still unresolved,
+    /// from `.launch` until the link first reaches online, pairing or
+    /// needsPairing, or another activation, a person's pairing or a forget.
+    /// While it holds, the test entry point's retries may pair (a first dial
+    /// that met `busy`, a phone not yet listening); after it only the person's
+    /// Pair Again pairs, so a cancelled sheet never leaves a quiet pairing dial.
+    private(set) var launchPairing = false
+
     @discardableResult
     mutating func handle(_ event: LinkEvent, at now: Date) -> [LinkAction] {
+        let actions = step(event, at: now)
+        switch event {
+        case .launch(let phone): launchPairing = phone != nil
+        case .activate, .beginPairing, .cancelPairing, .forget, .restoreTrustLost: launchPairing = false
+        default: break
+        }
+        switch link {
+        case .online, .pairing, .needsPairing: launchPairing = false
+        default: break
+        }
+        return actions
+    }
+
+    private mutating func step(_ event: LinkEvent, at now: Date) -> [LinkAction] {
         switch event {
         case .launch(let phone):
             guard let phone else { link = .idle; return [] }

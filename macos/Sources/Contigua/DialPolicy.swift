@@ -22,20 +22,24 @@ enum DialPolicy {
 enum AttemptRoute: Equatable {
     /// `--connect-phone host:port`: a test hook's own endpoint.
     case testHook
-    /// `--connect host:port`: the test entry point for the current phone.
-    case manualConnect
+    /// `--connect host:port`: the test entry point for the current phone;
+    /// `launchPairing` is `LinkMachine.launchPairing`.
+    case manualConnect(launchPairing: Bool)
     /// A reconnect to a discovered or cached phone.
     case automatic
 }
 
 extension DialPolicy {
-    /// PAIR-36: the test entry points may pair — the phone's Allow is the only
-    /// step — on every attempt, so a retry after `busy` or a refused first dial
-    /// is still a pairing attempt and never a pin-only dial that ends `no-pin`.
-    /// An automatic reconnect never raises a prompt on the phone.
+    /// PAIR-36: `--connect` may pair — the phone's Allow is the only step —
+    /// while its launch's first pairing is unresolved, so a retry after `busy`
+    /// or a refused first dial is still a pairing attempt and never a pin-only
+    /// dial that ends `no-pin`; after that outcome its retries are pin-only and
+    /// only the person's Pair Again pairs. The `--connect-phone` hook dials as
+    /// it always has. An automatic reconnect never raises a prompt on the phone.
     static func pairingPolicy(for route: AttemptRoute) -> Session.PairingPolicy {
         switch route {
-        case .testHook, .manualConnect: return .allowed
+        case .testHook: return .allowed
+        case .manualConnect(let launchPairing): return launchPairing ? .allowed : .never
         case .automatic: return .never
         }
     }
