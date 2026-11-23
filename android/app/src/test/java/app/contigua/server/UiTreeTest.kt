@@ -448,4 +448,19 @@ class UiTreeTest {
         assertEquals(2, rows.size)
         assertTrue(rows.none { it.containsKey("covered") })
     }
+
+    @Test
+    fun testAFieldKeepsItsDescWhenItEqualsItsText() { // [MCP-86]
+        // A field's desc is what it is, its text only what it holds now: the
+        // row keeps the desc even when the two read the same.
+        val body = reply(listOf(layer(
+            node(role = "android.widget.EditText", text = "Search", desc = "Search", editable = true),
+            node(role = "android.widget.Button", text = "Go", desc = "Go", clickable = true),
+        )))
+        val rows = nodes(body)
+        assertEquals("Search", rows[0]["text"])
+        assertEquals("Search", rows[0]["desc"])
+        assertEquals("Go", rows[1]["text"])
+        assertEquals(null, rows[1]["desc"])
+    }
 }

@@ -229,6 +229,8 @@ final class ConnectionController {
     @ObservationIgnored private var uiTreeBroker = UITreeBroker()
     /// `ui.settle` (MCP-81): each settle waits for the reply carrying its seq.
     @ObservationIgnored private var uiSettleBroker = UISettleBroker()
+    /// `ui.press` (MCP-86): each press waits for the reply carrying its seq.
+    @ObservationIgnored private var uiPressBroker = UIPressBroker()
     /// MCP-9: every `ui.*` request to the phone, one at a time, in arrival order.
     @ObservationIgnored private var phoneReads = PhoneReadQueue()
     /// MCP-84: input calls on one window, one at a time across clients.
@@ -1351,6 +1353,32 @@ final class ConnectionController {
         }
     }
 
+    /// `ui.press` for a window's display (MCP-86), in the phone's read queue
+    /// (MCP-9). `expect` is [client]'s last answered label for `k`.
+    func uiPress(stream: UInt32, k: Int, holdMs: Int?, client: MCPClientID?,
+                 until: ContinuousClock.Instant) async throws -> UIPressReply {
+        guard link.isOnline, let session else { throw UITreeError.notConnected }
+        let expect = uiTreeExpect(client: client, stream: stream, k: k)
+        return try await phoneReads.run(until: until) { [uiPressBroker] in
+            try await uiPressBroker.press(holdMs: holdMs ?? 0) { seq in
+                session.requestUIPress(stream: stream, seq: seq, k: k, holdMs: holdMs, expect: expect)
+            }
+        }
+    }
+
+    /// A tree answered to [client]: its labels become that client's `expect`s.
+    func uiTreeAnswered(_ tree: UITree, client: MCPClientID?) {
+        uiTreeBroker.answered(tree, client: client)
+    }
+
+    func uiTreeExpect(client: MCPClientID?, stream: UInt32, k: Int) -> String? {
+        uiTreeBroker.expect(client: client, stream: stream, k: k)
+    }
+
+    func uiTreeLatestSnapshot(stream: UInt32) -> Int? {
+        uiTreeBroker.latestSnapshot(stream: stream)
+    }
+
     /// The window's latest tree, for an answer's `did` (MCP-87, MCP-108).
     func uiTreeLatest(stream: UInt32) -> UITree? {
         uiTreeBroker.latestTree(stream: stream)
@@ -1382,6 +1410,7 @@ final class ConnectionController {
     private func failUITrees(_ error: UITreeError) {
         phoneReads.fail(error)
         uiSettleBroker.fail(error)
+        uiPressBroker.fail(error)
         windowActs.linkLost()
         uiTreeBroker.fail(error)
     }
@@ -3323,6 +3352,8 @@ final class ConnectionController {
             uiTreeReplied(tree)
         case .uiSettle(let reply):
             uiSettleBroker.reply(reply)
+        case .uiPress(let reply):
+            uiPressBroker.reply(reply)
         case .phoneState(let locked, let battery, let charging, let dnd, let ringer, let volume,
                          let volumeMax, let screen, let secure, let panel, let lockSource):
             if status?.locked != locked { lockChangedAt = .now }

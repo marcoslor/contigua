@@ -188,6 +188,40 @@ extension MCPToolError {
 
     /// #162's ref refusals (WIN-79): every refusal but the off-screen one is
     /// `stale_ref`, with #162's sentence kept. nil when the ref resolves.
+    /// A `ui.press` the phone refused (MCP-71, MCP-86, MCP-89); nothing was pressed.
+    static func pressRefusal(code: String, ref: String, window id: Int, latestSnapshot: Int?,
+                             expect: String?, now: String?, coveredBy: String?) -> MCPToolError {
+        var fields: [String: Any] = ["window": id, "ref": ref]
+        if let latestSnapshot { fields["snapshot"] = latestSnapshot }
+        switch code {
+        case "gone", "not_visible":
+            guard let latestSnapshot else {
+                return MCPToolError(.staleRef, UITreeRefusal.noTree(ref), fields)
+            }
+            return MCPToolError(.staleRef,
+                                "\(ref) is no longer on window \(id); its latest tree is snapshot \(latestSnapshot). Use a ref from snapshot \(latestSnapshot), or call ui_tree.",
+                                fields)
+        case "changed":
+            if let now { fields["now"] = now }
+            return MCPToolError(.staleRef,
+                                "\(ref) now reads \"\(now ?? "")\", not \"\(expect ?? "")\". Call ui_tree and use the ref it gives.",
+                                fields)
+        case "off_screen":
+            return MCPToolError(.offScreen, UITreeRefusal.offScreen(ref), fields)
+        case "covered":
+            let cover = coveredBy ?? "window"
+            fields["coveredBy"] = cover
+            let over = cover == "window" ? "another window" : cover
+            return MCPToolError(.covered,
+                                "\(ref) is covered by \(over), so nothing was pressed. Close or move what covers it, then call ui_tree.",
+                                fields)
+        case "no_window":
+            return .noWindow(id)
+        default:
+            return MCPToolError(.failed, "The phone could not press \(ref) in window \(id).", fields)
+        }
+    }
+
     static func tapRefusal(_ resolution: UITreeResolution, ref: String, window id: Int) -> MCPToolError? {
         switch resolution {
         case .placed(_, let placed):

@@ -264,9 +264,10 @@ struct MCPActMachine: Equatable {
             return []
         case (.pressing, .pressFailed(let why)):
             switch why {
-            case "off_screen": return finish(.fail("off_screen"))
-            case "covered": return finish(.fail("covered"))
-            default: return finish(.fail("stale_ref"))  // gone, not_visible
+            case "gone", "not_visible", "changed": return finish(.fail("stale_ref"))
+            case "off_screen", "covered", "no_window", "timeout", "phone_offline":
+                return finish(.fail(why))
+            default: return finish(.fail("failed"))  // busy, failed
             }
 
         case (.typing, .typeOK(let entry, let via)):

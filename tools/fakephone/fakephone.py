@@ -348,9 +348,9 @@ HOLD_FIRST_FRAME_S = 12.0
 
 
 def mode_on(args, name):
-    """A settle or close flag (B1's `--never-settle`, `--settle-loading`,
-    `--ignore-ui-settle`, `--close-on-back`; `hold-first-frame` is the mode
-    file's only), from the command line or, with
+    """A settle, close or tree flag (B1's `--never-settle`, `--settle-loading`,
+    `--ignore-ui-settle`, `--close-on-back`; B2/B3's `--tree-variant`,
+    `--relabel`; `hold-first-frame` is the mode file's only), from the command line or, with
     `--mode-file`, from that file's words as each request arrives: one e2e run
     switches modes without restarting the phone (plan T5, suite_act)."""
     if getattr(args, name, False):
@@ -5372,8 +5372,10 @@ class Session(object):
             # Below the display (a cart's lower rows): its text, no tap point.
             {"i": 3, "k": 4, "p": 0, "l": 0, "role": "TextView", "text": "Below the fold", "off": True},
         ]
-        self._tree_reads += 1
-        if self.phone.args.tree_variant:
+        # The variant's reads count from when it is switched on (`--mode-file`).
+        variant = mode_on(self.phone.args, "tree_variant")
+        self._tree_reads = self._tree_reads + 1 if variant else 0
+        if variant:
             # A heading (MCP-72), a button under a banner's close button drawn
             # after it (MCP-73: `covered` is the banner's `k`), and from the
             # second read on the Continue button is gone: k 2 is never reused.
@@ -5456,7 +5458,7 @@ class Session(object):
             refuse("off_screen", "That element is off screen.")
             return
         text = node.get("text")
-        if self.phone.args.relabel and node.get("text") == "Continue":
+        if mode_on(self.phone.args, "relabel") and node.get("text") == "Continue":
             text = "Continue later"
         now = text or node.get("desc") or ""
         expect = msg.get("expect")

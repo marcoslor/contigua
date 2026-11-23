@@ -113,8 +113,8 @@ final class MCPCoreTests: XCTestCase {
                       "description": "Horizontal position, 0 (left) to 1 (right), in the window's video rect."],
                 "y": ["type": "number", "minimum": 0, "maximum": 1,
                       "description": "Vertical position, 0 (top) to 1 (bottom), in the window's video rect."],
-                "ref": ["type": "string", "minLength": 1, "maxLength": 32,
-                        "description": "Element ref from ui_tree, e.g. \"s13e5\". Takes precedence over x and y."],
+                "ref": ["type": "string", "minLength": 1, "maxLength": 32, "pattern": "^e[0-9]+$",
+                        "description": "Element ref from ui_tree, e.g. \"e5\". Takes precedence over x and y."],
                 // MCP-81, MCP-82 (T5).
                 "wait": ["type": "string", "enum": ["settle", "none"],
                          "description": "settle (the default for an action) waits until the window's accessibility tree has not changed for 300 ms and nothing on it is loading, at most 2 s; none answers at once."],
@@ -148,7 +148,7 @@ final class MCPCoreTests: XCTestCase {
              .openApp("com.android.chrome", newWindow: true)),
             ("list_windows", [:], .listWindows),
             ("screenshot", ["window": 3], .screenshot(window: 3, ref: nil)),
-            ("screenshot", ["window": 3, "ref": "s2e1"], .screenshot(window: 3, ref: "s2e1")),
+            ("screenshot", ["window": 3, "ref": "e1"], .screenshot(window: 3, ref: "e1")),
             ("ui_tree", ["window": 3], .uiTree(window: 3)),
             ("wait", ["window": 3, "ms": 1000],
              .wait(window: 3, mode: .clock(ms: 1000), timeoutMs: 10000, observe: .tree)),
@@ -487,6 +487,43 @@ final class MCPCoreTests: XCTestCase {
         XCTAssertEqual(try MCPArguments.call("wait", ["window": 3, "settle": true]),
                        .wait(window: 3, mode: .settle, timeoutMs: 10000, observe: .tree))
     }
+
+    // [MCP-71] Review: a ref that is not a key is an argument error.
+    func testARefMustBeAKey() async throws {
+        for (tool, ref) in [("tap", "s3e1"), ("tap", "x"), ("screenshot", "s3e1"), ("screenshot", "x")] {
+            let data = await MCPDispatcher.handle(
+                line: callRequest(tool, ["window": 3, "ref": ref]),
+                client: MCPClientID(1), perform: { _, _ in .answer([:]) })
+            XCTAssertEqual(try errorCode(data), -32602, "\(tool) \(ref)")
+            let message = try XCTUnwrap((try decode(data)["error"] as? [String: Any])?["message"] as? String)
+            XCTAssertTrue(message.contains("ref must look like e12: use a ref from ui_tree"), message)
+        }
+        let response = try decode(await MCPDispatcher.handle(
+            line: request(2, "tools/list", [:]),
+            client: MCPClientID(1), perform: { _, _ in .answer([:]) }))
+        let tools = try XCTUnwrap((response["result"] as? [String: Any])?["tools"] as? [[String: Any]])
+        for name in ["tap", "screenshot"] {
+            let tool = try XCTUnwrap(tools.first { $0["name"] as? String == name })
+            let ref = ((tool["inputSchema"] as? [String: Any])?["properties"] as? [String: Any])?["ref"] as? [String: Any]
+            XCTAssertEqual(ref?["pattern"] as? String, "^e[0-9]+$", name)
+        }
+    }
+
+    // [MCP-71] T10: the tap and ui_tree descriptions state the key rule.
+    func testTheRefRuleIsOneSentence() async throws {
+        let target = "A ref names one element for as long as it is on screen, across reads; a ref whose element is gone is refused."
+        let s1 = "A ref works only from the window's latest tree; an older one is refused."
+        let response = try decode(await MCPDispatcher.handle(
+            line: request(2, "tools/list", [:]),
+            client: MCPClientID(1), perform: { _, _ in .answer([:]) }))
+        let tools = try XCTUnwrap((response["result"] as? [String: Any])?["tools"] as? [[String: Any]])
+        for name in ["tap", "ui_tree"] {
+            let tool = try XCTUnwrap(tools.first { $0["name"] as? String == name })
+            let text = MCPJSON.string(tool)
+            XCTAssertTrue(text.contains(target), name)
+            XCTAssertFalse(text.contains(s1), name)
+        }
+    }
 }
 
 // MARK: - T5: wait and observe on every action (MCP-64, MCP-80, MCP-82)
@@ -522,8 +559,8 @@ final class MCPActArgumentTests: XCTestCase {
     func testWaitAndObserveAreTakenOnEveryAction_MCP81_MCP82() throws {
         let act: [String: Any] = ["wait": "none", "observe": "none"]
         func with(_ args: [String: Any]) -> [String: Any] { args.merging(act) { a, _ in a } }
-        XCTAssertEqual(try MCPArguments.call("tap", with(["window": 3, "ref": "s1e2"])),
-                       .tapRef(window: 3, ref: "s1e2", wait: .none, observe: .none))
+        XCTAssertEqual(try MCPArguments.call("tap", with(["window": 3, "ref": "e2"])),
+                       .tapRef(window: 3, ref: "e2", wait: .none, observe: .none))
         XCTAssertEqual(try MCPArguments.call("long_press", with(["window": 3, "x": 0, "y": 1, "ms": 10])),
                        .longPress(window: 3, x: 0, y: 1, ms: 10, wait: .none, observe: .none))
         XCTAssertEqual(try MCPArguments.call("swipe", with(["window": 3, "x1": 0, "y1": 0, "x2": 1, "y2": 1, "ms": 10])),
@@ -551,4 +588,5 @@ final class MCPActArgumentTests: XCTestCase {
             }
         }
     }
+
 }

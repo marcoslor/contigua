@@ -1537,7 +1537,8 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
    - `nodes`: one row per node worth reading, in document order (the reading order):
      `i` the index, `p` the nearest kept ancestor's index (absent at a root), `l` the
      layer's index, `role` the class's last part (`Button`), `text`, `desc` (absent when
-     it repeats `text`), `id` the view id's part after `:id/`, `box`
+     it repeats `text`, except on an editable row, which keeps its `desc` always: a field's
+     text is only what it holds now, MCP-86), `id` the view id's part after `:id/`, `box`
      `[left,top,right,bottom]` in display pixels (clipped to the display), `at` the box's
      centre as 0..1 of the display's input space (the same coordinates TOUCH and the MCP
      `tap` tool take), and the states that are true: `click`, `edit`, `scroll`, `check`
@@ -1553,13 +1554,13 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
      Unicode's private use areas (U+E000–U+F8FF and the two supplementary areas) are
      dropped from a label: an icon font draws art there, not a word, and a label made only
      of them is no label.
-   - The phone sends no `ref` and no `snapshot`: a ref never crosses the wire. The Mac
-     keeps a read counter per window (starting at 1, kept across reconnects) and names
-     each node `s<snapshot>e<row>`, and `snapshot` in the tool result is that counter. A
-     ref from any reply but the window's latest is refused with a sentence naming both
-     snapshots. A ref protects against a newer *tree*, not against a newer *screen*: an
-     overlay that appears after the read can cover the node, and the tap lands where the
-     node was. The tool says so, and the tap answer names the read it came from.
+   - The phone sends no `ref` and no `snapshot`. The Mac keeps a read counter per
+     window (starting at 1, kept across reconnects), and `snapshot` in the tool result is
+     that counter. S1 named each node `s<snapshot>e<row>` and refused a ref from any reply
+     but the window's latest; since T10 the Mac names a row `e<k>` from its key (item 9), a
+     ref from any earlier read is sent back as `ui.press` with that `k` (item 8), and the
+     phone, not the Mac, decides whether the node is still there, visible, uncovered and
+     labelled as the asking client last saw it. A row with no `k` has no ref.
    - At most 1200 nodes and 200 characters per label. `truncated` says the cap cut the
      tree. `displayId` is the display's own id (a virtual display's is in the sixties on
      current builds), never a counter.
@@ -1614,13 +1615,21 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
 8. **`ui.press` (B3).** Mac → `{"t":"ui.press","stream":N,"seq":S,"k":K,"holdMs":H,"expect":"…"}`,
    `k` a row's key (item 9, B2), `holdMs` optional (absent = a tap; 1–3000). `expect` is the
    node's label as the Mac last answered it to the connection that asks: the row's `text`, else
-   its `desc`, else the first row under it with either, in reading order (`""` when none has
-   one); absent when the Mac never answered that connection a tree with `k`. The phone finds `k` in
+   its `desc`, else the first row under it with either, in reading order, where a row with
+   `edit` gives none and neither do the rows under it; an `edit` row's own label is its `desc`,
+   else its `id`, never its `text` (a field's text is its value, not what it is; item 2 keeps a
+   field's `desc` even when it equals its `text`, so the label never depends on what was typed),
+   and a `pwd` field, whose row carries no `desc`, is labelled by its `id` alone; absent when the Mac
+   has no label for `k` (it never answered that connection a tree with `k`, or no row there
+   carried one — a capped tree may have cut the labelled rows), so the phone does not check. The phone finds `k` in
    its latest read of the stream's display, calls `refresh()` on that node and, when it still
    exists, is `isVisibleToUser` and is on the display (item 2's `off` rule), reads its bounds
    now, computes the covering node as `covered` does (item 9) at the bounds' centre, reads the
    same label of the refreshed node (its text, else its description, else the first node under
-   it with either, depth first within item 2's depth cap, each trimmed as item 2 trims a label),
+   it with either, depth first within item 2's depth cap, each trimmed as item 2 trims a label;
+   an editable node is labelled by its description, else its view id as item 2 shortens it, a
+   password one by its view id alone, and
+   under another node an editable node and its subtree give none),
    and — when nothing covers it and the label equals `expect` (or `expect` is absent) — injects
    TOUCH down at the centre and up after `H` ms (or at once),
    stamped like a TOUCH frame from the Mac. It answers

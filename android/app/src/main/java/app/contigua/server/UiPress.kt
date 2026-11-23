@@ -78,12 +78,22 @@ object UiPress {
      * The label `expect` is compared with (item 8): the node's text, else its
      * description, else the first node under it with either, depth first, each
      * trimmed as a row's label is; `""` when none has one. A password node's
-     * text is never a label, as it is never a row's.
+     * text is never a label, as it is never a row's. An editable node's text is
+     * its value, not what it is (#188): its label is its description, else its
+     * view id as a row shortens it (a password field's, its view id alone, as
+     * its row carries no desc), and under another node it and its subtree
+     * give none.
      */
-    fun label(node: UiTree.Node): String = find(node, 0) ?: ""
+    fun label(node: UiTree.Node): String {
+        // A password field's row carries neither text nor desc (item 2): its id alone.
+        if (node.editable && node.password) return UiTree.viewId(node.viewId) ?: ""
+        if (node.editable) return UiTree.label(node.desc) ?: UiTree.viewId(node.viewId) ?: ""
+        return find(node, 0) ?: ""
+    }
 
     private fun find(node: UiTree.Node, depth: Int): String? {
         if (depth > UiTree.MAX_DEPTH) return null
+        if (depth > 0 && node.editable) return null
         if (!node.password) {
             (UiTree.label(node.text) ?: UiTree.label(node.desc))?.let { return it }
         }

@@ -86,7 +86,12 @@ final class MCPActMachineTests: XCTestCase {
 
     func testAPressThatFailedNamesWhy() {
         let cases = [("gone", "stale_ref"), ("not_visible", "stale_ref"),
-                     ("off_screen", "off_screen"), ("covered", "covered")]
+                     ("off_screen", "off_screen"), ("covered", "covered"),
+                     // T10 (MCP-86, #188): a relabelled node is stale; the
+                     // phone's and the link's own failures keep their codes.
+                     ("changed", "stale_ref"), ("no_window", "no_window"),
+                     ("timeout", "timeout"), ("phone_offline", "phone_offline"),
+                     ("busy", "failed"), ("failed", "failed")]
         for (phone, code) in cases {
             let (state, actions, _) = step(machine(.pressing), .pressFailed(phone))
             XCTAssertEqual(state, .done, phone)
@@ -451,20 +456,6 @@ final class MCPActMachineTests: XCTestCase {
         XCTAssertNil(MCPActDid.tap(x: 0.5, y: 0.5, holdMs: nil, latest: nil).snapshot)
     }
 
-    func testATapByRefNamesItsNode_MCP108() throws {
-        let latest = tree(snapshot: 4, nodes: [
-            node(5, ref: "s4e5", role: "Button", text: "Add to cart",
-                 box: [100, 200, 300, 400], at: UITree.Point(x: 0.2, y: 0.125), click: true),
-        ])
-        let did = try XCTUnwrap(MCPActDid.tap(ref: "s4e5", holdMs: nil, latest: latest))
-        XCTAssertEqual(did.object["ref"] as? String, "s4e5")
-        XCTAssertEqual(did.object["at"] as? [Double], [0.2, 0.125])
-        XCTAssertEqual(did.object["box"] as? [Int], [100, 200, 300, 400])
-        let named = try XCTUnwrap(did.object["node"] as? [String: String])
-        XCTAssertEqual(named, ["role": "Button", "text": "Add to cart"])
-        XCTAssertEqual(did.snapshot, 4)
-    }
-
     func testTheEnvelopeNamesWhatWasPressedAndWhatItActedOn_MCP80() throws {
         let did = MCPActDid.key("back")
         let answer = MCPActEnvelope.answer(
@@ -603,5 +594,34 @@ final class MCPActMachineTests: XCTestCase {
         let (state2, actions2, _) = step(machine(.opening), .linkLost)
         XCTAssertEqual(state2, .done)
         XCTAssertEqual(actions2, [.fail("phone_offline")])
+    }
+
+    // [MCP-86] T10: the phone answers `ui.press` gone → stale_ref, and no
+    // input frame went out.
+    @MainActor
+    func testAGonePressIsStaleRefAndPressesNothing() async {
+        let env = FakeActEnvironment(name: "a")
+        env.pressEvent = .pressFailed("gone")
+        let outcome = await MCPActRunner.run(MCPActMachine(path: .press, wait: .settle, observe: .tree),
+                                             window: 3, queue: WindowActQueue(),
+                                             deadline: .seconds(5), env: env, ref: true)
+        XCTAssertEqual(outcome, .fail("stale_ref"))
+        XCTAssertEqual(env.log, ["a.press"], "a gone ref sends no TOUCH and no settle")
+    }
+
+    // [MCP-84] Review: only a press the phone made, or may have made, is an
+    // agent's input on the window.
+    func testARefusedPressIsNotAnotherAgentsInput_MCP84() {
+        let pressed = UIPressReply(seq: 1, stream: 3, ok: true, box: [0, 0, 1, 1], at: [0.5, 0.5], role: "Button")
+        XCTAssertTrue(UIPressResult.reply(pressed).mayHaveActed)
+        for code in ["gone", "not_visible", "off_screen", "changed", "covered", "no_window", "busy", "failed"] {
+            let refused = UIPressReply(seq: 1, stream: 3, ok: false, code: code)
+            XCTAssertFalse(UIPressResult.reply(refused).mayHaveActed, code)
+        }
+        XCTAssertTrue(UIPressResult.failed("timeout").mayHaveActed)
+        XCTAssertTrue(UIPressResult.failed("phone_offline").mayHaveActed)
+        XCTAssertFalse(UIPressResult.failed("failed").mayHaveActed)
+        // Review C: a client that left while its press was out may have pressed.
+        XCTAssertTrue(UIPressResult.failed("cancelled").mayHaveActed)
     }
 }

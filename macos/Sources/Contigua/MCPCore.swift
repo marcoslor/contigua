@@ -238,12 +238,12 @@ enum MCPTools {
                 description: "PNG of a frame from after the call: the phone's next keyframe for the window, scaled to a longest side of at most 1280 px. frame.seq counts the window's frames and grows with every new picture; frame.ageMs is how old this one is; state says whether the window is live. image is the PNG's pixels, size the window's display pixels (the space ui_tree's box uses). blank: true marks a black or one-colour frame. An offline phone fails phone_offline at once; no keyframe within 2 s fails no_frame. Pass ref to crop to a ui_tree element's box plus 8 px; crop names the box in size's pixels.",
                 schema: object([
                     "window": window,
-                    "ref": ["type": "string", "minLength": 1, "maxLength": 32,
-                            "description": "Element ref from ui_tree, e.g. \"s13e5\". Crop the picture to that element's box plus 8 px."],
+                    "ref": ["type": "string", "minLength": 1, "maxLength": 32, "pattern": "^e[0-9]+$",
+                            "description": "Element ref from ui_tree, e.g. \"e5\". Crop the picture to that element's box plus 8 px."],
                     "wait": wait,
                 ], required: ["window"])),
         MCPTool(name: .uiTree,
-                description: "The accessibility tree of the window's display: one entry per label or control, with its text, view id, bounds in the display's pixels, a tap point in 0..1 and a ref. displayId names the phone display it was read from; size names the pixel space box is in; snapshot counts this window's reads. An off-screen node keeps its text with off:true and no tap point. Cheaper and more exact than a screenshot for finding what to press. Read it again after an action: a ref only protects against a newer tree, not against a screen that changed under it.",
+                description: "The accessibility tree of the window's display: one entry per label or control, with its text, view id, bounds in the display's pixels, a tap point in 0..1 and a ref. displayId names the phone display it was read from; size names the pixel space box is in; snapshot counts this window's reads. An off-screen node keeps its text with off:true and no tap point. Cheaper and more exact than a screenshot for finding what to press. A ref names one element for as long as it is on screen, across reads; a ref whose element is gone is refused. Read it again after an action to see what changed.",
                 schema: object(["window": window, "wait": wait], required: ["window"])),
         MCPTool(name: .wait,
                 description: "Wait on a window: for ms milliseconds, until text appears on it (with gone: true, until it disappears), or with settle: true until it stops changing and nothing on it is loading, at most timeoutMs; if timeoutMs ends first, reason says whether it was still loading. Use this instead of sleeping or re-reading the tree as a clock.",
@@ -262,11 +262,11 @@ enum MCPTools {
                     "observe": observe,
                 ], required: ["window"])),
         MCPTool(name: .tap,
-                description: "Tap a point in the window, or an element by the ref ui_tree gave. A ref wins over x and y. It is refused, with a sentence saying what to do, when a newer tree replaced it, when the window has had no tree read since it opened or since the phone reconnected, or when the node is off screen, and nothing is pressed. The answer names what was pressed and the tree it came from (on.snapshot). By default the call waits for the screen to settle and returns the new tree.",
+                description: "Tap a point in the window, or an element by the ref ui_tree gave. A ref wins over x and y. A ref names one element for as long as it is on screen, across reads; a ref whose element is gone is refused. The phone presses the element where it is now; it is refused, with a sentence saying what to do and nothing pressed, when the element is gone, off screen, covered (coveredBy names what is over it) or now reads differently from the tree you were given, or when the window has had no tree read since it opened or since the phone reconnected. The answer names what was pressed, as the phone read it at the press. By default the call waits for the screen to settle and returns the new tree.",
                 schema: object([
                     "window": window, "x": pointX, "y": pointY,
-                    "ref": ["type": "string", "minLength": 1, "maxLength": 32,
-                            "description": "Element ref from ui_tree, e.g. \"s13e5\". Takes precedence over x and y."],
+                    "ref": ["type": "string", "minLength": 1, "maxLength": 32, "pattern": "^e[0-9]+$",
+                            "description": "Element ref from ui_tree, e.g. \"e5\". Takes precedence over x and y."],
                     "wait": wait, "observe": observe,
                 ], required: ["window"])),
         MCPTool(name: .longPress,
@@ -588,6 +588,16 @@ enum MCPArguments {
         return .wait(window: window, mode: mode, timeoutMs: timeoutMs, observe: try observe(args))
     }
 
+    /// A ref is the phone's key, `e<k>` (MCP-71); anything else is an argument
+    /// error, never a refusal from the tool.
+    static func key(_ args: [String: Any], _ key: String) throws -> String {
+        let value = try string(args, key, maximum: 32)
+        guard value.count >= 2, value.first == "e", value.dropFirst().allSatisfy({ $0.isASCII && $0.isNumber }) else {
+            throw MCPArgumentError(message: "ref must look like e12: use a ref from ui_tree")
+        }
+        return value
+    }
+
     /// Validate `arguments` for a known tool. Throws `MCPArgumentError`; the
     /// dispatcher turns that into `-32602`.
     static func call(_ name: String, _ args: [String: Any]) throws -> MCPCall {
@@ -608,7 +618,7 @@ enum MCPArguments {
             return .listWindows
         case .screenshot:
             let window = try integer(args, "window", minimum: 1, maximum: 1_000_000)
-            let ref = args["ref"] != nil ? try string(args, "ref", maximum: 32) : nil
+            let ref = args["ref"] != nil ? try key(args, "ref") : nil
             return .screenshot(window: window, ref: ref, wait: try wait(args, default: .none))
         case .uiTree:
             return .uiTree(window: try integer(args, "window", minimum: 1, maximum: 1_000_000),
@@ -618,7 +628,7 @@ enum MCPArguments {
         case .tap:
             let window = try integer(args, "window", minimum: 1, maximum: 1_000_000)
             if args["ref"] != nil {
-                return .tapRef(window: window, ref: try string(args, "ref", maximum: 16),
+                return .tapRef(window: window, ref: try key(args, "ref"),
                                wait: try wait(args), observe: try observe(args))
             }
             return .tap(window: window,
