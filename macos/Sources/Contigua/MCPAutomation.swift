@@ -42,9 +42,9 @@ final class MCPAutomation {
             return
         }
         guard server == nil, let path = socketPath else { return }
-        let server = MCPSocketServer(path: path) { [weak self] line in
+        let server = MCPSocketServer(path: path) { [weak self] line, client in
             guard let self else { return nil }
-            return await self.handle(line)
+            return await self.handle(line, client: client)
         }
         server.onClientCountChanged = { [weak self] count in
             self?.clientCount = count
@@ -104,22 +104,25 @@ final class MCPAutomation {
 
     // MARK: Dispatch
 
-    private func handle(_ line: Data) async -> Data? {
-        await MCPDispatcher.handle(line: line, perform: { [weak self] call in
-            guard let self else { return .error("Contigua is shutting down.") }
-            return await self.perform(call)
-        }, log: { tool, seconds in
-            // Tool name and duration only: never arguments, text, URLs, file
-            // names or pixels (docs/design/mcp.md).
-            Log.app.notice("mcp \(tool.rawValue, privacy: .public) \(Int((seconds * 1000).rounded()), privacy: .public) ms")
+    private func handle(_ line: Data, client: MCPClientID) async -> Data? {
+        await MCPDispatcher.handle(line: line, client: client, perform: { [weak self] call, client in
+            guard let self else { return .failure(Self.shuttingDown) }
+            return await self.perform(call, client: client)
+        }, log: { tool, seconds, code, window in
+            // Name, duration, outcome code and window only: never arguments,
+            // text, URLs, file names, the client's name or pixels (MCP-14).
+            let line = MCPLogLine.format(tool: tool, duration: seconds, code: code, window: window)
+            Log.app.notice("\(line, privacy: .public)")  // log-ok: tool name, duration, closed code and window id only (MCPLogLine)
         })
     }
 
+    private static let shuttingDown = MCPToolError.failed("Contigua is shutting down.")
+
     @MainActor
-    private func perform(_ call: MCPCall) async -> MCPToolResult {
+    private func perform(_ call: MCPCall, client: MCPClientID) async -> MCPToolResult {
         guard let host = hostProvider?() else {
-            return .error("Contigua is shutting down.")
+            return .failure(Self.shuttingDown)
         }
-        return await host.perform(call)
+        return await host.perform(call, client: client)
     }
 }

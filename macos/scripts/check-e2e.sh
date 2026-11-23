@@ -6480,44 +6480,31 @@ PY
         return 1
     fi
     ok "MCP the setting on creates the private socket"
-    if "$FAKE_PY" "$MACOS/scripts/mcp-driver.py" \
-            --shim "$shim" --profile "$PROFILE" --events "$WORK/events.jsonl" \
-            --file "$WORK/mcp-1mb.bin" --link "https://example.com/mcp" \
-            > "$WORK/mcp-driver.log" 2>&1; then
-        :
-    else
-        say "mcp driver output:"; cat "$WORK/mcp-driver.log"
-    fi
-    local line
-    while IFS= read -r line; do
-        case "$line" in
-            PASS\ *) ok "${line#PASS }" ;;
-            FAIL\ *) bad "${line#FAIL }" ;;
-            DRIVER\ passed*) : ;;
-            DRIVER\ *) say "MCP ${line#DRIVER }" ;;
-        esac
-    done < "$WORK/mcp-driver.log"
-    if ! grep -q '^DRIVER passed=' "$WORK/mcp-driver.log"; then
-        bad "MCP the driver never completed"
-    fi
-    if python3 "$MACOS/scripts/mcp/suite_shim.py" \
-            --shim "$shim" --profile "$PROFILE" \
-            > "$WORK/suite-shim.log" 2>&1; then
-        :
-    else
-        say "shim suite output:"; cat "$WORK/suite-shim.log"
-    fi
-    while IFS= read -r line; do
-        case "$line" in
-            PASS\ *) ok "${line#PASS }" ;;
-            FAIL\ *) bad "${line#FAIL }" ;;
-            DRIVER\ passed*) : ;;
-            DRIVER\ *) say "MCP ${line#DRIVER }" ;;
-        esac
-    done < "$WORK/suite-shim.log"
-    if ! grep -q '^DRIVER passed=' "$WORK/suite-shim.log"; then
-        bad "MCP the shim suite never completed"
-    fi
+    # Every suite in macos/scripts/mcp/, in name order, through the driver: a
+    # later suite needs no edit here.
+    local suite name line
+    for suite in "$MACOS"/scripts/mcp/suite_*.py; do
+        name="$(basename "$suite" .py)"; name="${name#suite_}"
+        if "$FAKE_PY" "$MACOS/scripts/mcp/driver.py" --suite "$name" \
+                --shim "$shim" --profile "$PROFILE" --events "$WORK/events.jsonl" \
+                --file "$WORK/mcp-1mb.bin" --link "https://example.com/mcp" \
+                > "$WORK/mcp-suite-$name.log" 2>&1; then
+            :
+        else
+            say "mcp suite $name output:"; cat "$WORK/mcp-suite-$name.log"
+        fi
+        while IFS= read -r line; do
+            case "$line" in
+                PASS\ *) ok "${line#PASS }" ;;
+                FAIL\ *) bad "${line#FAIL }" ;;
+                DRIVER\ passed*) : ;;
+                DRIVER\ *) say "MCP ${line#DRIVER }" ;;
+            esac
+        done < "$WORK/mcp-suite-$name.log"
+        if ! grep -q '^DRIVER passed=' "$WORK/mcp-suite-$name.log"; then
+            bad "MCP the $name suite never completed"
+        fi
+    done
     ! grep -qiE "fatal|protocol error" "$WORK/app.log" 2>/dev/null \
         && ok "MCP the app logged no fatal/protocol error" \
         || bad "MCP the app log has fatal/protocol lines"

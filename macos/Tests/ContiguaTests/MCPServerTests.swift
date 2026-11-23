@@ -93,13 +93,14 @@ final class MCPServerTests: XCTestCase {
     @MainActor
     func testStartCreatesAPrivateSocketAndAnswersALine() async throws {
         let socketPath = directory.appendingPathComponent("mcp.sock").path
-        let server = MCPSocketServer(path: socketPath) { line in
+        let server = MCPSocketServer(path: socketPath) { line, client in
             XCTAssertEqual(String(data: line.prefix(1), encoding: .utf8), "{")
             return await MCPDispatcher.handle(
                 line: line,
-                perform: { call in
+                client: client,
+                perform: { call, _ in
                     XCTAssertEqual(call, .phoneStatus)
-                    return .text(#"{"connected":true}"#)
+                    return .answer(["connected": true])
                 })
         }
         try server.start()
@@ -120,7 +121,7 @@ final class MCPServerTests: XCTestCase {
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: reply) as? [String: Any])
         XCTAssertEqual(object["id"] as? Int, 1)
         let result = try XCTUnwrap(object["result"] as? [String: Any])
-        XCTAssertNil(result["isError"])
+        XCTAssertEqual(result["isError"] as? Bool, false)
         let content = try XCTUnwrap(result["content"] as? [[String: Any]])
         XCTAssertEqual(content.first?["text"] as? String, #"{"connected":true}"#)
     }
@@ -128,8 +129,8 @@ final class MCPServerTests: XCTestCase {
     @MainActor
     func testStopRemovesTheSocketAndDropsClients() async throws {
         let socketPath = directory.appendingPathComponent("mcp.sock").path
-        let server = MCPSocketServer(path: socketPath) { line in
-            await MCPDispatcher.handle(line: line, perform: { _ in .text("ok") })
+        let server = MCPSocketServer(path: socketPath) { line, client in
+            await MCPDispatcher.handle(line: line, client: client, perform: { _, _ in .answer(["ok": true]) })
         }
         try server.start()
         let fd = try connect(to: socketPath)
@@ -146,10 +147,38 @@ final class MCPServerTests: XCTestCase {
     }
 
     @MainActor
+    func testEachConnectionHasItsOwnClientID() async throws {
+        final class Seen: @unchecked Sendable {
+            let lock = NSLock()
+            var ids: [MCPClientID] = []
+            func add(_ id: MCPClientID) { lock.lock(); ids.append(id); lock.unlock() }
+        }
+        let seen = Seen()
+        let socketPath = directory.appendingPathComponent("mcp.sock").path
+        let server = MCPSocketServer(path: socketPath) { line, client in
+            seen.add(client)
+            return await MCPDispatcher.handle(line: line, client: client, perform: { _, _ in .answer([:]) })
+        }
+        try server.start()
+        defer { server.stop() }
+        let first = try connect(to: socketPath)
+        let second = try connect(to: socketPath)
+        defer { close(first); close(second) }
+        await waitFor { server.clientCount == 2 }
+        for (index, fd) in [first, first, second].enumerated() {
+            try send(#"{"jsonrpc":"2.0","id":\#(index),"method":"ping"}"# + "\n", to: fd)
+            _ = try await readLine(from: fd)
+        }
+        XCTAssertEqual(seen.ids.count, 3)
+        XCTAssertEqual(seen.ids[0], seen.ids[1], "one connection keeps one id")
+        XCTAssertNotEqual(seen.ids[0], seen.ids[2], "another connection gets another id")
+    }
+
+    @MainActor
     func testTwoClientsAreCountedSeparately() async throws {
         let socketPath = directory.appendingPathComponent("mcp.sock").path
-        let server = MCPSocketServer(path: socketPath) { line in
-            await MCPDispatcher.handle(line: line, perform: { _ in .text("ok") })
+        let server = MCPSocketServer(path: socketPath) { line, client in
+            await MCPDispatcher.handle(line: line, client: client, perform: { _, _ in .answer(["ok": true]) })
         }
         try server.start()
         defer { server.stop() }
@@ -174,8 +203,8 @@ final class MCPServerTests: XCTestCase {
     @MainActor
     func testStartingTwiceKeepsOneSocket() throws {
         let socketPath = directory.appendingPathComponent("mcp.sock").path
-        let server = MCPSocketServer(path: socketPath) { line in
-            await MCPDispatcher.handle(line: line, perform: { _ in .text("ok") })
+        let server = MCPSocketServer(path: socketPath) { line, client in
+            await MCPDispatcher.handle(line: line, client: client, perform: { _, _ in .answer(["ok": true]) })
         }
         try server.start()
         defer { server.stop() }
@@ -189,8 +218,8 @@ final class MCPServerTests: XCTestCase {
     func testAForeignUidIsClosed() async throws {
         let socketPath = directory.appendingPathComponent("mcp.sock").path
         let server = MCPSocketServer(path: socketPath,
-            handler: { line in
-                await MCPDispatcher.handle(line: line, perform: { _ in .text("ok") })
+            handler: { line, client in
+                await MCPDispatcher.handle(line: line, client: client, perform: { _, _ in .answer(["ok": true]) })
             },
             peerIsOurs: { _ in false })
         try server.start()
@@ -208,8 +237,8 @@ final class MCPServerTests: XCTestCase {
     @MainActor
     func testEOFAfterARequestStillGetsTheReply() async throws {
         let socketPath = directory.appendingPathComponent("mcp.sock").path
-        let server = MCPSocketServer(path: socketPath) { line in
-            await MCPDispatcher.handle(line: line, perform: { _ in .text("ok") })
+        let server = MCPSocketServer(path: socketPath) { line, client in
+            await MCPDispatcher.handle(line: line, client: client, perform: { _, _ in .answer(["ok": true]) })
         }
         try server.start()
         defer { server.stop() }
@@ -234,9 +263,9 @@ final class MCPServerTests: XCTestCase {
     @MainActor
     func testEOFWithASlowCallWritesItsReplyFirst() async throws {
         let socketPath = directory.appendingPathComponent("mcp.sock").path
-        let server = MCPSocketServer(path: socketPath) { line in
+        let server = MCPSocketServer(path: socketPath) { line, client in
             try? await Task.sleep(nanoseconds: 300_000_000)  // real-time: a slow tool call
-            return await MCPDispatcher.handle(line: line, perform: { _ in .text("ok") })
+            return await MCPDispatcher.handle(line: line, client: client, perform: { _, _ in .answer(["ok": true]) })
         }
         try server.start()
         defer { server.stop() }
@@ -257,8 +286,8 @@ final class MCPServerTests: XCTestCase {
     @MainActor
     func testTwoRequestsBeforeEOFAreAnsweredInOrder() async throws {
         let socketPath = directory.appendingPathComponent("mcp.sock").path
-        let server = MCPSocketServer(path: socketPath) { line in
-            await MCPDispatcher.handle(line: line, perform: { _ in .text("ok") })
+        let server = MCPSocketServer(path: socketPath) { line, client in
+            await MCPDispatcher.handle(line: line, client: client, perform: { _, _ in .answer(["ok": true]) })
         }
         try server.start()
         defer { server.stop() }
@@ -284,9 +313,9 @@ final class MCPServerTests: XCTestCase {
     @MainActor
     func testDisconnectStillClosesAtOnce() async throws {
         let socketPath = directory.appendingPathComponent("mcp.sock").path
-        let server = MCPSocketServer(path: socketPath) { line in
+        let server = MCPSocketServer(path: socketPath) { line, client in
             try? await Task.sleep(nanoseconds: 1_000_000_000)  // real-time: a slow tool call
-            return await MCPDispatcher.handle(line: line, perform: { _ in .text("ok") })
+            return await MCPDispatcher.handle(line: line, client: client, perform: { _, _ in .answer(["ok": true]) })
         }
         try server.start()
         defer { server.stop() }
@@ -312,9 +341,9 @@ final class MCPServerTests: XCTestCase {
     @MainActor
     func testDisconnectClosesAHalfClosedClient() async throws {
         let socketPath = directory.appendingPathComponent("mcp.sock").path
-        let server = MCPSocketServer(path: socketPath) { line in
+        let server = MCPSocketServer(path: socketPath) { line, client in
             try? await Task.sleep(nanoseconds: 1_000_000_000)  // real-time: a slow tool call
-            return await MCPDispatcher.handle(line: line, perform: { _ in .text("ok") })
+            return await MCPDispatcher.handle(line: line, client: client, perform: { _, _ in .answer(["ok": true]) })
         }
         try server.start()
         defer { server.stop() }
@@ -336,8 +365,8 @@ final class MCPServerTests: XCTestCase {
         // Churn: each client half-closes after its request; every one is
         // answered and closed, and none is left counted.
         let quick = directory.appendingPathComponent("quick.sock").path
-        let next = MCPSocketServer(path: quick) { line in
-            await MCPDispatcher.handle(line: line, perform: { _ in .text("ok") })
+        let next = MCPSocketServer(path: quick) { line, client in
+            await MCPDispatcher.handle(line: line, client: client, perform: { _, _ in .answer(["ok": true]) })
         }
         try next.start()
         defer { next.stop() }

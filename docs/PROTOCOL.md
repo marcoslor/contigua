@@ -1580,7 +1580,7 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
    replaces the window's refs.
 5. Text is on-screen content: it travels in this message and into the tool result, never
    into a log line. The phone logs the stream, display, layer and node counts and the
-   duration; the Mac logs the tool name and its duration.
+   duration; the Mac logs the tool name, its duration, its outcome code and the window id.
 6. **One `ui.*` request at a time (B1).** `ui.tree`, `ui.settle`, `ui.press` and `ui.type`
    share item 4's rule: one per session. The phone answers a second one while the first runs
    with `ok: false`, `busy`; the Mac queues its own requests so it never sends one
