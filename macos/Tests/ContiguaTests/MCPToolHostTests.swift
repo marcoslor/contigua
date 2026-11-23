@@ -343,6 +343,27 @@ final class MCPToolHostTests: XCTestCase {
         XCTAssertEqual(fixture.sent("ui.tree").count, 1, "one read, no retry: \(fixture.sentTypes())")
     }
 
+    /// #266 item 6: a timed `wait` whose window closes during the pause
+    /// answers `state: "closed"` with the window's last frame, not seq 0 ([MCP-20]).
+    @MainActor
+    func testATimedWaitWhoseWindowClosesAnswersItsLastFrame_MCP20() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        let window = try await fixture.liveWindow()
+        for _ in 0..<3 { window.frameClock.note() }
+        let id = Int(window.stream)
+        let call = Task { await fixture.call("wait", ["window": id, "ms": 600, "observe": "none"]) }
+        try await Task.sleep(for: .milliseconds(200))  // real-time: the wait is in its pause
+        window.window?.close()
+        XCTAssertNil(fixture.controller.windows.controller(for: window.stream), "the window did not close")
+        let (answer, _) = await call.value
+        XCTAssertEqual(answer["isError"] as? Bool, false, "wait failed: \(answer)")
+        let structured = try XCTUnwrap(answer["structuredContent"] as? [String: Any])
+        XCTAssertEqual(structured["state"] as? String, "closed")
+        let frame = try XCTUnwrap(structured["frame"] as? [String: Any])
+        XCTAssertEqual(frame["seq"] as? Int, 3, "the closed window's last frame: \(frame)")
+    }
+
     // MARK: type_text goes through ui.type (plan T13)
 
     /// `type_text {window, text: "café", clear: true, submit: true}` goes to
