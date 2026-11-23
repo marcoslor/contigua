@@ -32,14 +32,14 @@ extension MCPToolHost {
     func phoneStatus() async -> [String: Any] {
         let windows = controller.windows.openStreams.count
         let maxWindows = controller.windows.maxWindows
-        guard let phone = try? IntentsBridge.resolve(nil) else {
+        guard let phone = try? IntentsBridge.resolve(nil, in: controller) else {
             return Self.statusAnswer(MCPStatusInput(connected: false, name: nil, battery: nil, charging: false,
                                                     windows: windows, maxWindows: maxWindows, phone: nil,
                                                     foreground: nil, apps: []), now: .now)
         }
         let online = controller.link.isOnline
         let foreground: FrontRead? = online ? await controller.frontReads.read() : nil
-        let battery = IntentsBridge.battery(for: phone)
+        let battery = IntentsBridge.battery(for: phone, in: controller)
         var state: MCPStatusPhone?
         if online, let status = controller.status {
             state = MCPStatusPhone(locked: status.locked, screen: status.screen ?? .on,

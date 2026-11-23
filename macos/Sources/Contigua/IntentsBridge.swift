@@ -54,8 +54,8 @@ enum IntentsBridge {
     }
 
     /// Live `state` while connected, else the last report with its age.
-    static func battery(for phone: IntentPhone) -> BatteryAnswer {
-        let controller = self.controller
+    static func battery(for phone: IntentPhone, in given: ConnectionController? = nil) -> BatteryAnswer {
+        let controller = given ?? self.controller
         var live: (level: Int, charging: Bool)?
         if controller.link.isOnline, controller.link.phone?.id == phone.id,
            let status = controller.status, let level = status.battery {
