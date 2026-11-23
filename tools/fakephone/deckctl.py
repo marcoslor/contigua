@@ -1551,7 +1551,10 @@ def cmd_ui_tree(client, args):
                       "dpi": args.dpi, "mode": "phone"})
     _await_json(client, "window.opened", args.wait)
     for seq in range(1, args.reads + 1):
-        client.send_json({"t": "ui.tree", "stream": stream, "seq": seq})
+        request = {"t": "ui.tree", "stream": stream, "seq": seq}
+        if args.offscreen:
+            request["offscreen"] = True  # MCP-106: keep the off-screen rows
+        client.send_json(request)
         msg = _await_json(client, "ui.tree", args.wait)
         print(json.dumps(msg, sort_keys=True))
     return 0
@@ -3191,6 +3194,8 @@ def build_parser():
     sp.add_argument("--h", type=int, default=800)
     sp.add_argument("--dpi", type=int, default=160)
     sp.add_argument("--reads", type=int, default=2)
+    sp.add_argument("--offscreen", action="store_true",
+                    help="ask with offscreen: true, so off-screen rows are sent marked off (MCP-106)")
     sp.add_argument("--wait", type=float, default=5.0, help="seconds to wait for each reply")
 
     sp = sub.add_parser("ui-press", help="open a phone mirror, read ui.tree and ui.press keys", **spp)

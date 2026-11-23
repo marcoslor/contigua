@@ -1532,8 +1532,8 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
      (display 0's real size for a mirror, the virtual display's size otherwise), not the
      stream's video size.
    - `layers`: one row per window on the display — `i`, `title`, `type` (`app`, `ime`,
-     `system`, `overlay`, `divider`, `magnifier`, or the platform's number), `focused`,
-     `active`.
+     `system`, `overlay`, `divider`, `magnifier`, or the platform's number), and `active`
+     on the one layer with input focus (item 9, B6; no `focused`).
    - `nodes`: one row per node worth reading, in document order (the reading order):
      `i` the index, `p` the nearest kept ancestor's index (absent at a root), `l` the
      layer's index, `role` the class's last part (`Button`), `text`, `desc` (absent when
@@ -1542,13 +1542,19 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
      `[left,top,right,bottom]` in display pixels (clipped to the display), `at` the box's
      centre as 0..1 of the display's input space (the same coordinates TOUCH and the MCP
      `tap` tool take), and the states that are true: `click`, `edit`, `scroll`, `check`
-     (true **or** false, only when the node is checkable), `sel`, `focus`, `disabled`,
-     `pwd`.
+     (true **or** false, only when the node is checkable), `sel`, `focus` (only in the
+     active layer, item 9), `disabled`, `pwd`.
    - A node whose box does not intersect the display, that is not visible to the user, or
-     whose visible part is under 8×8 px carries `off: true` and no `at`: its text is still
-     there so a reader knows to scroll, but a tap by its ref is refused. `box` is the
-     clipped part and `at` the centre of it, never a clamped outside point.
-   - A node with no text, label, action or state, or with no drawable bounds, is folded
+     whose visible part is under 8×8 px is `off`. Since B6 it is left out of the reply and
+     counted (item 9); a read that asks `offscreen: true` keeps it with `off: true` and no
+     `at`, its text still there so a reader knows to scroll. A tap by its ref is refused
+     either way. `box` is the clipped part and `at` the centre of it, never a clamped
+     outside point. The platform clips a view's screen bounds to its parent, so a row
+     scrolled out of its list arrives with an empty screen box: when its bounds in its
+     parent are not empty it is `off` like any other (counted, and sent with no `box` on an
+     `offscreen` read), not a node with no drawable bounds.
+   - A node with no text, label, action or state, or with no drawable bounds (no size of
+     its own: its screen box and its bounds in its parent are both empty), is folded
      away and its children take its place; only what a reader or a model can act on is
      sent. A password node carries no `text` or `desc` at all, only `pwd`. Code points in
      Unicode's private use areas (U+E000–U+F8FF and the two supplementary areas) are
@@ -1615,7 +1621,8 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
 8. **`ui.press` (B3).** Mac → `{"t":"ui.press","stream":N,"seq":S,"k":K,"holdMs":H,"expect":"…"}`,
    `k` a row's key (item 9, B2), `holdMs` optional (absent = a tap; 1–3000). `expect` is the
    node's label as the Mac last answered it to the connection that asks: the row's `text`, else
-   its `desc`, else the first row under it with either, in reading order, where a row with
+   its `desc`, else the first on-screen row under it with either, in reading order (a row
+   marked `off` gives none of its own), where a row with
    `edit` gives none and neither do the rows under it; an `edit` row's own label is its `desc`,
    else its `id`, never its `text` (a field's text is its value, not what it is; item 2 keeps a
    field's `desc` even when it equals its `text`, so the label never depends on what was typed),
@@ -1626,7 +1633,8 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
    exists, is `isVisibleToUser` and is on the display (item 2's `off` rule), reads its bounds
    now, computes the covering node as `covered` does (item 9) at the bounds' centre, reads the
    same label of the refreshed node (its text, else its description, else the first node under
-   it with either, depth first within item 2's depth cap, each trimmed as item 2 trims a label;
+   it with either that the tree would not mark `off` — item 2's rule, the same predicate as
+   the row's `off` — depth first within item 2's depth cap, each trimmed as item 2 trims a label;
    an editable node is labelled by its description, else its view id as item 2 shortens it, a
    password one by its view id alone, and
    under another node an editable node and its subtree give none),
@@ -1644,8 +1652,8 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
    now — a list reused the row's node for another item, or the node relabelled itself; #188),
    `no_window`, `busy` or `failed`. A key the phone never issued is `gone`. The checks run in
    that order — `gone`, `not_visible`, `off_screen`, `changed`, `covered` — and the first that
-   fails answers. A phone that cannot press by element answers `failed`. The phone logs the stream, the outcome and the duration,
-   never the node's text.
+   fails answers. A phone that cannot press by element answers `failed`. The phone logs the stream, the outcome,
+   whether `expect` came (`expect=yes|no`) and the duration, never the node's text or `expect`.
 9. **Row and reply fields of #171**, added to item 2's reply:
    - **`loading` (B1).** A row is kept and marked `loading: true` when it is visible to the
      user and is a `android.widget.ProgressBar` (or a class whose name ends in `ProgressBar`)
@@ -1673,7 +1681,8 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
      highest such layer names its topmost counted row at the point, or `"window"` when it has
      none there. Absent when nothing covers the point, and on a row with no `at`.
    - **`hint`, `hintText` (B6).** A row whose node `isShowingHintText` carries `hint: true` and
-     the hint's words as `hintText`, and no `text`.
+     the hint's words as `hintText` (its text when the node reports no hint), and no `text`;
+     a field holding content carries `text` and neither hint key.
    - **`active` on a layer; `focus` (B6).** Exactly the layer with input focus
      (`AccessibilityWindowInfo.isFocused`) carries `active: true`, and none when no layer has
      it; a layer carries no `focused`. `focus` is sent only on the row of the node with input

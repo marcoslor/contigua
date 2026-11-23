@@ -77,7 +77,7 @@ class UiPressTest {
                 UiTree.Node(role = "android.widget.TextView", text = "Item 17", box = UiTree.Box(100, 500, 1_080, 600)),
                 UiTree.Node(role = "android.widget.TextView", text = "In stock", box = UiTree.Box(100, 600, 1_080, 700)),
             ))
-        assertEquals("Item 17", UiPress.label(row))
+        assertEquals("Item 17", UiPress.label(row, size))
         val reused = refused(UiPress.decide(Fake(true, row), size, "Item 3", ::nobody))
         assertEquals("changed", reused.code)
         assertEquals("Item 17", reused.reply["now"])
@@ -120,16 +120,16 @@ class UiPressTest {
         // field is the same field. Its label is its desc, else its view id.
         val field = UiTree.Node(role = "android.widget.EditText", text = "milk", desc = "Search",
             box = UiTree.Box(0, 500, 1_080, 600), editable = true)
-        assertEquals("Search", UiPress.label(field))
+        assertEquals("Search", UiPress.label(field, size))
         assertTrue(UiPress.decide(Fake(true, field), size, "Search", ::nobody) is UiPress.Decision.Press)
         val byId = UiTree.Node(role = "android.widget.EditText", text = "milk",
             viewId = "com.example:id/search_box", box = UiTree.Box(0, 500, 1_080, 600), editable = true)
-        assertEquals("search_box", UiPress.label(byId))
+        assertEquals("search_box", UiPress.label(byId, size))
         // Inside a container a field contributes nothing.
         val row = UiTree.Node(role = "android.widget.LinearLayout", box = UiTree.Box(0, 500, 1_080, 700),
             clickable = true, children = listOf(field,
                 UiTree.Node(role = "android.widget.TextView", text = "Shopping", box = UiTree.Box(0, 600, 1_080, 700))))
-        assertEquals("Shopping", UiPress.label(row))
+        assertEquals("Shopping", UiPress.label(row, size))
     }
 
     @Test
@@ -138,14 +138,67 @@ class UiPressTest {
         // by its id: the phone must too.
         val pw = UiTree.Node(role = "android.widget.EditText", text = "hunter2", desc = "Password",
             viewId = "com.x:id/pw", box = UiTree.Box(0, 500, 1_080, 600), editable = true, password = true)
-        assertEquals("pw", UiPress.label(pw))
+        assertEquals("pw", UiPress.label(pw, size))
         assertTrue(UiPress.decide(Fake(true, pw), size, "pw", ::nobody) is UiPress.Decision.Press)
     }
 
-    /** The Mac's label of a row (`UITree.labels()`, own label only): an `edit` row's desc, else its id; else text, else desc. */
-    private fun macLabel(row: Map<String, Any?>): String =
-        if (row["edit"] == true) (row["desc"] ?: row["id"] ?: "") as String
-        else (row["text"] ?: row["desc"] ?: "") as String
+    /**
+     * The Mac's label of row [at] (`UITree.labels()`): an `edit` row's desc,
+     * else its id; else its text, else its desc, else the first labelled
+     * on-screen row under it in reading order, where an `edit` row and its
+     * rows give none and an `off` row gives none of its own (MCP-86).
+     */
+    private fun macLabel(rows: List<Map<String, Any?>>, at: Int): String {
+        fun own(row: Map<String, Any?>): String? = (row["text"] ?: row["desc"]) as String?
+        val row = rows[at]
+        if (row["edit"] == true) return (row["desc"] ?: row["id"] ?: "") as String
+        own(row)?.let { return it }
+        val byIndex = rows.associateBy { it["i"] }
+        fun under(other: Map<String, Any?>, ancestor: Any?): Boolean {
+            var p = other["p"]
+            while (p != null) {
+                if (p == ancestor) return true
+                p = byIndex[p]?.get("p")
+            }
+            return false
+        }
+        fun inField(other: Map<String, Any?>): Boolean {
+            var p = other["p"]
+            while (p != null && p != row["i"]) {
+                if (byIndex[p]?.get("edit") == true) return true
+                p = byIndex[p]?.get("p")
+            }
+            return false
+        }
+        for (other in rows.drop(at + 1)) {
+            if (!under(other, row["i"])) continue
+            if (other["edit"] == true || inField(other) || other["off"] == true) continue
+            own(other)?.let { return it }
+        }
+        return ""
+    }
+
+    /** A container whose first child "Item 3" is below the display and whose second, "Item 4", is on it. */
+    private fun containerWithAnOffScreenFirstChild() = UiTree.Node(role = "android.widget.LinearLayout",
+        box = UiTree.Box(0, 2_000, 1_080, 3_000), clickable = true, children = listOf(
+            UiTree.Node(role = "android.widget.TextView", text = "Item 3", box = UiTree.Box(0, 2_500, 1_080, 3_000)),
+            UiTree.Node(role = "android.widget.TextView", text = "Item 4", box = UiTree.Box(0, 2_000, 1_080, 2_300)),
+        ))
+
+    /** As the platform sends it: the first child, scrolled out, has its screen box clipped to nothing (MCP-106). */
+    private fun containerWithAClippedFirstChild() = UiTree.Node(role = "android.widget.LinearLayout",
+        box = UiTree.Box(0, 1_800, 1_080, 2_400), clickable = true, children = listOf(
+            UiTree.Node(role = "android.widget.TextView", text = "Item 3", box = UiTree.Box(0, 2_400, 1_080, 2_400),
+                visibleToUser = false, sized = true),
+            UiTree.Node(role = "android.widget.TextView", text = "Item 4", box = UiTree.Box(0, 1_800, 1_080, 2_100)),
+        ))
+
+    @Test
+    fun testAChildThePlatformClippedGivesNoLabel() { // [MCP-86] [MCP-106]
+        val row = containerWithAClippedFirstChild()
+        assertEquals("Item 4", UiPress.label(row, size))
+        assertTrue(UiPress.decide(Fake(true, row), size, "Item 4", ::nobody) is UiPress.Decision.Press)
+    }
 
     @Test
     fun testTheMacsLabelOfAFieldsRowIsThePhones() { // [MCP-86]
@@ -158,12 +211,22 @@ class UiPressTest {
                 viewId = "com.x:id/q", box = UiTree.Box(0, 500, 1_080, 600), editable = true),
             UiTree.Node(role = "android.widget.EditText", text = "hunter2", desc = "Password",
                 viewId = "com.x:id/pw", box = UiTree.Box(0, 500, 1_080, 600), editable = true, password = true),
+            containerWithAnOffScreenFirstChild(),
+            containerWithAClippedFirstChild(),
         )
         for (field in fields) {
-            val layer = UiTree.Layer(title = "App", type = "app", focused = true, active = true, nodes = listOf(field))
+            val layer = UiTree.Layer(title = "App", type = "app", focused = true, nodes = listOf(field))
+            // `offscreen`: the off row is sent marked, so the Mac's skip is what is compared.
             @Suppress("UNCHECKED_CAST")
-            val row = (UiTree.reply(1, size, listOf(layer))["nodes"] as List<Map<String, Any?>>).single()
-            assertEquals("$field", UiPress.label(field), macLabel(row))
+            val rows = UiTree.reply(1, size, listOf(layer), offscreen = true)["nodes"] as List<Map<String, Any?>>
+            assertEquals("$field", UiPress.label(field, size), macLabel(rows, 0))
         }
+    }
+
+    @Test
+    fun testAnOffScreenChildGivesNoLabel() { // [MCP-86]
+        val row = containerWithAnOffScreenFirstChild()
+        assertEquals("Item 4", UiPress.label(row, size))
+        assertTrue(UiPress.decide(Fake(true, row), size, "Item 4", ::nobody) is UiPress.Decision.Press)
     }
 }

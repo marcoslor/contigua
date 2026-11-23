@@ -107,7 +107,6 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
                 title = null,
                 type = typeName(window.type),
                 focused = window.isFocused,
-                active = window.isActive,
                 nodes = window.root?.let { children(it, 0, HashMap()) } ?: emptyList(),
                 windowLayer = window.layer,
                 bounds = UiTree.Box(bounds.left, bounds.top, bounds.right, bounds.bottom),
@@ -242,7 +241,7 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
                 connect()
             } catch (t: Throwable) {
                 synchronized(lock) { failure = sentence(t) } // WIN-79 F10: under the lock
-                log("ui.tree: connect ${t.javaClass.simpleName}") // log-ok: class only
+                log(connectFailureLine(t)) // log-ok: class names only
                 null
             }
             synchronized(lock) {
@@ -357,8 +356,7 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
                 title = UiTree.label(window.title?.toString()),
                 type = typeName(window.type),
                 focused = window.isFocused,
-                active = window.isActive,
-                nodes = window.root?.let { children(it, 0, nodes) } ?: emptyList(),
+                nodes = window.root?.let { root -> children(root, 0, nodes, inputFocus(window, root)) } ?: emptyList(),
                 windowLayer = window.layer,
                 bounds = UiTree.Box(bounds.left, bounds.top, bounds.right, bounds.bottom),
             )
@@ -392,22 +390,43 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
         runCatching { automation.clearCache() }
     }
 
+    /**
+     * The identity of the node with input focus in [window] when it is the
+     * layer with input focus (`findFocus(FOCUS_INPUT)` on its root), else
+     * null: only that node is sent `focus` (MCP-105).
+     */
+    private fun inputFocus(window: AccessibilityWindowInfo, root: AccessibilityNodeInfo): Any? {
+        if (!window.isFocused) return null
+        return runCatching { root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) }.getOrNull()?.let { NodeIdentity.of(it) }
+    }
+
+    /** [focus] is the identity [inputFocus] found; a node is `focused` only when it is that node. */
     private fun children(
         node: AccessibilityNodeInfo,
         depth: Int,
         seen: MutableMap<Any, AccessibilityNodeInfo>,
+        focus: Any? = null,
     ): List<UiTree.Node> {
         if (depth >= UiTree.MAX_DEPTH) return emptyList()
         val out = ArrayList<UiTree.Node>(node.childCount)
         for (index in 0 until node.childCount) {
             val child = runCatching { node.getChild(index) }.getOrNull() ?: continue
-            out.add(node(child, depth, seen))
+            out.add(node(child, depth, seen, focus))
         }
         return out
     }
 
-    private fun node(node: AccessibilityNodeInfo, depth: Int, seen: MutableMap<Any, AccessibilityNodeInfo>): UiTree.Node {
+    private fun node(
+        node: AccessibilityNodeInfo,
+        depth: Int,
+        seen: MutableMap<Any, AccessibilityNodeInfo>,
+        focus: Any? = null,
+    ): UiTree.Node {
         val box = Rect().also { node.getBoundsInScreen(it) }
+        // Deprecated but still filled from the view's own drawing rect: a row
+        // its parent clips out keeps its size here (MCP-106).
+        @Suppress("DEPRECATION")
+        val inParent = Rect().also { node.getBoundsInParent(it) }
         val identity = NodeIdentity.of(node)
         seen[identity] = node
         return UiTree.Node(
@@ -416,22 +435,25 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
             desc = node.contentDescription?.toString(),
             viewId = node.viewIdResourceName,
             box = UiTree.Box(box.left, box.top, box.right, box.bottom),
+            sized = inParent.width() > 0 && inParent.height() > 0,
             clickable = node.isClickable,
             editable = node.isEditable,
             scrollable = node.isScrollable,
             checkable = node.isCheckable,
             checked = node.isChecked,
             selected = node.isSelected,
-            focused = node.isFocused,
+            focused = focus != null && identity == focus,
             enabled = node.isEnabled,
             password = node.isPassword,
             visibleToUser = node.isVisibleToUser,
             hasRange = node.rangeInfo != null,
-            children = children(node, depth + 1, seen),
+            children = children(node, depth + 1, seen, focus),
             childCount = node.childCount,
             heading = node.isHeading,
             drawingOrder = node.drawingOrder,
             identity = identity,
+            showingHint = node.isShowingHintText,
+            hintText = node.hintText?.toString(),
         )
     }
 
@@ -446,6 +468,19 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
     }
 
     companion object {
+        /**
+         * The log line for a failed connect: the thrown class and the root
+         * cause's class (reflection wraps the platform's refusal in an
+         * `InvocationTargetException`), never a message. B6's rig runs failed
+         * here after pairing and logged only the wrapper.
+         */
+        internal fun connectFailureLine(t: Throwable): String {
+            // At most 16 links: a chain can loop (initCause refuses only the
+            // throwable itself), and the walk must end.
+            val root = generateSequence(t) { it.cause }.take(16).last()
+            return "ui.tree: connect ${t.javaClass.simpleName} root=${root.javaClass.simpleName}"
+        }
+
         /**
          * The connection's flags (MCP-107): interactive windows, every view,
          * view ids, and no event types: a watch asks for the five content

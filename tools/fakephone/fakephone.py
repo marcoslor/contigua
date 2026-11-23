@@ -349,7 +349,7 @@ HOLD_FIRST_FRAME_S = 12.0
 
 def mode_on(args, name):
     """A settle, close or tree flag (B1's `--never-settle`, `--settle-loading`,
-    `--ignore-ui-settle`, `--close-on-back`; B2/B3's `--tree-variant`,
+    `--ignore-ui-settle`, `--close-on-back`; B2/B3's `--tree-variant`, B6's `--keyboard`,
     `--relabel`; `hold-first-frame` is the mode file's only), from the command line or, with
     `--mode-file`, from that file's words as each request arrives: one e2e run
     switches modes without restarting the phone (plan T5, suite_act)."""
@@ -5359,18 +5359,39 @@ class Session(object):
             return [round((box[0] + box[2]) / 2.0 / max(w, 1), 3),
                     round((box[1] + box[3]) / 2.0 / max(h, 1), 3)]
 
+        box_search = [int(w * 0.1), int(h * 0.16), int(w * 0.9), int(h * 0.22)]
+        box_list = [0, int(h * 0.25), w, int(h * 0.55)]
+
+        def list_row(n):
+            # Rows 1…3 are on the list's 30% of the display; 4…8 are below it.
+            if n <= 3:
+                box = [0, int(h * (0.15 + 0.1 * n)), w, int(h * (0.25 + 0.1 * n))]
+                return {"k": 11 + n, "pk": 11, "l": 0, "role": "TextView", "text": "Row %d" % n,
+                        "box": box, "at": at(box), "click": True}
+            return {"k": 11 + n, "pk": 11, "l": 0, "role": "TextView", "text": "Row %d" % n,
+                    "click": True, "off": True}
+
         # `k` is each node's key (PROTOCOL.md "UI tree" item 9, MCP-71): the same
-        # node keeps it in every read, so the fixed tree's rows are always 1…4.
+        # node keeps it in every read. `pk` names the parent's key; `p` (its
+        # row) is filled in once the rows are final.
         nodes = [
-            {"i": 0, "k": 1, "l": 0, "role": "TextView", "text": "Fake phone screen",
+            {"k": 1, "l": 0, "role": "TextView", "text": "Fake phone screen",
              "box": box_label, "at": at(box_label)},
-            {"i": 1, "k": 2, "p": 0, "l": 0, "role": "Button", "text": "Continue",
+            {"k": 2, "pk": 1, "l": 0, "role": "Button", "text": "Continue",
              "id": "continue", "box": box_button, "at": at(box_button), "click": True},
             # A password field carries no text at all, only that it is one.
-            {"i": 2, "k": 3, "p": 0, "l": 0, "role": "EditText", "pwd": True, "edit": True,
+            {"k": 3, "pk": 1, "l": 0, "role": "EditText", "pwd": True, "edit": True,
              "box": box_password, "at": at(box_password)},
-            # Below the display (a cart's lower rows): its text, no tap point.
-            {"i": 3, "k": 4, "p": 0, "l": 0, "role": "TextView", "text": "Below the fold", "off": True},
+            # An empty search field shows its hint, never as text (MCP-104); it
+            # holds the active layer's input focus (MCP-105).
+            {"k": 9, "pk": 1, "l": 0, "role": "EditText", "hint": True, "hintText": "Search",
+             "id": "search", "edit": True, "focus": True, "box": box_search, "at": at(box_search)},
+            # A list with rows below the display (MCP-106).
+            {"k": 11, "pk": 1, "l": 0, "role": "RecyclerView", "scroll": True,
+             "box": box_list, "at": at(box_list)},
+        ] + [list_row(n) for n in range(1, 9)] + [
+            # Below the display (a cart's lower rows): left out unless `offscreen`.
+            {"k": 4, "pk": 1, "l": 0, "role": "TextView", "text": "Below the fold", "off": True},
         ]
         # The variant's reads count from when it is switched on (`--mode-file`).
         variant = mode_on(self.phone.args, "tree_variant")
@@ -5383,20 +5404,42 @@ class Session(object):
             box_offer = [int(w * 0.1), int(h * 0.9), int(w * 0.9), int(h * 0.95)]
             box_banner = [0, int(h * 0.88), w, int(h * 0.97)]
             nodes += [
-                {"k": 5, "p": 0, "l": 0, "role": "TextView", "text": "Settings", "heading": True,
+                {"k": 5, "pk": 1, "l": 0, "role": "TextView", "text": "Settings", "heading": True,
                  "box": box_heading, "at": at(box_heading)},
-                {"k": 6, "p": 0, "l": 0, "role": "Button", "text": "Accept offer", "click": True,
+                {"k": 6, "pk": 1, "l": 0, "role": "Button", "text": "Accept offer", "click": True,
                  "box": box_offer, "at": at(box_offer), "covered": 7},
                 {"k": 7, "l": 0, "role": "ImageButton", "desc": "Close banner", "click": True,
                  "box": box_banner, "at": at(box_banner)},
             ]
             if self._tree_reads >= 2:
                 nodes = [n for n in nodes if n["k"] != 2]
-            # Rows are renumbered in reading order; `p` names the row, not the key.
-            for index, node in enumerate(nodes):
-                node["i"] = index
-        self.phone.events.ui_tree(stream, len(nodes))
+        # --settle-loading models a skeleton screen: a spinner row marked loading,
+        # and the reply says the tree is still loading (MCP-103).
+        loading = mode_on(self.phone.args, "settle_loading")
+        if loading:
+            box_spinner = [int(w * 0.45), int(h * 0.32), int(w * 0.55), int(h * 0.38)]
+            nodes.append({"k": 8, "pk": 1, "l": 0, "role": "ProgressBar",
+                          "box": box_spinner, "at": at(box_spinner), "loading": True})
+        layers = [{"i": 0, "title": window.pkg if window is not None else None,
+                   "type": "app", "active": True}]
+        # --keyboard: the keyboard is up, a second layer that does not have
+        # input focus, so its key carries no `focus` (MCP-105).
+        if mode_on(self.phone.args, "keyboard"):
+            box_key = [int(w * 0.9), int(h * 0.95), w, h]
+            layers.append({"i": 1, "title": "Keyboard", "type": "ime"})
+            nodes.append({"k": 10, "l": 1, "role": "Button", "desc": "Enter",
+                          "click": True, "box": box_key, "at": at(box_key)})
+        # The phone's latest read holds every node, the off ones too, so a
+        # ui.press on one answers off_screen, not gone (item 8).
+        row_of = {n["k"]: index for index, n in enumerate(nodes)}
+        for index, node in enumerate(nodes):
+            node["i"] = index
+            parent = node.pop("pk", None)
+            if parent in row_of:
+                node["p"] = row_of[parent]
         self._tree_latest = {n["k"]: dict(n) for n in nodes}
+        nodes, omitted = self._tree_shown(nodes, msg.get("offscreen") is True)
+        self.phone.events.ui_tree(stream, len(nodes))
         reply = {
             "t": "ui.tree",
             "stream": stream,
@@ -5404,20 +5447,57 @@ class Session(object):
             "displayId": display,
             "size": [w, h],
             "truncated": False,
-            "layers": [{"i": 0, "title": window.pkg if window is not None else None,
-                        "type": "app", "focused": True, "active": True}],
+            "layers": layers,
             "nodes": nodes,
+            "omitted": omitted,
         }
-        # --settle-loading models a skeleton screen: a spinner row marked loading,
-        # and the reply says the tree is still loading (MCP-103).
-        if mode_on(self.phone.args, "settle_loading"):
-            box_spinner = [int(w * 0.45), int(h * 0.32), int(w * 0.55), int(h * 0.38)]
-            nodes.append({"i": len(nodes), "k": 8, "p": 0, "l": 0, "role": "ProgressBar",
-                          "box": box_spinner, "at": at(box_spinner), "loading": True})
+        if loading:
             reply["loading"] = True
         if seq is not None:
             reply["seq"] = seq
         self._send(reply)
+
+    @staticmethod
+    def _tree_shown(nodes, offscreen):
+        """MCP-106 (item 9): leave out the `off` rows unless `offscreen`, give a
+        kept scrollable row `hidden: [before, after]` and count the left-out
+        rows. Rows are renumbered in reading order; `p` follows its row.
+        `nodes` is the full read, in reading order, `p` naming its `i`."""
+        if offscreen:
+            return [dict(n) for n in nodes], 0
+        by_i = {n["i"]: n for n in nodes}
+
+        def ancestors(node):
+            p = node.get("p")
+            while p is not None:
+                yield p
+                p = by_i[p].get("p")
+
+        hidden = {}  # a scrollable row's i -> [before, after]
+        for node in nodes:
+            for a in ancestors(node):
+                if not by_i[a].get("scroll") or by_i[a].get("off"):
+                    continue
+                count = hidden.setdefault(a, [0, 0, False])
+                if node.get("off"):
+                    count[1 if count[2] else 0] += 1
+                else:
+                    count[2] = True
+        kept = [n for n in nodes if not n.get("off")]
+        index = {n["i"]: i for i, n in enumerate(kept)}
+        out = []
+        for node in kept:
+            row = dict(node)
+            row["i"] = index[node["i"]]
+            parent = next((a for a in ancestors(node) if a in index), None)
+            row.pop("p", None)
+            if parent is not None:
+                row["p"] = index[parent]
+            before, after, _ = hidden.get(node["i"], [0, 0, False])
+            if before or after:
+                row["hidden"] = [before, after]
+            out.append(row)
+        return out, len(nodes) - len(kept)
 
     # -- ui.press (docs/PROTOCOL.md "UI tree" item 8): press a row by its key.
     def _on_ui_press(self, msg):
@@ -6674,6 +6754,9 @@ def build_parser():
                         "('none' means nothing continuable)")
     p.add_argument("--ignore-ui-tree", action="store_true",
                    help="never answer ui.tree (the MCP tool must say so, not hang)")
+    p.add_argument("--keyboard", action="store_true",
+                   help="ui.tree adds the keyboard as a second layer (ime) without input "
+                        "focus: its key row carries no focus (MCP-105)")
     p.add_argument("--relabel", action="store_true",
                    help="ui.press finds the Continue button relabelled \"Continue later\", so a "
                         "press with the tree's expect answers changed (#188)")
