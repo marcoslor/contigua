@@ -16,6 +16,8 @@ extension MCPToolHost {
     func screenshot(_ id: Int, ref: String?, wait: MCPWait) async throws -> MCPToolResult {
         guard wait == .settle else { return try await screenshot(id, ref: ref) }
         _ = try requireWindow(id)
+        // MCP-61: an offline phone fails at once, settling nothing.
+        guard controller.link.isOnline else { throw MCPToolError.phoneOffline(phoneName) }
         // MCP-64: settle first, then the frame from after the call; the
         // answer carries the settle beside it.
         let settle = await settleOnly(id)
@@ -30,6 +32,8 @@ extension MCPToolHost {
 
     func screenshot(_ id: Int, ref: String?) async throws -> MCPToolResult {
         let window = try requireWindow(id)
+        // MCP-61: an offline phone fails before its ref is judged.
+        guard controller.link.isOnline else { throw MCPToolError.phoneOffline(phoneName) }
         // MCP-50/62/63: the display's pixels, the space of the tree's boxes.
         let size = pixelSize(of: window)
         let crop = try ref.map {
