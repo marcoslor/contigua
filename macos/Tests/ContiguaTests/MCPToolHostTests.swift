@@ -399,6 +399,21 @@ final class MCPToolHostTests: XCTestCase {
         XCTAssertNotNil(frame["seq"] as? Int)
     }
 
+    /// [MCP-61] An offline phone fails `screenshot` with `phone_offline` before
+    /// its ref is judged: a ref the window's tree never named is not `stale_ref`.
+    @MainActor
+    func testAnOfflinePhoneWinsOverAStaleRef_MCP61() async throws {
+        let (controller, profile) = offlineController()
+        defer { dispose(controller, profile) }
+        controller.remembered.remember(PhoneRef(id: "mcp-shot-1", name: "Pixel 9", model: "Pixel 9"))
+        let window = controller.windows.openOrRaise(pkg: "com.android.settings")
+        window.noteFirstFrame()
+        XCTAssertFalse(controller.link.isOnline)
+        let host = MCPToolHost(controller: controller)
+        let shot = await host.perform(.screenshot(window: Int(window.stream), ref: "e5"), client: MCPClientID(1))
+        XCTAssertEqual(code(shot), .phoneOffline)
+    }
+
 }
 
 /// A real controller online with the fake phone server, which answers
