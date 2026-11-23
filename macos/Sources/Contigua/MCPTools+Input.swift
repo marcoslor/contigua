@@ -120,10 +120,7 @@ extension MCPToolHost {
         let client = self.client
         let acts = controller.windowActs
         let env = MCPHostActEnvironment(host: self, id: id, ref: ref, typing: typing, client: client, did: did,
-                                        input: { window in
-            acts.agentInput(window: UInt32(id), client: client)  // MCP-84: another_agent for any other holder
-            await input(window)
-        })
+                                        input: input)
         let outcome = await MCPActRunner.run(MCPActMachine(path: path, wait: wait, observe: observe),
                                              window: UInt32(id), queue: acts,
                                              deadline: Self.actDeadline(gestureMs: gestureMs), env: env,
@@ -281,8 +278,6 @@ final class MCPHostActEnvironment: MCPActEnvironment {
         } catch {
             result = .failed("failed")
         }
-        // MCP-84: only a press that happened, or may have, is input on the window.
-        if result.mayHaveActed { host.controller.windowActs.agentInput(window: stream, client: client) }
         switch result {
         case .failed(UIPressResult.cancelled):
             return .pressFailed("failed")  // the machine knows no cancelled code
@@ -314,8 +309,7 @@ final class MCPHostActEnvironment: MCPActEnvironment {
                                                      submit: typing.submit,
                                                      until: .now + MCPToolHost.actDeadline())
         } catch {
-            // MCP-84: no answer, so the text may have gone in.
-            host.controller.windowActs.agentInput(window: stream, client: client)
+            // No answer: the text may have gone in.
             switch error {
             case UITreeError.timedOut: return .typeFailed("timeout")
             case UITreeError.notConnected: return .typeFailed("phone_offline")
@@ -327,7 +321,6 @@ final class MCPHostActEnvironment: MCPActEnvironment {
             refusalError = MCPToolError.typeRefusal(code: code, window: id)
             return .typeFailed(code)
         }
-        host.controller.windowActs.agentInput(window: stream, client: client)
         didNow = MCPActDid.type(characters: reply.characters ?? typing.text.unicodeScalars.count,
                                 clear: typing.clear, submit: typing.submit)
         // A phone always names both; "unknown"/"keys" only stand in for a torn reply.

@@ -67,7 +67,6 @@ extension MCPToolHost {
     private func probe(window id: Int, x: Double, y: Double,
                        width: Double?, height: Double?) async throws -> [String: Any] {
         let window = try requireInputWindow(id)
-        controller.windowActs.agentInput(window: UInt32(id), client: client)
         let region: ProbeRegion = {
             if let width, let height {
                 return ProbeRegion.around(x: x, y: y, width: width, height: height)

@@ -376,7 +376,7 @@ enum MCPOutputSchemas {
         "settle": settleObject,
         "state": stateToken,
         "frame": frameObject,
-        "alsoActed": array(["type": "string", "enum": ["person", "another_agent"]]),
+        "alsoActed": array(["type": "string", "enum": ["person"]]),
         "closed": object(["reason": string, "closedBy": string], required: ["reason", "closedBy"]),
         "tree": ["type": "object"],
         "treeError": string,

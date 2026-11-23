@@ -1,8 +1,9 @@
 // Input calls on one window run one at a time, in arrival order across
-// clients (MCP-84), and the input of every other source that reaches the
-// window during a call is reported to that call. `MCPActRunner` drives one
-// call's `MCPActMachine`: it owns the continuation, the deadline timer and the
-// order its actions run in.
+// clients (MCP-84), and the person's input that reaches the window during a
+// call is reported to that call. Every agent input is sent by the call that
+// holds the window's turn, so no call sees another agent's input.
+// `MCPActRunner` drives one call's `MCPActMachine`: it owns the continuation,
+// the deadline timer and the order its actions run in.
 
 import Foundation
 
@@ -65,13 +66,6 @@ final class WindowActQueue {
     /// lists it in `alsoActed`.
     func report(window: UInt32, source: String) {
         holders[window]?.listener?(.otherInput(source))
-    }
-
-    /// An MCP client's input reached the window: `another_agent` for the
-    /// holder when the input is not its own client's.
-    func agentInput(window: UInt32, client: MCPClientID?) {
-        guard let holder = holders[window], holder.client != client else { return }
-        holder.listener?(.otherInput("another_agent"))
     }
 
     /// The window closed (MCP-83): the call holding its turn answers why.
