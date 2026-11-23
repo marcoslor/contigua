@@ -267,7 +267,7 @@ enum MCPTools {
                     "app": ["type": "string", "minLength": 1, "maxLength": 200,
                             "description": "Package name or app label (or a unique prefix)."],
                     "newWindow": ["type": "boolean",
-                                  "description": "Open another window of an app that opens several at a time, instead of raising its window."],
+                                  "description": "Open another window of an app that opens several at a time, instead of raising its window. An app that opens one window at a time has its window raised instead; at the phone's window cap the call fails too_many_windows, and while the app's window is still opening, not_ready."],
                     "shape": shape, "wait": wait, "observe": observe,
                 ], required: ["app"])),
         MCPTool(name: .listWindows,
