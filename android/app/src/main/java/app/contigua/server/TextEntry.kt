@@ -138,6 +138,12 @@ object TextEntry {
         return minOf(a, b).coerceIn(0, length) to maxOf(a, b).coerceIn(0, length)
     }
 
+    /** A node as the input-focus search reads it: two flags, never its text. */
+    data class Shape(val editable: Boolean, val focused: Boolean)
+
+    /** The node with input focus (MCP-105, MCP-109). Stub: the found node as is. */
+    fun <N : Any> inputFocus(found: N?, shape: (N) -> Shape, children: (N) -> List<N>): N? = found
+
     /** Item 10's sentence for [code] on window [window]. */
     fun sentence(code: String, window: Int): String = when (code) {
         NO_FIELD -> "Window $window has no focused text field. Tap the field first."

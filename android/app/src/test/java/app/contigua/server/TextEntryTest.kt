@@ -198,6 +198,54 @@ class TextEntryTest {
         assertEquals(enter, keys.pressed)
     }
 
+    // MARK: the field (MCP-105, MCP-109)
+
+    /** A node of a window's tree: its two flags and its children, and how often its children were read. */
+    private class Node(val name: String, val editable: Boolean = false, val focused: Boolean = false, vararg kids: Node) {
+        val children = kids.toList()
+        var reads = 0
+    }
+
+    private fun focusOf(found: Node?) = TextEntry.inputFocus(
+        found,
+        shape = { TextEntry.Shape(it.editable, it.focused) },
+        children = { it.reads++; it.children },
+    )?.name
+
+    /**
+     * B5's emulator proof: the page's <input>, pressed and focused, answered
+     * `not_supported` for "térmica " and for `clear`. `findFocus(FOCUS_INPUT)`
+     * found the WebView itself (its provider reports no input focus, so the
+     * framework answers the host view), which offers no ACTION_SET_TEXT; the
+     * input is the focused editable node of the host's virtual tree.
+     */
+    @Test
+    fun testAWebViewsFocusedInputIsTheField() { // [MCP-109] [MCP-105]
+        val input = Node("input", editable = true, focused = true)
+        val page = Node("page", false, false, Node("heading"), Node("form", false, false, Node("label"), input))
+        val webView = Node("webview", false, true, page)
+        assertEquals("input", focusOf(webView))
+    }
+
+    @Test
+    fun testAnEditableFocusIsTheFieldAsFound() { // [MCP-109] [MCP-105]
+        val editText = Node("edittext", editable = true, focused = true)
+        assertEquals("edittext", focusOf(editText))
+        assertEquals("an editable focus is never searched under", 0, editText.reads)
+        assertNull(focusOf(null))
+    }
+
+    @Test
+    fun testAHostWithNoFocusedEditableStaysTheField() { // [MCP-109] [MCP-105]
+        // The canvas page: its focused node takes keys and is not editable, and
+        // an editable node elsewhere has no focus: the host stays the field, so
+        // other text is still refused not_supported.
+        val canvas = Node("canvas", editable = false, focused = true)
+        val other = Node("other-input", editable = true, focused = false)
+        val webView = Node("webview", false, true, Node("page", false, false, canvas, other))
+        assertEquals("webview", focusOf(webView))
+    }
+
     // MARK: MCP-110
 
     /** Records every call; a call of any kind is a failure of MCP-110. */
