@@ -8,6 +8,11 @@ on:
     branches: [main]
     paths: ['macos/**', '.github/workflows/mac.yml']
   workflow_dispatch:
+    inputs:
+      filter:
+        description: 'swift test --filter (empty: every test)'
+        required: false
+        default: ''
 concurrency:
   group: mac-${{ github.ref }}
   cancel-in-progress: true
@@ -36,7 +41,9 @@ jobs:
         run: swift build --build-tests
       - name: Unit tests
         working-directory: macos
-        run: swift test --skip-build 2>&1 | tee k2.log
+        env:
+          FILTER: ${{ inputs.filter }}
+        run: swift test --skip-build ${FILTER:+--filter "$FILTER"} 2>&1 | tee k2.log
       - name: Failing tests
         if: failure()
         working-directory: macos
