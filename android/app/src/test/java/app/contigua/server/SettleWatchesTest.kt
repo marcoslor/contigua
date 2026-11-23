@@ -50,4 +50,27 @@ class SettleWatchesTest {
         looper.idle()
         assertEquals(1, events(watch))
     }
+
+    /**
+     * The session ends while `settle()` is still connecting (the connect runs
+     * on the looper, so the cancel queues ahead of the watch's start): the
+     * watch never listens and answers nothing. Another session still watches.
+     */
+    @Test
+    fun aCancelBeforeTheWatchStartsSendsNothing() { // [MCP-81]
+        val port = Port(mapOf(5 to listOf(9)))
+        val all = watches(port)
+        val ended = Any()
+        all.cancel(ended)
+        val watch = all.start(ended, 5, 300, 2_000, 0)!!
+        looper.idle()
+        assertEquals(SettleAnswer.Cancelled, watch.answer)
+        assertEquals(0L, watch.gate.count)
+        assertEquals(emptyList<Int>(), port.masks)
+        // A live session's watch is not held back by another's end.
+        val live = all.start(Any(), 5, 300, 2_000, 0)!!
+        looper.idle()
+        assertEquals(null, live.answer)
+        assertEquals(listOf(SettleWatch.EVENT_MASK), port.masks)
+    }
 }
