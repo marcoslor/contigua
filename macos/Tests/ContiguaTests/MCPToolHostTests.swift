@@ -459,6 +459,42 @@ final class MCPToolHostTests: XCTestCase {
             XCTAssertNil(windows.controller(for: window.stream), "an agent's window stayed open")
         }
     }
+    // MARK: Review follow-ups (#262)
+
+    /// The `{"error": {...}}` object of a failed tool call.
+    private func error(_ result: [String: Any]) -> [String: Any]? {
+        guard result["isError"] as? Bool == true,
+              let text = (result["content"] as? [[String: Any]])?.first?["text"] as? String,
+              let object = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any]
+        else { return nil }
+        return object["error"] as? [String: Any]
+    }
+
+    /// [MCP-20] [MCP-21] A `ui_tree` whose window closes while the phone reads
+    /// it answers `state: "closed"` and the frame the window last had; the
+    /// window is the one the call named, looked up before the read.
+    @MainActor
+    func testATreeWhoseWindowClosedDuringTheCallSaysClosed_MCP20() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        let window = try await fixture.liveWindow()
+        let stream = window.stream
+        fixture.hold("ui.tree")
+        let call = Task { await fixture.call("ui_tree", ["window": Int(stream)]) }
+        let asked = await fixture.wait { !fixture.sent("ui.tree").isEmpty }
+        XCTAssertTrue(asked, "no ui.tree went out: \(fixture.sentTypes())")
+        fixture.phoneSends(["t": "window.closed", "stream": Int(stream), "reason": "app_exited"])
+        let gone = await fixture.wait { fixture.controller.windows.controller(for: stream) == nil }
+        XCTAssertTrue(gone, "the window never closed")
+        fixture.release("ui.tree")
+        let (answer, _) = await call.value
+
+        XCTAssertEqual(answer["isError"] as? Bool, false, "ui_tree failed: \(answer)")
+        let structured = try XCTUnwrap(answer["structuredContent"] as? [String: Any])
+        XCTAssertEqual(structured["state"] as? String, "closed")
+        let frame = try XCTUnwrap(structured["frame"] as? [String: Any], "no frame: \(structured)")
+        XCTAssertNotNil(frame["seq"] as? Int)
+    }
 }
 
 /// A real controller online with the fake phone server, which answers
@@ -493,15 +529,70 @@ final class TypeTextFixture {
         brain.autoAllow = true
         server.brain = brain
         server.onFrame = { [weak self] connection, frame in
+            if frame.messageType == .touch { self?.recordTouch() }
             guard frame.messageType == .json,
                   let message = JSONFrame.decode(payload: frame.payload) else { return }
-            self?.record(message)
-            self?.answer(message, on: connection)
+            guard let self else { return }
+            self.record(message, from: connection)
+            if !self.held(message, on: connection) { self.answer(message, on: connection) }
         }
     }
 
-    nonisolated private func record(_ message: JSONMessage) {
-        lock.lock(); received.append(message); lock.unlock()
+    nonisolated private func record(_ message: JSONMessage, from connection: FakeServer.Connection) {
+        lock.lock(); received.append(message); phone = connection; lock.unlock()
+    }
+
+    nonisolated(unsafe) private var touchCount = 0
+    nonisolated private func recordTouch() {
+        lock.lock(); touchCount += 1; lock.unlock()
+    }
+
+    /// TOUCH frames the Mac has sent since the fixture started.
+    var touches: Int {
+        lock.lock(); defer { lock.unlock() }
+        return touchCount
+    }
+
+    /// The phone's side of the link, once the Mac has sent anything.
+    nonisolated(unsafe) private var phone: FakeServer.Connection?
+    /// Message types the fake phone holds its answer to until `release`.
+    nonisolated(unsafe) private var holding: Set<String> = []
+    nonisolated(unsafe) private var heldMessages: [(JSONMessage, FakeServer.Connection)] = []
+
+    nonisolated private func held(_ message: JSONMessage, on connection: FakeServer.Connection) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard holding.contains(message.t) else { return false }
+        heldMessages.append((message, connection))
+        return true
+    }
+
+    /// Hold the fake phone's answers to `type` until `release(type)`.
+    func hold(_ type: String) {
+        lock.lock(); holding.insert(type); lock.unlock()
+    }
+
+    /// Answer every held `type` request, and stop holding it.
+    func release(_ type: String) {
+        lock.lock()
+        holding.remove(type)
+        let due = heldMessages.filter { $0.0.t == type }
+        heldMessages.removeAll { $0.0.t == type }
+        lock.unlock()
+        for (message, connection) in due { answer(message, on: connection) }
+    }
+
+    /// A message from the phone, unasked (`window.closed`, `apps`, `drop.result`).
+    func phoneSends(_ object: [String: Any]) {
+        lock.lock(); let connection = phone; lock.unlock()
+        XCTAssertNotNil(connection, "the Mac has not spoken to the fake phone yet")
+        connection?.sendJSON(object)
+    }
+
+    /// The phone's app list (MCP-33); waits until the controller has it.
+    func sendApps(_ apps: [[String: Any]]) async {
+        phoneSends(["t": "apps", "apps": apps])
+        let loaded = await wait { self.controller.appsLoaded && self.controller.apps.count == apps.count }
+        XCTAssertTrue(loaded, "the app list never arrived")
     }
 
     nonisolated private func answer(_ message: JSONMessage, on connection: FakeServer.Connection) {
@@ -532,7 +623,7 @@ final class TypeTextFixture {
 
     /// Polls while yielding the main actor, so the controller's own main-actor
     /// work runs (an async test cannot spin the run loop for it).
-    private func wait(until condition: () -> Bool, timeout: TimeInterval = 10) async -> Bool {
+    func wait(until condition: () -> Bool, timeout: TimeInterval = 10) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while !condition(), Date() < deadline { try? await Task.sleep(for: .milliseconds(20)) }  // real-time: polls the live controller's pairing with the fake server, to the deadline
         return condition()
@@ -553,14 +644,15 @@ final class TypeTextFixture {
 
     /// One `tools/call` through the dispatcher and the host: the JSON-RPC
     /// `result`, and the log lines the dispatcher's hook formatted.
-    func call(_ name: String, _ arguments: [String: Any]) async -> ([String: Any], [String]) {
-        lock.lock(); received.removeAll(); lock.unlock()
+    func call(_ name: String, _ arguments: [String: Any], client: MCPClientID = MCPClientID(1),
+              clearSent: Bool = true) async -> ([String: Any], [String]) {
+        if clearSent { lock.withLock { received.removeAll() } }
         let host = MCPToolHost(controller: controller)
         let lines = LogLines()
         let request: [String: Any] = ["jsonrpc": "2.0", "id": 1, "method": "tools/call",
                                       "params": ["name": name, "arguments": arguments]]
         let line = (try? JSONSerialization.data(withJSONObject: request)) ?? Data()
-        let data = await MCPDispatcher.handle(line: line, client: MCPClientID(1), perform: { call, client in
+        let data = await MCPDispatcher.handle(line: line, client: client, perform: { call, client in
             await host.perform(call, client: client)
         }, log: { tool, seconds, code, window in
             lines.all.append(MCPLogLine.format(tool: tool, duration: seconds, code: code, window: window))
