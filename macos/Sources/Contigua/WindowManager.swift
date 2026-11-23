@@ -16,8 +16,9 @@ final class WindowManager {
     /// Streams whose first frame has reached this window (the opening cover's
     /// end); touched on the session queue under `lock`.
     private var firstFrameNoted: Set<UInt32> = []
-    /// Streams the phone answered `window.opened` for (MCP-41).
-    private var phoneOpened: Set<UInt32> = []
+    /// Streams the phone answered `window.opened` for, with the display's
+    /// `w`×`h` it made (MCP-41, MCP-100).
+    private var phoneOpened: [UInt32: (width: Int, height: Int)] = [:]
     /// An MCP open waiting on its window (MCP-41): one per call, by stream.
     private var openWatches: [UInt32: [(id: Int, client: MCPClientID?, feed: (MCPActMachine.Event) -> Void)]] = [:]
     private var nextOpenWatch = 0
@@ -974,10 +975,14 @@ final class WindowManager {
         lock.unlock()
         let live = controller(for: stream).map { $0.mcpLifecycle != .opening } ?? false
         // A window that is already showing its picture has had its open.
-        if phoneOpened.contains(stream) || live { feed(.windowOpened) }
+        if phoneOpened[stream] != nil || live { feed(.windowOpened) }
         if framed || live { feed(.firstFrame) }
         return id
     }
+
+    /// The display the phone made for `stream` (`window.opened`'s `w`×`h`),
+    /// nil until the phone answers (MCP-41, MCP-100).
+    func openedSize(_ stream: UInt32) -> (width: Int, height: Int)? { phoneOpened[stream] }
 
     func unwatchOpen(stream: UInt32, id: Int) {
         openWatches[stream]?.removeAll { $0.id == id }
@@ -995,7 +1000,7 @@ final class WindowManager {
             let record = self.ledger.closeRecord(stream, asker: client, now: now)
             return .windowClosed(reason: record?.reason ?? "closed", by: record?.closedBy ?? "person")
         }
-        phoneOpened.remove(stream)
+        phoneOpened[stream] = nil
     }
 
     func markFirstFrame(stream: UInt32, hasWindow: Bool) -> Bool {
@@ -1339,8 +1344,8 @@ final class WindowManager {
             let ms = controller?.takeResizeAckMs().map { String(format: "%.1f", $0) } ?? "-"
             Log.video.info("stream \(stream, privacy: .public) resize ack \(width, privacy: .public)x\(height, privacy: .public) dpi=\(dpi, privacy: .public) (\(outcome, privacy: .private)) in \(ms, privacy: .public) ms")
             controller?.resizeSettled(ResizeRequest(w: width, h: height, dpi: dpi))
-        case .windowOpened(let stream, _, _, _, let started):
-            phoneOpened.insert(stream)
+        case .windowOpened(let stream, _, let width, let height, let started):
+            phoneOpened[stream] = (width, height)
             feedOpenWatches(stream) { _ in .windowOpened }  // MCP-41
             if started == .fresh {
                 (controller(for: stream) as? HandoffWindowController)?.showFreshNotice()

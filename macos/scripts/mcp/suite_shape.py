@@ -5,16 +5,18 @@ MCP-101, plan T12).
 `open_app` with no `shape` asks the phone for a portrait stream at the phone's
 own dp width, its long side at most 1280 px; `shape: "window"` asks for a
 person's window. A person's resize hands the window back (one `window.resize`
-at WIN-5's size) and a later `open_app` raises it unchanged. The phone's side
-is read from the fake phone's received messages (`events.jsonl`). Run it
-through driver.py (`--suite shape`).
+at WIN-5's size) and a later `open_app` raises it unchanged. A new window's
+`size` is the display the phone made, so an open whose first frame the fake
+holds back (`hold-first-frame`) still answers it, with `state: "opening"`. The
+phone's side is read from the fake phone's received messages (`events.jsonl`).
+Run it through driver.py (`--suite shape`).
 """
 
 import json
 import os
 import time
 
-from common import MCP, report
+from common import MCP, mode, report
 
 # The fake phone's own screen (tools/fakephone/fakephone.py SCREEN_W/H/DPI).
 FAKE_SHORT, FAKE_DPI = 1080, 450
@@ -163,5 +165,25 @@ def suite(args):
                "[MCP-100] MCP send_link opens its window at the phone's shape (open %r)"
                % ({k: msg4.get(k) for k in ("w", "h", "dpi")},))
         close_all(client)
+
+        # [MCP-41] [MCP-100] an open whose first frame has not arrived answers
+        # the display the phone made (`window.opened`), not [0, 0]: the fake
+        # holds frame one past the 10 s open bound.
+        mode(args, "hold-first-frame")
+        start = time.time()
+        held = client.tool("open_app", {"app": "com.android.settings"}, timeout=30)
+        body5 = held.get("structuredContent") or {}
+        opens = received(args.events, "window.open", body5.get("window"), start)
+        msg5 = opens[0] if opens else {}
+        settle5 = (body5.get("settle") or {}).get("state")
+        report(not held.get("isError") and body5.get("opened") == "new" and len(opens) == 1
+               and body5.get("state") == "opening" and settle5 == "not_ready"
+               and phone_shaped(msg5) and body5.get("size") == [msg5.get("w"), msg5.get("h")],
+               "[MCP-41] [MCP-100] MCP an open with no first frame answers state opening and the display's size (state %r, settle %r, size %r, open %r)"
+               % (body5.get("state"), settle5, body5.get("size"),
+                  {k: msg5.get(k) for k in ("w", "h", "dpi")}))
+        mode(args)
+        close_all(client)
     finally:
+        mode(args)
         client.close()

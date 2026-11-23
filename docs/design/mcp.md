@@ -265,11 +265,12 @@ A `press_key back` that ends the app:
 (`window.title`), and the answer waits for that within the open bound.
 `opened` is `new` or `raised`; a raised window keeps its first `openedBy` and
 its shape. `size` is the window's display pixels, the space of `ui_tree`'s
-`box` (for an app window, equal to its stream: what `shape` gave a new window,
-what a raised one already had; MCP-50, MCP-100, MCP-101). An
-open with no first frame at the 10 s bound answers `state: "opening"` and
-`settle: {"state": "not_ready"}` — the window exists; call `wait` or
-`ui_tree` on it.
+`box`. For a new window it is the display the phone made (`window.opened`'s
+`w`×`h`), known as soon as the phone answers, before the first frame; a raised
+window answers the size its stream already has (MCP-50, MCP-100, MCP-101). An
+open with no first frame at the 10 s bound answers `state: "opening"`,
+`settle: {"state": "not_ready"}` and that `size` — the window exists; call
+`wait` or `ui_tree` on it.
 
 ### `ui_tree` (MCP-70…75)
 

@@ -109,11 +109,15 @@ extension MCPToolHost {
         }
     }
 
-    /// The opened-window answer for `stream` now (MCP-41).
+    /// The opened-window answer for `stream` now (MCP-41). A new window's
+    /// `size` is the display the phone made (`window.opened`), known before
+    /// its first frame; a raised one keeps the size its stream has (MCP-100,
+    /// MCP-101).
     func openAnswer(_ stream: UInt32, kind: MCPOpenAnswer.Kind, opened: MCPOpenAnswer.Opened,
                     result: MCPActMachine.Answer, lastFrame: [String: Any]?) -> [String: Any] {
         let window = controller.windows.controller(for: stream)
-        let size = window.map { pixelSize(of: $0) }.map { [$0.0, $0.1] } ?? [0, 0]
+        let made = opened == .new ? controller.windows.openedSize(stream).map { [$0.width, $0.height] } : nil
+        let size = made ?? window.map { pixelSize(of: $0) }.map { [$0.0, $0.1] } ?? [0, 0]
         let named = names(of: stream)
         var answer = MCPOpenAnswer.answer(
             window: Int(stream), kind: kind, package: named.package, label: named.label, opened: opened,
