@@ -115,7 +115,7 @@ struct FrontAppRow: Equatable {
 }
 
 /// One `task.front` read as an MCP `phone_status` call sees it (MCP-32).
-enum FrontRead: Equatable {
+enum FrontRead: Hashable {
     case pkg(String)
     /// The phone answered `pkg: null`: nothing continuable in front.
     case none
@@ -125,24 +125,134 @@ enum FrontRead: Equatable {
     case timeout
 }
 
-/// The shared 2 s budget on `task.front` (PROTOCOL.md "Foreground app" §3):
-/// the panel's card and every MCP client ask through it, and a request less
-/// than 2 s after the last one, from either, reuses that answer. Its states:
-/// no request; a request out (waiters queued); a request answered. A reply
-/// for an older seq is stale; `reset` (link loss, phone change) bumps the seq
-/// and answers every waiter `timeout`.
+/// The shared 2 s budget on `task.front` (PROTOCOL.md "Foreground app" §3,
+/// MCP-32, PANEL-26) as one pure machine: the panel's card and every MCP
+/// client ask through it, and a request less than 2 s after the last one,
+/// from either, reuses that answer.
+///
+/// Phases: Idle (no request since launch or a reset); Out(at) (a request
+/// asked at `at`, its reply not in); Answered(at, read). Events and what
+/// they do:
+/// - `ask(now)`: from Idle, or 2 s or more after the last request, a new
+///   request (`seq + 1`, Out, `send`); under 2 s, nothing.
+/// - `read(waiter, now)`: an `ask`, then the answer at once when the request
+///   is answered, else the waiter waits for this `seq` (`startTimer`).
+/// - `reply(seq, pkg)`: for the newest request while Out, Answered with
+///   `pkg` or None, and that request's waiters answered; any other reply
+///   (an older seq, a second reply, none asked) is stale and ignored.
+/// - `unavailable` (`not_available`, no seq): answers the request Out
+///   `notSupported`; with none out, ignored.
+/// - `reset` (link loss, phone change): `seq + 1`, Idle, every waiter
+///   answered `timeout`, so any reply in flight is stale.
+/// - `expired(waiter)`: a waiter's 1 s ran out: answered `timeout`; one
+///   already answered, ignored.
+struct FrontReadMachine: Equatable {
+    static let budget: Duration = .seconds(2)
+
+    enum Phase: Equatable {
+        case idle
+        case out(at: ContinuousClock.Instant)
+        case answered(at: ContinuousClock.Instant, FrontRead)
+    }
+
+    enum Event: Equatable {
+        case ask(now: ContinuousClock.Instant)
+        case read(waiter: Int, now: ContinuousClock.Instant)
+        case reply(seq: Int, pkg: String?)
+        case unavailable
+        case reset
+        case expired(waiter: Int)
+    }
+
+    enum Action: Hashable {
+        /// Send `task.front` with this seq.
+        case send(seq: Int)
+        /// Resume this waiter with this read.
+        case answer(waiter: Int, FrontRead)
+        /// Start this waiter's 1 s; its end is `expired`.
+        case startTimer(waiter: Int)
+    }
+
+    private(set) var seq = 0
+    private(set) var phase: Phase = .idle
+    /// Each waiting read and the seq it waits for.
+    private(set) var waiters: [Int: Int] = [:]
+
+    /// When the last request went out; nil while Idle.
+    var askedAt: ContinuousClock.Instant? {
+        switch phase {
+        case .idle: return nil
+        case .out(let at), .answered(let at, _): return at
+        }
+    }
+
+    /// The first moment an `ask` sends again: 2 s after the last request,
+    /// whoever asked it (PANEL-26: the card's next ask); nil while Idle.
+    var nextAsk: ContinuousClock.Instant? { askedAt.map { $0 + Self.budget } }
+
+    static func step(_ state: FrontReadMachine, _ event: Event) -> (FrontReadMachine, [Action]) {
+        var next = state
+        var actions: [Action] = []
+        switch event {
+        case .ask(let now):
+            actions = next.ask(now)
+        case .read(let waiter, let now):
+            actions = next.ask(now)
+            if case .answered(_, let read) = next.phase {
+                actions.append(.answer(waiter: waiter, read))
+            } else {
+                next.waiters[waiter] = next.seq
+                actions.append(.startTimer(waiter: waiter))
+            }
+        case .reply(let seq, let pkg):
+            guard case .out(let at) = next.phase, seq == next.seq else { return (state, []) }
+            actions = next.settle(at: at, pkg.map(FrontRead.pkg) ?? .none)
+        case .unavailable:
+            guard case .out(let at) = next.phase else { return (state, []) }
+            actions = next.settle(at: at, .notSupported)
+        case .reset:
+            next.seq += 1
+            next.phase = .idle
+            actions = next.waiters.keys.sorted().map { .answer(waiter: $0, .timeout) }
+            next.waiters = [:]
+        case .expired(let waiter):
+            guard next.waiters.removeValue(forKey: waiter) != nil else { return (state, []) }
+            actions = [.answer(waiter: waiter, .timeout)]
+        }
+        return (next, actions)
+    }
+
+    private mutating func ask(_ now: ContinuousClock.Instant) -> [Action] {
+        if let askedAt, now - askedAt < Self.budget { return [] }
+        seq += 1
+        phase = .out(at: now)
+        return [.send(seq: seq)]
+    }
+
+    private mutating func settle(at: ContinuousClock.Instant, _ read: FrontRead) -> [Action] {
+        phase = .answered(at: at, read)
+        let answered = waiters.filter { $0.value == seq }.keys.sorted()
+        for waiter in answered { waiters[waiter] = nil }
+        return answered.map { .answer(waiter: $0, read) }
+    }
+}
+
+/// The machine's shell: the clock, the `task.front` send, the waiters'
+/// continuations and their 1 s timers. Every decision is the machine's.
 @MainActor
 final class FrontReadGate {
-    static let budget: Duration = .seconds(2)
+    static let budget = FrontReadMachine.budget
     static let wait: Duration = .seconds(1)
 
     /// Sends one `task.front` with this seq.
     var send: ((Int) -> Void)?
-    private(set) var seq = 0
+    private(set) var machine = FrontReadMachine()
+    var seq: Int { machine.seq }
+    /// When the next ask sends (PANEL-26: the card schedules its next ask
+    /// here); nil while no request has gone out.
+    var nextAsk: ContinuousClock.Instant? { machine.nextAsk }
     private let now: () -> ContinuousClock.Instant
-    private var askedAt: ContinuousClock.Instant?
-    private var answer: FrontRead?
-    private var waiters: [Int: (seq: Int, resume: CheckedContinuation<FrontRead, Never>)] = [:]
+    private var continuations: [Int: CheckedContinuation<FrontRead, Never>] = [:]
     private var nextWaiter = 0
 
     init(now: @escaping () -> ContinuousClock.Instant = { .now }) {
@@ -152,56 +262,51 @@ final class FrontReadGate {
     /// The panel's ask: sends unless a request went out less than 2 s ago.
     @discardableResult
     func ask() -> Bool {
-        if let askedAt, now() - askedAt < Self.budget { return false }
-        seq += 1
-        askedAt = now()
-        answer = nil
-        send?(seq)
-        return true
+        let actions = step(.ask(now: now()))
+        return actions.contains { if case .send = $0 { return true } else { return false } }
     }
 
     /// An MCP read: the answer of a request less than 2 s old, or a new one;
     /// `timeout` when no answer comes within `wait`.
     func read(wait: Duration = FrontReadGate.wait) async -> FrontRead {
-        ask()
-        if let answer { return answer }
         let id = nextWaiter
         nextWaiter += 1
-        let expected = seq
         return await withCheckedContinuation { continuation in
-            waiters[id] = (expected, continuation)
-            Task { @MainActor [weak self] in
-                try? await Task.sleep(for: wait)
-                self?.finish(id, .timeout)
-            }
+            continuations[id] = continuation
+            step(.read(waiter: id, now: now()), wait: wait)
         }
     }
 
     func reply(seq: Int, pkg: String?) {
-        guard seq == self.seq, answer == nil else { return }
-        settle(pkg.map(FrontRead.pkg) ?? .none)
+        step(.reply(seq: seq, pkg: pkg))
     }
 
     /// `not_available`, which carries no seq: it answers the newest request.
     func unavailable() {
-        guard askedAt != nil, answer == nil else { return }
-        settle(.notSupported)
+        step(.unavailable)
     }
 
     func reset() {
-        seq += 1
-        askedAt = nil
-        answer = nil
-        for id in Array(waiters.keys) { finish(id, .timeout) }
+        step(.reset)
     }
 
-    private func settle(_ read: FrontRead) {
-        answer = read
-        for (id, waiter) in waiters where waiter.seq == seq { finish(id, read) }
-    }
-
-    private func finish(_ id: Int, _ read: FrontRead) {
-        guard let waiter = waiters.removeValue(forKey: id) else { return }
-        waiter.resume.resume(returning: read)
+    @discardableResult
+    private func step(_ event: FrontReadMachine.Event, wait: Duration = FrontReadGate.wait) -> [FrontReadMachine.Action] {
+        let (next, actions) = FrontReadMachine.step(machine, event)
+        machine = next
+        for action in actions {
+            switch action {
+            case .send(let seq):
+                send?(seq)
+            case .answer(let waiter, let read):
+                continuations.removeValue(forKey: waiter)?.resume(returning: read)
+            case .startTimer(let waiter):
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: wait)
+                    self?.step(.expired(waiter: waiter))
+                }
+            }
+        }
+        return actions
     }
 }
