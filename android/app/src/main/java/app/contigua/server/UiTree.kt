@@ -40,7 +40,15 @@ object UiTree {
         val enabled: Boolean = true,
         val password: Boolean = false,
         val visibleToUser: Boolean = true,
+        /** Whether the node reports a range (`getRangeInfo()` non-null); false = indeterminate. */
+        val hasRange: Boolean = true,
         val children: List<Node> = emptyList(),
+        /**
+         * The node's own child count, which [children] can fall short of when
+         * the walk stops at [MAX_DEPTH]: the loading signal judges an empty
+         * WebView by this, as the settle's check does (MCP-103).
+         */
+        val childCount: Int = children.size,
     )
 
     /** A node's bounds in display pixels, origin at the display's top left. */
@@ -112,6 +120,8 @@ object UiTree {
             )
         }
         out["nodes"] = nodes
+        // MCP-103: the reply says the tree is still loading while any row has it.
+        if (nodes.any { it["loading"] == true }) out["loading"] = true
         if (nodes.isEmpty()) {
             // Prior art is blunt about this: an empty list reads as a blank
             // screen, so say what happened.
@@ -184,8 +194,13 @@ object UiTree {
         if (box.empty) return false
         return node.password || node.clickable || node.editable || node.scrollable ||
             node.checkable || node.selected || node.focused ||
-            label(node.text) != null || label(node.desc) != null
+            label(node.text) != null || label(node.desc) != null ||
+            loading(node)
     }
+
+    /** A loading signal (MCP-103): kept and marked even with no label. */
+    private fun loading(node: Node): Boolean =
+        LoadingSignal.loading(node.role, node.visibleToUser, node.hasRange, node.childCount)
 
     private class Builder(val size: IntSize, val nodes: ArrayList<LinkedHashMap<String, Any?>>) {
         var truncated = false
@@ -254,6 +269,7 @@ object UiTree {
             if (node.focused) row["focus"] = true
             if (!node.enabled) row["disabled"] = true
             if (node.password) row["pwd"] = true
+            if (loading(node)) row["loading"] = true
             return row
         }
 
@@ -281,8 +297,36 @@ object UiTree {
     }
 }
 
-/** The shell side of `ui.tree`; null in a session that cannot read a tree. */
+/** The shell side of `ui.tree` and `ui.settle`; null in a session that cannot read a tree. */
 fun interface UiTreeSource {
     /** Reads [displayId]'s tree. Blocking: the session calls it off the reader thread. */
     fun dump(displayId: Int, size: IntSize): UiTree.Answer
+
+    /**
+     * Watches [displayId] until it is quiet for [quietMs] with nothing loading,
+     * or [timeoutMs] passes (docs/PROTOCOL.md "UI tree" item 7). [arrivedAt] is
+     * the request's arrival on the session's clock (`SystemClock.uptimeMillis`
+     * in the service): `waitedMs` and the deadline count from it. [owner] is
+     * the session, so [cancel] ends only its own watch. Blocking: the session
+     * calls it off the reader thread. A source that cannot listen to
+     * accessibility events answers `not_available`.
+     */
+    fun settle(displayId: Int, quietMs: Long, timeoutMs: Long, arrivedAt: Long, owner: Any): SettleAnswer =
+        SettleAnswer.Failure(UiCodes.NOT_AVAILABLE, "This phone cannot watch the display.")
+
+    /** [owner]'s session ended: its watch stops listening and answers [SettleAnswer.Cancelled]. */
+    fun cancel(owner: Any) {}
+}
+
+/** The closed failure codes of `ui.tree` and `ui.settle` (docs/PROTOCOL.md "UI tree"). */
+object UiCodes {
+    const val NO_WINDOW = "no_window"
+    const val NO_DISPLAY = "no_display"
+    const val NOT_AVAILABLE = "not_available"
+    const val NO_A11Y = "no_a11y"
+    const val BUSY = "busy"
+    const val FAILED = "failed"
+
+    /** Every code `ui.settle` may answer (item 7); `no_a11y` is `ui.tree`'s only. */
+    val SETTLE = setOf(NO_WINDOW, NO_DISPLAY, NOT_AVAILABLE, BUSY, FAILED)
 }

@@ -6,6 +6,7 @@ import android.content.Context
 import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
 import java.util.concurrent.CountDownLatch
@@ -45,11 +46,11 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
     override fun dump(displayId: Int, size: IntSize): UiTree.Answer = synchronized(readLock) {
         if (disconnected) {
             return@synchronized UiTree.Answer.Failure(
-                "no_a11y", "This phone cannot read an accessibility tree right now.",
+                UiCodes.NO_A11Y, "This phone cannot read an accessibility tree right now.",
             )
         }
         val automation = ensureAutomation() ?: return@synchronized UiTree.Answer.Failure(
-            "no_a11y", failure ?: "This phone cannot read an accessibility tree right now.",
+            UiCodes.NO_A11Y, failure ?: "This phone cannot read an accessibility tree right now.",
         )
         try {
             read(automation, displayId)
@@ -57,17 +58,105 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
             log("ui.tree: read ${t.javaClass.simpleName}") // log-ok: class only
             restart()
             val again = ensureAutomation() ?: return@synchronized UiTree.Answer.Failure(
-                "no_a11y", "This phone cannot read an accessibility tree right now.",
+                UiCodes.NO_A11Y, "This phone cannot read an accessibility tree right now.",
             )
             try {
                 read(again, displayId)
             } catch (t: Throwable) {
                 log("ui.tree: read again ${t.javaClass.simpleName}") // log-ok: class only
                 restart()
-                UiTree.Answer.Failure("no_a11y", "This phone cannot read an accessibility tree right now.")
+                UiTree.Answer.Failure(UiCodes.NO_A11Y, "This phone cannot read an accessibility tree right now.")
             }
         }
     }
+
+    // MARK: the settle watch (docs/PROTOCOL.md "UI tree" item 7, MCP-81/MCP-107)
+
+    /** The watches, confined to the looper thread; made with it. */
+    @Volatile private var watches: SettleWatches? = null
+
+    /** What the watches read through the current connection. */
+    private val port = object : SettlePort {
+        override fun windows(): Map<Int, List<Int>>? {
+            val automation = synchronized(lock) { automation } ?: return null
+            val all = automation.windowsOnAllDisplays
+            val out = HashMap<Int, List<Int>>()
+            for (i in 0 until all.size()) out[all.keyAt(i)] = all.valueAt(i).map { it.id }
+            return out
+        }
+
+        override fun loading(displayId: Int, stale: () -> Boolean): Boolean? {
+            val automation = synchronized(lock) { automation } ?: throw IllegalStateException("no connection")
+            return loadingOn(automation, displayId, stale)
+        }
+
+        override fun setEventTypes(mask: Int) {
+            val automation = synchronized(lock) { automation } ?: return
+            runCatching {
+                val info = automation.serviceInfo
+                info.eventTypes = mask
+                automation.serviceInfo = info
+            }
+        }
+    }
+
+    /**
+     * Watches [displayId] until no content change came for [quietMs] and nothing
+     * on it is loading, or [timeoutMs] passes, counting from [arrivedAt].
+     * Blocking: the session calls it off its reader thread. The whole call is
+     * bounded by `arrivedAt + timeoutMs + WATCH_MARGIN_MS + FINISH_MS`, under
+     * the Mac's `timeoutMs + 5 s`, however long the connect took. A watch that
+     * cannot start answers `not_available` (item 7), never `ui.tree`'s `no_a11y`.
+     */
+    override fun settle(displayId: Int, quietMs: Long, timeoutMs: Long, arrivedAt: Long, owner: Any): SettleAnswer {
+        val deadline = arrivedAt + timeoutMs + WATCH_MARGIN_MS
+        if (disconnected) return SettleAnswer.Failure(UiCodes.NOT_AVAILABLE, NO_WATCH)
+        if (ensureAutomation() == null) {
+            return SettleAnswer.Failure(UiCodes.NOT_AVAILABLE, synchronized(lock) { failure } ?: NO_WATCH)
+        }
+        val all = watches ?: return SettleAnswer.Failure(UiCodes.NOT_AVAILABLE, NO_WATCH)
+        val watch = all.start(owner, displayId, quietMs, timeoutMs, arrivedAt)
+            ?: return SettleAnswer.Failure(UiCodes.NOT_AVAILABLE, NO_WATCH)
+        if (!watch.gate.await(maxOf(0L, deadline - now()), TimeUnit.MILLISECONDS)) {
+            all.fail(watch, SettleAnswer.Failure(UiCodes.FAILED, "The display could not be watched."))
+            watch.gate.await(FINISH_MS, TimeUnit.MILLISECONDS)
+        }
+        return watch.answer ?: SettleAnswer.Failure(UiCodes.FAILED, "The display could not be watched.")
+    }
+
+    override fun cancel(owner: Any) {
+        watches?.cancel(owner)
+    }
+
+    /**
+     * Whether any node on [displayId] is a loading signal (MCP-103), or the
+     * display is listed with no window yet (MCP-107: still opening); null when
+     * it is not listed. Walks at most [LOADING_WALK_NODES] nodes, stops at the
+     * first signal or once [stale] (a change dropped the check, or the watch
+     * ended); never reads a node's text.
+     */
+    private fun loadingOn(automation: UiAutomation, displayId: Int, stale: () -> Boolean): Boolean? {
+        freshNodes(automation)
+        val windows = automation.windowsOnAllDisplays.get(displayId) ?: return null
+        if (windows.isEmpty()) return true
+        var budget = LOADING_WALK_NODES
+        fun walk(node: AccessibilityNodeInfo, depth: Int): Boolean {
+            if (--budget < 0 || depth >= UiTree.MAX_DEPTH || stale()) return false
+            val children = node.childCount
+            if (LoadingSignal.loading(node.className?.toString() ?: "", node.isVisibleToUser, node.rangeInfo != null, children)) {
+                return true
+            }
+            for (index in 0 until children) {
+                val child = runCatching { node.getChild(index) }.getOrNull() ?: continue
+                if (walk(child, depth + 1)) return true
+            }
+            return false
+        }
+        return windows.any { window -> window.root?.let { walk(it, 0) } ?: false }
+    }
+
+    /** The service's session clock (DeckService passes `uptimeMillis`), so [settle]'s `arrivedAt` is on it. */
+    private fun now() = SystemClock.uptimeMillis()
 
     /**
      * The one connection this process owns is dropped here, never by a session
@@ -80,7 +169,11 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
             disconnected = true
             restart()
             val threadHandler = handler
+            val running = watches
             handler = null
+            watches = null
+            // A running watch answers now instead of waiting out its deadline.
+            running?.stopAll(SettleAnswer.Failure(UiCodes.NOT_AVAILABLE, NO_WATCH))
             looperThread = null
             threadHandler?.post { Looper.myLooper()?.quitSafely() }
         }
@@ -130,7 +223,9 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
             val ready = CountDownLatch(1)
             val thread = Thread({
                 Looper.prepare()
-                handler = Handler(Looper.myLooper()!!)
+                val h = Handler(Looper.myLooper()!!)
+                watches = SettleWatches(h, port, log, debug = app.contigua.BuildConfig.DEBUG)
+                handler = h
                 looperThread = Thread.currentThread()
                 ready.countDown()
                 Looper.loop()
@@ -161,11 +256,15 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
         UiAutomation::class.java.getDeclaredMethod("connect", Int::class.javaPrimitiveType)
             .invoke(made, CONNECT_FLAGS)
         val info = made.serviceInfo
-        info.flags = info.flags or
-            AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
-            AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
-            AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
+        configure(info)
+        // A connection made while a watch runs (after a restart) hears it again.
+        if (watches?.listeningNow == true) info.eventTypes = SettleWatch.EVENT_MASK
         made.serviceInfo = info
+        // The listener's thread is the platform's choice: copy the two fields
+        // (the event is recycled after this returns) and hand them to the looper.
+        made.setOnAccessibilityEventListener { event ->
+            watches?.deliver(event.eventType, event.windowId)
+        }
         return made
     }
 
@@ -191,13 +290,14 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
         // The window list fills in after the flags land; the debug dump waits
         // 300 ms for the same reason.
         Thread.sleep(SETTLE_MS)
+        freshNodes(automation)
         val all = automation.windowsOnAllDisplays
         val windows = all.get(displayId)
             ?: return UiTree.Answer.Failure(
-                "no_display", "That window is not on a display this phone can read.",
+                UiCodes.NO_DISPLAY, "That window is not on a display this phone can read.",
             )
         if (windows.isEmpty()) {
-            return UiTree.Answer.Failure("no_display", "That display has no windows.")
+            return UiTree.Answer.Failure(UiCodes.NO_DISPLAY, "That display has no windows.")
         }
         val trees = windows.map { window ->
             UiTree.Layer(
@@ -209,6 +309,20 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
             )
         }
         return UiTree.Answer.Tree(trees)
+    }
+
+    /**
+     * Drops the connection's node cache before a walk (MCP-107): a guard
+     * against a suspected cause of reads that came back one row (nodes=1) with
+     * the settle watch's listener on — a cached root with no children — not a
+     * proven fix: the lead's A/B on #166 did not reproduce it. Kept because a
+     * walk from a cleared cache asks the app and costs little.
+     * `debug.contigua.ui_cache=keep` (debug builds only) skips the clear, so
+     * the rig can A/B it.
+     */
+    private fun freshNodes(automation: UiAutomation) {
+        if (UiCacheDebug.keep()) return
+        runCatching { automation.clearCache() }
     }
 
     private fun children(node: AccessibilityNodeInfo, depth: Int): List<UiTree.Node> {
@@ -239,7 +353,9 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
             enabled = node.isEnabled,
             password = node.isPassword,
             visibleToUser = node.isVisibleToUser,
+            hasRange = node.rangeInfo != null,
             children = children(node, depth + 1),
+            childCount = node.childCount,
         )
     }
 
@@ -253,15 +369,46 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
         else -> type.toString()
     }
 
-    private companion object {
+    companion object {
+        /**
+         * The connection's flags (MCP-107): interactive windows, every view,
+         * view ids, and no event types: a watch asks for the five content
+         * changes only while it runs ([SettleWatch.EVENT_MASK]).
+         */
+        fun configure(info: AccessibilityServiceInfo) {
+            info.flags = info.flags or
+                AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
+                AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
+                AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
+            info.eventTypes = 0
+        }
+
         /** `UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES`. */
-        const val CONNECT_FLAGS = 1
-        const val SETTLE_MS = 300L
+        private const val CONNECT_FLAGS = 1
+        private const val SETTLE_MS = 300L
         // WIN-79 F5: thread start, connect and settle stay under the Mac's 5 s
         // deadline, so a first read answers before the Mac gives up on it.
-        const val CONNECT_TIMEOUT_MS = 2_500L
-        const val THREAD_START_MS = 1_000L
+        private const val CONNECT_TIMEOUT_MS = 2_500L
+        private const val THREAD_START_MS = 1_000L
+        // The machine answers by arrival + timeoutMs itself; this covers a slow
+        // connect and a looper that never runs the watch's last tick. With
+        // FINISH_MS the call ends by arrival + timeoutMs + 2.5 s, under the
+        // Mac's timeoutMs + 5 s.
+        private const val WATCH_MARGIN_MS = 2_000L
+        private const val FINISH_MS = 500L
+        private const val LOADING_WALK_NODES = 5_000
+        private const val NO_WATCH = "This phone cannot watch the display right now."
     }
+}
+
+/** The rig's A/B knob for [UiAutomationTree]'s cache clear; a release build never reads it. */
+internal object UiCacheDebug {
+    const val CACHE = "debug.contigua.ui_cache"
+
+    fun keep(debug: Boolean, property: String?): Boolean = debug && property == "keep"
+
+    fun keep(): Boolean =
+        app.contigua.BuildConfig.DEBUG && keep(true, Hidden.systemProperty(CACHE))
 }
 
 /**
