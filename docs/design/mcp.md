@@ -495,8 +495,10 @@ Close reasons map from the wire as follows: `window.closed` `app_exited` →
 `app_exited`, `moved_to_phone` → `moved_to_phone`, `requested`/`error` →
 `phone_closed` (closedBy `phone`); the Mac's own `window.close` → `closed` with
 the closer that asked (an MCP connection, or `person` for ⌘W, the close light,
-Close All); an open the phone refused → `open_failed`; Use This Phone →
-`phone_switched`.
+Close All); an open the phone refused (`too_many_windows`, `cannot_adopt`, a
+handoff with `nothing_to_continue`) → `open_failed` (closedBy `phone`); a live
+window whose stream the phone forgot (`error no_stream`) → `phone_closed`
+(closedBy `phone`); Use This Phone → `phone_switched`.
 
 ## A window an agent opens (MCP-100, MCP-101)
 
