@@ -794,6 +794,7 @@ final class ConnectionController {
         windows.onStreamClosed = { [weak self] stream in
             DispatchQueue.main.async {  // gcd: the close arrives on the session queue; hop to main first
                 self?.uiTreeBroker.forget(stream: stream) // F4: a closed window's refs die with it
+                self?.uiTypeBroker.windowClosed(stream: stream)  // MCP-109: its text has nowhere to go
                 self?.dockFollowWindowClosed(stream)
             }
         }
@@ -1370,12 +1371,15 @@ final class ConnectionController {
 
     /// `ui.type` for a window's display (MCP-109), in the phone's read queue
     /// (MCP-9). The text goes as keys or set text, never through either
-    /// clipboard (MCP-110).
+    /// clipboard (MCP-110). `until` bounds only the wait in the queue: once
+    /// sent, the caller waits for the phone's answer or the text's own bound
+    /// (`UITypeBroker.bound`), since the phone may still be typing (MCP-84).
     func uiType(stream: UInt32, text: String, clear: Bool, submit: Bool,
                 until: ContinuousClock.Instant) async throws -> UITypeReply {
         guard link.isOnline, let session else { throw UITreeError.notConnected }
-        return try await phoneReads.run(until: until) { [uiTypeBroker] in
-            try await uiTypeBroker.type { seq in
+        let codePoints = text.unicodeScalars.count
+        return try await phoneReads.run(queuedUntil: until) { [uiTypeBroker] in
+            try await uiTypeBroker.type(stream: stream, codePoints: codePoints) { seq in
                 session.requestUIType(stream: stream, seq: seq, text: text, clear: clear, submit: submit)
             }
         }
@@ -3404,6 +3408,7 @@ final class ConnectionController {
             // MCP-52, MCP-83: the ledger keeps why it closed; a call acting
             // on the window answers it.
             windows.recordClose(stream, cause: .phone(reason))
+            uiTypeBroker.windowClosed(stream: stream)
             windowActs.closed(window: stream, reason: MCPCloseReason.token(phone: reason), by: "phone")
             syncAudio()
         case .pairCodeShown(let deviceId, let code):
@@ -5248,19 +5253,34 @@ final class ConnectionController {
     }
 }
 
-/// Pairs each `ui.type` with its reply by `seq`; a silent phone fails
-/// `timedOut` after the read deadline, a late reply is ignored (MCP-9).
+/// Pairs each `ui.type` with its reply by `seq`. The Mac waits the text's
+/// own bound (MCP-109): the read deadline plus 10 ms per code point, from the
+/// send, since a long text sent as keys can outrun the read deadline; a
+/// silent phone then fails `timedOut`, and a later reply is ignored. The
+/// window's close or the link's loss ends the wait sooner.
 @MainActor
 final class UITypeBroker {
-    private var seq = 0
-    private var waiters: [Int: CheckedContinuation<UITypeReply, Error>] = [:]
+    nonisolated static let perCodePoint: TimeInterval = 0.010
 
-    func type(send: (Int) -> Void) async throws -> UITypeReply {
+    /// 25 s at the 2000 code-point limit.
+    nonisolated static func bound(codePoints: Int) -> TimeInterval {
+        UITreeBroker.deadline + Double(max(0, codePoints)) * perCodePoint
+    }
+
+    private struct Waiter {
+        let stream: UInt32
+        let cont: CheckedContinuation<UITypeReply, Error>
+    }
+
+    private var seq = 0
+    private var waiters: [Int: Waiter] = [:]
+
+    func type(stream: UInt32, codePoints: Int, send: (Int) -> Void) async throws -> UITypeReply {
         seq += 1
         let id = seq
-        let wait = UITreeBroker.deadline
+        let wait = Self.bound(codePoints: codePoints)
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<UITypeReply, Error>) in
-            waiters[id] = cont
+            waiters[id] = Waiter(stream: stream, cont: cont)
             send(id)
             Task { [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
@@ -5274,11 +5294,18 @@ final class UITypeBroker {
     func fail(_ error: UITreeError) {
         let waiting = Array(waiters.values)
         waiters.removeAll()
-        for waiter in waiting { waiter.resume(throwing: error) }
+        for waiter in waiting { waiter.cont.resume(throwing: error) }
+    }
+
+    /// The window closed: its text has nowhere left to go (`no_window`).
+    func windowClosed(stream: UInt32) {
+        for id in waiters.filter({ $0.value.stream == stream }).keys {
+            finish(id: id, .success(UITypeReply(seq: id, stream: stream, ok: false, code: "no_window")))
+        }
     }
 
     private func finish(id: Int, _ result: Result<UITypeReply, Error>) {
         guard let waiter = waiters.removeValue(forKey: id) else { return }
-        waiter.resume(with: result)
+        waiter.cont.resume(with: result)
     }
 }

@@ -30,6 +30,20 @@ final class PhoneReadQueue {
     /// the phone's `busy`.
     func run<T>(until: ContinuousClock.Instant,
                 _ body: @escaping @MainActor () async throws -> T) async throws -> T {
+        try await run(queuedUntil: until, answeredBy: until, body)
+    }
+
+    /// Like `run(until:)`, but once the request is sent the caller waits for
+    /// it: its broker carries the whole bound (`ui.type`, whose text the
+    /// phone may still be typing, MCP-109). Still queued at `queuedUntil`,
+    /// it leaves unsent with `timedOut`.
+    func run<T>(queuedUntil: ContinuousClock.Instant,
+                _ body: @escaping @MainActor () async throws -> T) async throws -> T {
+        try await run(queuedUntil: queuedUntil, answeredBy: nil, body)
+    }
+
+    private func run<T>(queuedUntil until: ContinuousClock.Instant, answeredBy: ContinuousClock.Instant?,
+                        _ body: @escaping @MainActor () async throws -> T) async throws -> T {
         if running {
             nextWaiter += 1
             let id = nextWaiter
@@ -55,7 +69,7 @@ final class PhoneReadQueue {
             throw UITreeError.timedOut
         }
         let answer = Answer<T>()
-        return try await answer.wait(until: until) {
+        return try await answer.wait(until: answeredBy) {
             Task { @MainActor [weak self] in
                 let result: Result<T, Error>
                 do { result = .success(try await body()) } catch { result = .failure(error) }
@@ -66,18 +80,20 @@ final class PhoneReadQueue {
     }
 
     /// One caller's answer: the request's result, or `timedOut` at the
-    /// caller's bound, whichever comes first.
+    /// caller's bound, whichever comes first; with no bound, the result.
     @MainActor private final class Answer<T> {
         private var cont: CheckedContinuation<T, Error>?
         private var timer: Task<Void, Never>?
 
-        func wait(until: ContinuousClock.Instant, start: () -> Void) async throws -> T {
+        func wait(until: ContinuousClock.Instant?, start: () -> Void) async throws -> T {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<T, Error>) in
                 self.cont = cont
-                timer = Task { @MainActor [weak self] in
-                    try? await Task.sleep(until: until, clock: .continuous)
-                    guard !Task.isCancelled else { return }
-                    self?.finish(.failure(UITreeError.timedOut))
+                if let until {
+                    timer = Task { @MainActor [weak self] in
+                        try? await Task.sleep(until: until, clock: .continuous)
+                        guard !Task.isCancelled else { return }
+                        self?.finish(.failure(UITreeError.timedOut))
+                    }
                 }
                 start()
             }
