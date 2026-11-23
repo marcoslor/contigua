@@ -34,6 +34,7 @@ abstract class SessionFixture {
         clipImages: ClipboardImagePort? = null,
         log: (String) -> Unit = {},
         exitPollIntervalMs: Long = 50,
+        uiTree: UiTreeSource? = null,
     ) {
         platform = FakePlatform()
         serverSocket = ServerSocket(0, 8, InetAddress.getLoopbackAddress())
@@ -69,6 +70,7 @@ abstract class SessionFixture {
                 exitPollIntervalMs = exitPollIntervalMs,
                 tlsView = TlsV2Fixture.view,
                 gateProvider = { GateSettings(true, true) },
+                uiTree = uiTree,
             )
             session = sess
             sess.run()

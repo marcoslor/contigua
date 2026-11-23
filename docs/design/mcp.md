@@ -78,7 +78,8 @@ coordinates the TOUCH frames carry). Window ids are the stream ids
 | `open_app` | `app`: package or label | the opened window's id, package and label |
 | `list_windows` | — | `id`, `package` (null for the Phone Mirror), width and height (stream pixels) |
 | `screenshot` | `window` | PNG image content of the last displayed frame, longest side ≤ 1280 px |
-| `tap` | `window`, `x`, `y` | down/up at the point |
+| `ui_tree` | `window` | the display's accessibility tree, trimmed for a reader: one row per label or control, with its text, view id, bounds in the display's pixels and a tap point in 0..1 of the display's input space; `displayId` names the display, `size` the pixel space, `snapshot` this window's read count, and an off-screen node keeps its text with `off: true` and no tap point |
+| `tap` | `window`, `x`, `y`, or `window`, `ref` | down/up at the point, or at the element the ref (`s<snapshot>e<row>`) named in the latest `ui_tree`; a ref from an older tree, from before the window reopened or the phone reconnected, or for an off-screen node is refused with a sentence that says which; the answer echoes that read's `snapshot` and the node's `box` |
 | `long_press` | `window`, `x`, `y`, `ms` ≤ 3000 | down, wait, up |
 | `swipe` | `window`, `x1`, `y1`, `x2`, `y2`, `ms` ≤ 2000 | down, interpolated moves at ~60 Hz, up |
 | `type_text` | `window`, `text` ≤ 2000 chars | the same `text` frame the keyboard sends |
@@ -90,15 +91,88 @@ coordinates the TOUCH frames carry). Window ids are the stream ids
 
 `open_app`, `send_link` and `send_file` reuse the App Intents core and bridge
 (`IntentsCore`, `IntentsBridge`): the same phone resolution, app matching, link
-policy and drop limits. There is deliberately no notification reading and no UI
-tree in this batch: screenshots plus input cover the screen, and notifications
-are a separate privacy surface.
+policy and drop limits. There is deliberately no notification reading:
+notifications are a separate privacy surface.
+
+## The accessibility tree
+
+`ui_tree` exists because a window's screen is not only pixels. The window's app
+runs on its own virtual display, where neither an accessibility service nor
+`uiautomator dump` can see it; at shell UID the phone can, so it reads that
+display's tree and the Mac answers with it (PROTOCOL.md "UI tree", WIN-79).
+
+The phone trims it for a reader, following what accessibility-driven automation
+clients learned the hard way:
+
+- **What can be acted on, not the layout.** A node with no label and no action is
+  folded away and its children take its place, so a screen reads as its labels
+  and controls rather than as `FrameLayout` after `FrameLayout`.
+- **Short names, no defaults.** `Button`, not `android.widget.Button`; `save`,
+  not `com.example:id/save`; a false flag is left out, and only a checkable
+  box's `check: false` is sent, because it is a real answer.
+- **A tap point, not arithmetic.** Each node carries its bounds in display
+  pixels and `at`, the centre as 0..1 of the display's input space (the space
+  TOUCH and `tap` take), and the answer names that pixel space as `size`.
+  Models that compute a tap from a scaled screenshot tap the wrong quarter of
+  the screen; this leaves nothing to scale.
+- **A ref, so the action names the element.** The phone sends no `ref`; the Mac
+  issues one per node from its own per-window read counter, `s<snapshot>e<row>`,
+  so a ref never crosses the wire. `tap` accepts a ref as well as a point. The
+  refs belong to the tree that was just read: a newer tree replaces them, so a
+  ref the client kept from an older screen is refused with a sentence naming
+  both snapshots instead of pressing whatever moved under that point; a ref
+  from before the window reopened or the phone reconnected is refused with a
+  sentence that says so. This is the same ref-per-snapshot rule
+  accessibility-driven automation clients use; it turns "tap at 0.42, 0.31" into
+  "tap that button". A ref is not a promise the screen is the same: an overlay
+  that appears after the read can cover the node, and the tap lands where the
+  node was. The `tap` answer echoes the `snapshot` the ref came from and the
+  node's `box`, so a client can tell which read it pressed on; reading again
+  after an action is still the only way to know a screen.
+- **An empty tree says so.** `nodes: []` with a `note`, never a silent blank
+  screen. `truncated` marks the node cap; scrolling and asking again is the
+  way through a long list.
+- **Glyphs are not words.** Icon fonts draw their icons as private-use text
+  (`U+EF9E`, `U+EEE8`); those code points are dropped from a label, and a label
+  made only of them is no label at all.
+- **Password fields carry no text**, only `pwd: true`.
+- **Off-screen nodes keep their text, not a tap point.** A node whose box does
+  not intersect the display, that is not visible to the user, or whose visible
+  part is under 8×8 px carries `off: true` and no `at` (its `box` is clipped to
+  the display): a reader still sees the text and knows to scroll, and `tap` by
+  its ref is refused with "… is off screen".
+- **`displayId` is an id, `snapshot` is the counter.** The reply names the
+  display's own number (virtual displays are in the sixties on current builds)
+  and `size`, the pixel space `box` is in; `snapshot` is the Mac's per-window
+  read count. The tool result leaves `l` out when the display holds one layer,
+  where every row would repeat `0`.
+
+Text in the answer is on-screen content, so it lives in the tool result only:
+the app logs the tool name and duration, and the phone logs counts and the
+display, never a label (PROTOCOL.md "UI tree" §5). The tool sits behind the same
+Settings › Automation switch as every other one, and the agent indicator and
+Disconnect stay visible while it runs. #[111](https://github.com/marcoslor/contigua/issues/111)
+still owns the per-app allowlist and confirmations before launch; screenshots
+already expose the same text, so this adds no new surface of its own.
 
 Screenshots use the frame routes Live Text freezes on (docs/design/livetext.md):
 the frame the display layer shows (`copyDisplayedFrame()`, the same frame the
 person sees), else the phone's next keyframe decoded once
 (`beginFrameSnapshot`), for a window whose layer reports no displayed buffer.
 `FrameGrab` only scales the frame (longest side ≤ 1280 px) and encodes the PNG.
+
+Two consequences a client has to know, because neither is visible in the answer:
+
+- **The image is scaled and `box` is not.** `box` is in the display's pixels;
+  the PNG is at most 1280 px on its long side. A client that crops or
+  measures with `box` has to scale by the frame's size first — on a 2860×1654
+  window the PNG is 1280×740, a factor of 2.234.
+- **A displayed frame has no timestamp.** `copyDisplayedFrame()` returns what
+  the layer last showed; a window whose layer stopped presenting keeps showing
+  that older frame, and nothing in the answer says so. A client cannot tell "my
+  tap did nothing" from "this picture is old", which is why a `ui_tree` read is
+  the better evidence that a screen changed. Giving `screenshot` a frame id and
+  a capture time is open as #165.
 
 ### Input
 

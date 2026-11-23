@@ -120,12 +120,20 @@ class DeckService(private val appContext: Context?) :
     /** The live state watcher of the current session, if any. */
     @Volatile private var stateWatcher: AndroidDeviceState? = null
 
+    /**
+     * One `UiAutomation` connection per process, shared by every session and
+     * disconnected only when the service stops — never when a session ends
+     * (WIN-79 F3). The one-read-at-a-time lock lives in [UiAutomationTree].
+     */
+    internal val uiTreeSource = UiTreeSourceOwner(::log)
+
     override fun destroy() {
         log("destroy")
         appBinder?.let { runCatching { it.unlinkToDeath(appDeath, 0) } }
         appBinder = null
         runCatching { power?.shutdown() }
         runCatching { stopServer() }
+        runCatching { uiTreeSource.disconnect() }
         staging.close()
         clipBridge.close()
         System.exit(0)
@@ -234,6 +242,9 @@ class DeckService(private val appContext: Context?) :
                 ringerMode = ringerControl,
                 volume = volumeControl,
                 secureProbe = AndroidSecureProbe(base, ::log),
+                // WIN-79: the window displays' accessibility trees, at shell UID.
+                // One source per process, shared across sessions (F3).
+                uiTree = uiTreeSource.get(),
                 preReadHello = hello,
                 tlsView = Session.TlsView.from(socket).also { view ->
                     // K4/e2e evidence, debug builds only: the platform stack
