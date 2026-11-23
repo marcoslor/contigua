@@ -37,11 +37,21 @@ final class MCPHostWaitEnvironment: MCPWaitEnvironment {
     private let origin = ContinuousClock.now
     /// The read's own failure, with its sentence, when one ended the call.
     private(set) var error: Error?
-    private(set) var lastFrame: [String: Any]?
+    /// The window's frame counter, held from the wait's start: a window that
+    /// closes during the wait (even during a clock's pause, with no read)
+    /// still answers its last frame (MCP-20).
+    private let frames: FrameClockStore?
+
+    /// The window's `frame` object: its newest frame, the last one it had if
+    /// it closed during the wait.
+    var lastFrame: [String: Any]? {
+        frames?.object(now: ProcessInfo.processInfo.systemUptime)
+    }
 
     init(host: MCPToolHost, id: Int) {
         self.host = host
         self.id = id
+        frames = host.controller.windows.controller(for: UInt32(id))?.frameClock
     }
 
     private func instant(_ ms: Int) -> ContinuousClock.Instant { origin + .milliseconds(ms) }
@@ -56,7 +66,6 @@ final class MCPHostWaitEnvironment: MCPWaitEnvironment {
     }
 
     func readTree(untilMs: Int) async -> MCPWaitRead {
-        remember()
         do {
             var answer = try await host.uiTree(id, until: instant(untilMs))
             if let window = host.controller.windows.controller(for: UInt32(id)) {
@@ -71,13 +80,6 @@ final class MCPHostWaitEnvironment: MCPWaitEnvironment {
     }
 
     func settle(quietMs: Int, timeoutMs: Int, untilMs: Int) async -> MCPSettleResult {
-        remember()
-        return await host.settleResult(id, quietMs: quietMs, timeoutMs: timeoutMs, until: instant(untilMs))
-    }
-
-    private func remember() {
-        if let window = host.controller.windows.controller(for: UInt32(id)) {
-            lastFrame = host.frameObject(for: window)
-        }
+        await host.settleResult(id, quietMs: quietMs, timeoutMs: timeoutMs, until: instant(untilMs))
     }
 }
