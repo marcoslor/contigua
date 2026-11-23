@@ -495,6 +495,33 @@ final class MCPToolHostTests: XCTestCase {
         XCTAssertEqual(rows.first?["id"] as? Int, Int(stream))
     }
 
+    private static let settingsMulti: [String: Any] = ["pkg": "com.android.settings", "label": "Settings",
+                                                       "multi": true]
+    private static let clockOne: [String: Any] = ["pkg": "com.android.deskclock", "label": "Clock",
+                                                  "multi": false]
+
+    /// [MCP-41] With two windows of one app, `open_app` raises the front one
+    /// and answers that window, not the newest.
+    @MainActor
+    func testOpenAppAnswersTheWindowItRaised_MCP41() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        let front = try await fixture.liveWindow()
+        await fixture.sendApps([Self.settingsMulti])
+        let windows = fixture.controller.windows
+        let newer = try XCTUnwrap(windows.openAdditional(pkg: "com.android.settings"), "no second window")
+        newer.noteFirstFrame()
+        XCTAssertGreaterThan(newer.stream, front.stream)
+        windows.noteFront(front.stream)
+        XCTAssertEqual(windows.appWindows(pkg: "com.android.settings").first?.stream, front.stream)
+
+        let (answer, _) = await fixture.call("open_app", ["app": "Settings", "wait": "none", "observe": "none"])
+        XCTAssertEqual(answer["isError"] as? Bool, false, "open_app failed: \(answer)")
+        let structured = try XCTUnwrap(answer["structuredContent"] as? [String: Any])
+        XCTAssertEqual(structured["window"] as? Int, Int(front.stream), "answered a window it did not raise")
+        XCTAssertEqual(structured["opened"] as? String, "raised")
+        XCTAssertEqual(windows.appWindows(pkg: "com.android.settings").first?.stream, front.stream)
+    }
 }
 
 /// A real controller online with the fake phone server, which answers
