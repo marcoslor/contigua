@@ -141,8 +141,33 @@ object TextEntry {
     /** A node as the input-focus search reads it: two flags, never its text. */
     data class Shape(val editable: Boolean, val focused: Boolean)
 
-    /** The node with input focus (MCP-105, MCP-109). Stub: the found node as is. */
-    fun <N : Any> inputFocus(found: N?, shape: (N) -> Shape, children: (N) -> List<N>): N? = found
+    /** The most nodes [inputFocus] reads under a host before it keeps the host. */
+    const val MAX_FOCUS_SEARCH = 2_000
+
+    /**
+     * The node with input focus (MCP-105, MCP-109): what `findFocus(FOCUS_INPUT)`
+     * [found], unless it is not editable and hosts a virtual tree with an
+     * editable node that reports focus, then that node. A WebView whose
+     * provider reports no input focus is answered as the WebView itself, which
+     * offers no `ACTION_SET_TEXT`; its focused `<input>` is in its tree. Depth
+     * first, at most [UiTree.MAX_DEPTH] deep and [MAX_FOCUS_SEARCH] nodes; no
+     * such node keeps [found] (a focused canvas stays the host).
+     */
+    fun <N : Any> inputFocus(found: N?, shape: (N) -> Shape, children: (N) -> List<N>): N? {
+        if (found == null || shape(found).editable) return found
+        var read = 0
+        fun search(node: N, depth: Int): N? {
+            if (depth >= UiTree.MAX_DEPTH) return null
+            for (child in children(node)) {
+                if (++read > MAX_FOCUS_SEARCH) return null
+                val s = shape(child)
+                if (s.editable && s.focused) return child
+                search(child, depth + 1)?.let { return it }
+            }
+            return null
+        }
+        return search(found, 0) ?: found
+    }
 
     /** Item 10's sentence for [code] on window [window]. */
     fun sentence(code: String, window: Int): String = when (code) {
