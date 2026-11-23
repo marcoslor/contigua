@@ -85,7 +85,7 @@ final class PhonePanelViewTests: XCTestCase {
         return descendants(view)
             .filter {
                 let name = String(describing: type(of: $0))
-                return name.contains("KeyViewProxy") || $0 is NSSwitch || name.contains("PopupButton")
+                return name.contains("KeyViewProxy") || $0 is NSSwitch || $0 is NSSlider || name.contains("PopupButton")  // NSSlider: macOS 26 hosts it bare
             }
             .sorted { a, b in
                 let fa = a.convert(a.bounds, to: view), fb = b.convert(b.bounds, to: view)

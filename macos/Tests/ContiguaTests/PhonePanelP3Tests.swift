@@ -300,7 +300,9 @@ final class PhonePanelP3Tests: XCTestCase {
 
     private func isControl(_ view: NSView) -> Bool {
         let name = String(describing: type(of: view))
-        return name.contains("KeyViewProxy") || view is NSSwitch || name.contains("PopupButton")
+        // SwiftUI wraps the slider in a KeyViewProxy on macOS 27 and hosts a bare
+        // NSSlider on macOS 26, never both: either way it is one control.
+        return name.contains("KeyViewProxy") || view is NSSwitch || view is NSSlider || name.contains("PopupButton")
     }
 
     /// The controls in the order SwiftUI laid them out — the key-view order the
