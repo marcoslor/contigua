@@ -37,8 +37,12 @@ extension MCPToolHost {
                                                     windows: windows, maxWindows: maxWindows, phone: nil,
                                                     foreground: nil, apps: []), now: .now)
         }
+        // The foreground read may wait up to 1 s; `connected`, the lock and
+        // the foreground are read after it, together, so a link that drops
+        // during the wait answers like no phone online (MCP-30/31).
+        let asked: FrontRead? = controller.link.isOnline ? await controller.frontReads.read() : nil
         let online = controller.link.isOnline
-        let foreground: FrontRead? = online ? await controller.frontReads.read() : nil
+        let foreground = online ? asked : nil
         let battery = IntentsBridge.battery(for: phone, in: controller)
         var state: MCPStatusPhone?
         if online, let status = controller.status {
