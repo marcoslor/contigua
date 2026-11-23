@@ -340,6 +340,13 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
         startThread()
         val gate = CountDownLatch(1)
         val posted = handler?.post {
+            // A connect that outlasted an earlier read's wait lands before this
+            // runs (one looper): keep it. The platform refuses a second
+            // connection while one is held, and that refusal must not drop it.
+            if (synchronized(lock) { automation } != null) {
+                gate.countDown()
+                return@post
+            }
             val made = try {
                 connector?.invoke() ?: connect()
             } catch (t: Throwable) {
@@ -347,9 +354,9 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
                 log(connectFailureLine(t)) // log-ok: class names only
                 null
             }
-            synchronized(lock) {
+            if (made != null) synchronized(lock) {
                 automation = made
-                if (made != null) failure = null
+                failure = null
             }
             gate.countDown()
         } ?: return null
