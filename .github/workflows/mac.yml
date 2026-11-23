@@ -36,6 +36,11 @@ jobs:
           path: macos/.build
           key: k2-${{ runner.os }}-${{ hashFiles('macos/Package.resolved') }}-${{ github.sha }}
           restore-keys: k2-${{ runner.os }}-${{ hashFiles('macos/Package.resolved') }}-
+      - name: Keyboard navigation on, as on a developer's Mac
+        # The panel's key-order tests (PANEL-7) assume Tab reaches every
+        # control; the runner's default (mode 0) lets nothing but text fields
+        # take focus. Mode 2 is System Settings > Keyboard > Keyboard navigation.
+        run: defaults write -g AppleKeyboardUIMode -int 2
       - name: Build
         working-directory: macos
         run: swift build --build-tests
