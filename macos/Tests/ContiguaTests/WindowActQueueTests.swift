@@ -273,26 +273,6 @@ final class WindowActQueueTests: XCTestCase {
         XCTAssertEqual(b.log, [])
     }
 
-    /// MCP-84: another MCP client's input on the window is `another_agent`;
-    /// the holder's own is not reported.
-    func testAnotherAgentsInputIsReported_MCP84() async {
-        let queue = WindowActQueue()
-        let a = FakeActEnvironment(name: "A")
-        a.holdSettle = true
-        let call = Task {
-            await MCPActRunner.run(MCPActMachine(path: .input, wait: .settle, observe: .none),
-                                   window: 3, queue: queue, deadline: .seconds(5), env: a,
-                                   client: MCPClientID(1))
-        }
-        await untilTrue { a.settleGate != nil }
-        queue.agentInput(window: 3, client: MCPClientID(1))
-        queue.agentInput(window: 3, client: MCPClientID(2))
-        a.release()
-        let outcome = await call.value
-        XCTAssertEqual(outcome, .answer(MCPActMachine.Answer(
-            settle: MCPActMachine.Settle(state: "settled", waitedMs: 300), alsoActed: ["another_agent"])))
-    }
-
     /// MCP-84: input_probe holds the window's turn like an input call.
     func testAProbeWaitsForTheWindowsTurn_MCP84() async {
         let queue = WindowActQueue()

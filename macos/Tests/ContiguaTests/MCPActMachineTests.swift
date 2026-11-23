@@ -313,10 +313,9 @@ final class MCPActMachineTests: XCTestCase {
         XCTAssertEqual(state, .settling(1))
         XCTAssertEqual(actions, [])
         (_, _, m) = step(m, .otherInput("person"))
-        (_, _, m) = step(m, .otherInput("another_agent"))
         (state, actions, m) = step(m, .settleReply(req: 1, settled: true, waitedMs: 412, reason: nil))
-        XCTAssertEqual(actions, [.answer(M.Answer(settle: settled412,
-                                                  alsoActed: ["person", "another_agent"]))])
+        XCTAssertEqual(actions, [.answer(M.Answer(settle: settled412, alsoActed: ["person"]))],
+                       "a source is listed once")
     }
 
     func testLateRepliesAreIgnoredBySeq() {
@@ -795,21 +794,5 @@ final class MCPActMachineTests: XCTestCase {
                                              deadline: .seconds(5), env: env, ref: true)
         XCTAssertEqual(outcome, .fail("stale_ref"))
         XCTAssertEqual(env.log, ["a.press"], "a gone ref sends no TOUCH and no settle")
-    }
-
-    // [MCP-84] Review: only a press the phone made, or may have made, is an
-    // agent's input on the window.
-    func testARefusedPressIsNotAnotherAgentsInput_MCP84() {
-        let pressed = UIPressReply(seq: 1, stream: 3, ok: true, box: [0, 0, 1, 1], at: [0.5, 0.5], role: "Button")
-        XCTAssertTrue(UIPressResult.reply(pressed).mayHaveActed)
-        for code in ["gone", "not_visible", "off_screen", "changed", "covered", "no_window", "busy", "failed"] {
-            let refused = UIPressReply(seq: 1, stream: 3, ok: false, code: code)
-            XCTAssertFalse(UIPressResult.reply(refused).mayHaveActed, code)
-        }
-        XCTAssertTrue(UIPressResult.failed("timeout").mayHaveActed)
-        XCTAssertTrue(UIPressResult.failed("phone_offline").mayHaveActed)
-        XCTAssertFalse(UIPressResult.failed("failed").mayHaveActed)
-        // Review C: a client that left while its press was out may have pressed.
-        XCTAssertTrue(UIPressResult.failed("cancelled").mayHaveActed)
     }
 }

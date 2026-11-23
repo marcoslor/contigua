@@ -236,7 +236,7 @@ closed token is listed in the spec row cited.
 - `on.snapshot` is the tree the ref (or `hit`) came from, null when none was read; `on.frame` the frame `seq` when the input was sent.
 - `settle.state`: `settled`, `still_changing`, `not_waited`, `not_ready`, `unavailable`, `window_closed`, `interrupted` (MCP-81). `waitedMs` is absent for `not_waited`. A `still_changing` carries `reason`: `changes` (the screen kept changing) or `loading` (it went quiet but still showed a spinner or an empty web page, MCP-107). A call its deadline ended (MCP-8) says `reason: "deadline"`: `not_waited` when no settle was sent yet, else `still_changing` with `waitedMs` counted from the settle's send. A settle that finds the display gone answers `window_closed`, holding the answer up to 500 ms for the phone's close reason; a window the Mac closed itself answers `closed: {reason: "closed", closedBy: "person" | "you" | "another_agent"}`, the closer relative to the asking connection (MCP-52).
 - `state`: `opening`, `live`, `paused`, `stalled`, `offline`, `closed` (MCP-21).
-- `alsoActed?`: `person`, `another_agent` — other input that reached the window during this call (MCP-84).
+- `alsoActed?`: `["person"]` — the person's input reached the window during this call (MCP-84). Another agent's input cannot: calls on one window take turns, and each sends its input inside its own turn.
 - `closed?`: when the window closed during the call, `{reason, closedBy}` (MCP-83); then `state: "closed"`, `settle.state: "window_closed"`, and no `tree`.
 - `tree?` (observe `tree`), `text?` (observe `text`: the text view of that read, a string), `treeError?` (a code, when that read failed after the action: MCP-82).
 
