@@ -470,7 +470,9 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
          * here after pairing and logged only the wrapper.
          */
         internal fun connectFailureLine(t: Throwable): String {
-            val root = generateSequence(t) { it.cause }.last()
+            // At most 16 links: a chain can loop (initCause refuses only the
+            // throwable itself), and the walk must end.
+            val root = generateSequence(t) { it.cause }.take(16).last()
             return "ui.tree: connect ${t.javaClass.simpleName} root=${root.javaClass.simpleName}"
         }
 
