@@ -2146,18 +2146,17 @@ final class ConnectionController {
     /// and reuse the Deck's paths: an open window, the pending-open queue that
     /// Spotlight clicks use, the link route and the drop sender.
 
-    func intentsOpenApp(_ pkg: String, on deviceId: String, newWindow: Bool = false) {
+    /// The window it opened or raised; nil when the open is queued for a phone
+    /// that is not online, or the new window was refused (WIN-27).
+    @discardableResult
+    func intentsOpenApp(_ pkg: String, on deviceId: String, newWindow: Bool = false) -> AppWindowController? {
         if link.isOnline, link.phone?.id == deviceId {
             // Only an explicit new-window argument adds one (WIN-36).
-            if newWindow {
-                windows.openAdditional(pkg: pkg)
-            } else {
-                windows.openOrRaise(pkg: pkg)
-            }
-            return
+            return newWindow ? windows.openAdditional(pkg: pkg) : windows.openOrRaise(pkg: pkg)
         }
         pendingOpen = SpotlightOpenRequest(deviceId: deviceId, pkg: pkg, newWindow: newWindow)
         if link.phone?.id != deviceId, let phone = remembered.phone(id: deviceId) { use(phone) }
+        return nil
     }
 
     func intentsOpenPhoneWindow(on deviceId: String) {

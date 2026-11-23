@@ -28,16 +28,13 @@ extension MCPToolHost {
         let phone = try onlinePhone()
         let app = try Self.chooseApp(query, in: IntentsBridge.apps(for: phone, in: controller))
         let before = Set(controller.windows.openStreams)
-        // MCP-51: a window this call creates is this connection's.
-        controller.windows.opening(by: opener, shape: shape) {
+        // MCP-51: a window this call creates is this connection's. The answer
+        // is the window the open made or raised (MCP-41), never another of
+        // the app's windows.
+        let window = controller.windows.opening(by: opener, shape: shape) {
             controller.intentsOpenApp(app.pkg, on: phone.id, newWindow: newWindow)
         }
-        // The window is created or raised synchronously above; the newest
-        // stream for that package is the one this call opened.
-        let stream = controller.windows.openStreams
-            .filter { (controller.windows.controller(for: $0) as? AppWindowController)?.pkg == app.pkg }
-            .max()
-        guard let stream else {
+        guard let stream = window?.stream else {
             throw MCPToolError.failed("The app couldn't open a window. Call list_windows, then try open_app again.")
         }
         return try await opened(stream, kind: .app, opened: before.contains(stream) ? .raised : .new,
