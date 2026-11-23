@@ -666,4 +666,68 @@ final class LinkMachineTests: XCTestCase {
         machine.handle(.launch(nil), at: t0)
         XCTAssertFalse(machine.launchPairing)
     }
+
+    // MARK: PAIR-36: LaunchPairing, one test per transition
+
+    private let both: [LaunchPairing] = [.open, .settled]
+    /// A link that neither settles nor keeps anything by itself.
+    private var neutral: Link { .connecting(phone) }
+
+    func testALaunchWithAPhoneOpensTheLaunchsPairing_PAIR36() {
+        for state in both {
+            XCTAssertEqual(state.handle(.launch(phone), reaching: neutral), .open, "\(state)")
+        }
+    }
+
+    func testALaunchWithNoPhoneSettlesTheLaunchsPairing_PAIR36() {
+        for state in both {
+            XCTAssertEqual(state.handle(.launch(nil), reaching: .idle), .settled, "\(state)")
+        }
+    }
+
+    func testAnActivationAPersonsPairingOrAForgetSettlesIt_PAIR36() {
+        let settling: [LinkEvent] = [.activate(other), .beginPairing(phone), .cancelPairing,
+                                     .forget(deviceId: phone.id), .restoreTrustLost(phone, .told)]
+        for event in settling {
+            for state in both {
+                XCTAssertEqual(state.handle(event, reaching: neutral), .settled, "\(event.token) from \(state)")
+            }
+        }
+    }
+
+    func testEveryOtherEventKeepsTheLaunchsPairing_PAIR36() {
+        let keeping: [LinkEvent] = [.welcome(phone), .attemptFailed(reason: "busy"), .reachabilityHint,
+                                    .reachability(advertised: true, hasAddress: false, changed: true),
+                                    .tryNow, .codeShown(phone, code: "123456"), .pairApproved,
+                                    .localNetworkDenied, .tick]
+        for event in keeping {
+            for state in both {
+                XCTAssertEqual(state.handle(event, reaching: neutral), state, "\(event.token) from \(state)")
+            }
+        }
+    }
+
+    func testReachingOnlinePairingOrNeedsPairingSettlesIt_PAIR36() {
+        let outcomes: [Link] = [.online(phone), .pairing(phone, .contacting), .needsPairing(phone)]
+        for link in outcomes {
+            for state in both {
+                XCTAssertEqual(state.handle(.tick, reaching: link), .settled, "\(link) from \(state)")
+                XCTAssertEqual(state.handle(.launch(phone), reaching: link), .settled, "launch into \(link)")
+            }
+        }
+    }
+
+    func testTheOtherLinkStatesKeepTheLaunchsPairing_PAIR36() {
+        let keeping: [Link] = [.idle, .connecting(phone), .reconnecting(phone), .offline(phone, .busy)]
+        for link in keeping {
+            for state in both {
+                XCTAssertEqual(state.handle(.tick, reaching: link), state, "\(link) from \(state)")
+            }
+        }
+    }
+
+    func testTheMachineStartsSettled_PAIR36() {
+        XCTAssertEqual(LinkMachine().launchPairingState, .settled)
+        XCTAssertFalse(LinkMachine().launchPairing)
+    }
 }
