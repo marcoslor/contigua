@@ -384,4 +384,20 @@ final class CoverFadeTests: XCTestCase {
         XCTAssertEqual(fade.fromAlpha, alpha, accuracy: 0.0001)
         XCTAssertEqual(fade.state, .fadingIn)
     }
+
+    /// A tick at exactly start + duration ends the fade, whatever the uptime:
+    /// `(start + d - start) / d` rounds below 1 for most starts, which left a
+    /// Reduce Motion cover mid-fade on the macos-26 runner (CONV-MAC-22).
+    func testATickAtTheFadesEndFinishesItAtAnyUptime() {
+        for start in [1.371, 2.741, 12_345.678, 987_654.321] {
+            var fade = CoverFade()
+            _ = fade.handle(.show, at: start)
+            _ = fade.handle(.tick(start + CoverFade.duration), at: start + CoverFade.duration)
+            XCTAssertEqual(fade.state, .shown, "fade-in ends at \(start) + duration")
+            let out = start + 10
+            _ = fade.handle(.hide, at: out)
+            _ = fade.handle(.tick(out + CoverFade.duration), at: out + CoverFade.duration)
+            XCTAssertEqual(fade.state, .hidden, "fade-out ends at \(out) + duration")
+        }
+    }
 }
