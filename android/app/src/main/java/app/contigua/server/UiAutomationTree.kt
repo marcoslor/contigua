@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.UiAutomation
 import android.content.Context
 import android.graphics.Rect
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -28,7 +29,7 @@ import java.util.concurrent.TimeUnit
  * `UiAutomationConnection` is the platform's own. Nothing here reads a node's
  * text into a log; only counts and codes leave.
  */
-internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSource, UiPressSource {
+internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSource, UiPressSource, UiTypeSource {
 
     private val lock = Any()
     private val startLock = Any()
@@ -115,6 +116,81 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
         @Suppress("UNCHECKED_CAST")
         val rows = UiTree.reply(displayId, size, layers, keys)["nodes"] as List<Map<String, Any?>>
         return rows.firstOrNull { it["k"] == k }?.get("covered")
+    }
+
+    // MARK: the typing (docs/PROTOCOL.md "UI tree" item 10, MCP-109/MCP-110)
+
+    /**
+     * Finds the node with input focus in [displayId]'s active layer (MCP-105)
+     * and types into it ([TextEntry.type]): `ACTION_SET_TEXT` and
+     * `ACTION_SET_SELECTION` are performed here, on the session's worker
+     * thread, never the connection's looper. No clipboard is reachable from
+     * here (MCP-110). Never reads the field's text into a log.
+     */
+    override fun type(
+        displayId: Int,
+        window: Int,
+        text: String,
+        clear: Boolean,
+        submit: Boolean,
+        keys: TextEntry.Keys,
+    ): TextEntry.Outcome = synchronized(readLock) {
+        val failed = TextEntry.Outcome.Refused(UiCodes.FAILED, "This phone cannot read the focused field right now.")
+        if (disconnected) return@synchronized failed
+        val automation = ensureAutomation() ?: return@synchronized failed
+        // A connection just made lists its windows only after its flags land
+        // (read() waits for the same reason): one wait, then once more.
+        val node = inputFocusOn(automation, displayId) ?: run {
+            Thread.sleep(SETTLE_MS)
+            inputFocusOn(automation, displayId)
+        }
+        TextEntry.type(window, text, clear, submit, node?.let { NodeFocus(it) }, keys)
+    }
+
+    /** The node with input focus in [displayId]'s active layer, or null. */
+    private fun inputFocusOn(automation: UiAutomation, displayId: Int): AccessibilityNodeInfo? {
+        freshNodes(automation)
+        val windows = automation.windowsOnAllDisplays.get(displayId) ?: return null
+        val active = windows.firstOrNull { it.isFocused } ?: return null
+        val root = active.root ?: return null
+        return focusUnder(root)
+    }
+
+    /**
+     * The node with input focus under [root] (MCP-105): `findFocus(FOCUS_INPUT)`,
+     * resolved into a WebView's tree by [TextEntry.inputFocus].
+     */
+    private fun focusUnder(root: AccessibilityNodeInfo): AccessibilityNodeInfo? = runCatching {
+        TextEntry.inputFocus(
+            root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT),
+            shape = { TextEntry.Shape(it.isEditable, it.isFocused) },
+            children = { node -> (0 until node.childCount).mapNotNull { runCatching { node.getChild(it) }.getOrNull() } },
+        )
+    }.getOrNull()
+
+    /** A focused node as [TextEntry] reads and acts on it. */
+    private class NodeFocus(private val node: AccessibilityNodeInfo) : TextEntry.Focus {
+        override val field = TextEntry.Field(
+            text = node.text?.toString(),
+            selectionStart = node.textSelectionStart,
+            selectionEnd = node.textSelectionEnd,
+            showingHint = node.isShowingHintText,
+            password = node.isPassword,
+            setsText = node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_SET_TEXT },
+        )
+
+        override fun setText(text: String): Boolean = runCatching {
+            val args = Bundle()
+            args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+            node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        }.getOrDefault(false)
+
+        override fun setSelection(start: Int, end: Int): Boolean = runCatching {
+            val args = Bundle()
+            args.putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, start)
+            args.putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, end)
+            node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, args)
+        }.getOrDefault(false)
     }
 
     // MARK: the settle watch (docs/PROTOCOL.md "UI tree" item 7, MCP-81/MCP-107)
@@ -392,12 +468,12 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
 
     /**
      * The identity of the node with input focus in [window] when it is the
-     * layer with input focus (`findFocus(FOCUS_INPUT)` on its root), else
-     * null: only that node is sent `focus` (MCP-105).
+     * layer with input focus ([focusUnder] its root), else null: only that
+     * node is sent `focus` (MCP-105), the one `ui.type` types into.
      */
     private fun inputFocus(window: AccessibilityWindowInfo, root: AccessibilityNodeInfo): Any? {
         if (!window.isFocused) return null
-        return runCatching { root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) }.getOrNull()?.let { NodeIdentity.of(it) }
+        return focusUnder(root)?.let { NodeIdentity.of(it) }
     }
 
     /** [focus] is the identity [inputFocus] found; a node is `focused` only when it is that node. */
