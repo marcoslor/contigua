@@ -382,6 +382,7 @@ hello/join → welcomed, or failed/closed) and logs
 | `Migrating` | `grace 30 s` without the peer's marker | `Ended(graceExpired)`; the slot is freed (PATH-21/E-10) |
 | `Migrating` | `Close(why)` | `Ended(why)` |
 | `Orphaned(since)` | `PathUp(p, joined)` | `Live(p)`; send `path.switch{p, N}` on `p` as the first frame, replay from the last ack, `window.keyframe` per stream |
+| `Orphaned(since)` | `StandbyAnswered(p)`: a `path.pong` on a path still attached (a standby, the path that orphaned it included) | `Live(p)`; the same `path.switch`, replay and keyframes; the grace ends (PATH-54). In `Live` and `Migrating` the event changes nothing: only the margin rule brings a standby back |
 | `Orphaned(since)` | `PeerSwitch(p, seq)` for an attached `p` | `Live(p)`; the grace ends (PATH-8/E-10) |
 | `Orphaned(since)` | `PathDown(any)` | stay `Orphaned` |
 | `Orphaned(since)` | `grace 30 s` | `Ended(graceExpired)`; the replay buffer is discarded and the Mac's UI says the phone is unreachable |
