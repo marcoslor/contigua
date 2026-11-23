@@ -171,7 +171,9 @@ internal class AndroidInjector(
     }
 
     override fun key(displayId: Int, action: Int, keycode: Int, metaState: Int, downTime: Long, eventTime: Long) {
-        val e = KeyEvent(downTime, eventTime, action, keycode, metaState)
+        // Repeat 0, then the meta: the five-argument constructor's last
+        // argument is the repeat count, and took the meta for it (B5's proof).
+        val e = KeyEvent(downTime, eventTime, action, keycode, 0, metaState)
         e.setSource(InputDevice.SOURCE_KEYBOARD)
         deliver(e, displayId)
     }

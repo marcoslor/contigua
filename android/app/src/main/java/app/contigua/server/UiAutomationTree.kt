@@ -153,8 +153,20 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
         val windows = automation.windowsOnAllDisplays.get(displayId) ?: return null
         val active = windows.firstOrNull { it.isFocused } ?: return null
         val root = active.root ?: return null
-        return runCatching { root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) }.getOrNull()
+        return focusUnder(root)
     }
+
+    /**
+     * The node with input focus under [root] (MCP-105): `findFocus(FOCUS_INPUT)`,
+     * resolved into a WebView's tree by [TextEntry.inputFocus].
+     */
+    private fun focusUnder(root: AccessibilityNodeInfo): AccessibilityNodeInfo? = runCatching {
+        TextEntry.inputFocus(
+            root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT),
+            shape = { TextEntry.Shape(it.isEditable, it.isFocused) },
+            children = { node -> (0 until node.childCount).mapNotNull { runCatching { node.getChild(it) }.getOrNull() } },
+        )
+    }.getOrNull()
 
     /** A focused node as [TextEntry] reads and acts on it. */
     private class NodeFocus(private val node: AccessibilityNodeInfo) : TextEntry.Focus {
@@ -456,12 +468,12 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
 
     /**
      * The identity of the node with input focus in [window] when it is the
-     * layer with input focus (`findFocus(FOCUS_INPUT)` on its root), else
-     * null: only that node is sent `focus` (MCP-105).
+     * layer with input focus ([focusUnder] its root), else null: only that
+     * node is sent `focus` (MCP-105), the one `ui.type` types into.
      */
     private fun inputFocus(window: AccessibilityWindowInfo, root: AccessibilityNodeInfo): Any? {
         if (!window.isFocused) return null
-        return runCatching { root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) }.getOrNull()?.let { NodeIdentity.of(it) }
+        return focusUnder(root)?.let { NodeIdentity.of(it) }
     }
 
     /** [focus] is the identity [inputFocus] found; a node is `focused` only when it is that node. */

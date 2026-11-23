@@ -7,7 +7,8 @@
 # On the phone mirror (display 0), over the wire as the Mac would send it:
 #   1. Contacts' new-contact editor (an EditText; nothing is saved): key-map
 #      text goes as keys; the field's text is copied by the app's own ctrl+A,
-#      ctrl+C, so the person's clip is known; the cursor is moved inside it
+#      ctrl+C (KEY frames with their ctrl meta), so the person's clip is known
+#      and the field is unchanged by the copy; the cursor is moved inside it
 #      with DPAD_LEFT and "térmica " is set at the cursor: the field reads
 #      before + typed + after, and a key typed next lands right after it (the
 #      cursor moved past the typed text); clear replaces.
@@ -193,6 +194,9 @@ def round_trip(client, deckctl, tag, k, keys_first):
     check(r.get("via") == "keys" and now == "garrafa térmica X500ml", tag,
           "the next key lands right after the typed text, the cursor at 16 (%s, match=%s)"
           % (answer(r), now == "garrafa térmica X500ml"))
+    if now != "garrafa térmica X500ml":
+        line("INFO", tag, "where the key went: right place but lowercase=%s, at the end=%s, not typed=%s" % (
+            now == "garrafa térmica x500ml", now == "garrafa térmica 500mlX", now == "garrafa térmica 500ml"))
     r = type_(client, deckctl, "café", clear=True)
     settle(client, deckctl)
     now = field_of(client, deckctl, k).get("text")
@@ -237,6 +241,11 @@ def main():
         key(client, KEYCODE_A, CTRL)
         key(client, KEYCODE_C, CTRL)
         drain(client, deckctl, 1.0)
+        # ctrl+A, ctrl+C are shortcuts: they copy and type nothing. A field that
+        # grew means the KEY frames' ctrl was lost and nothing was copied.
+        held = field_of(client, deckctl, k).get("text")
+        check(held == CLIP, "MCP-110", "ctrl+A, ctrl+C copied and typed nothing (match=%s, typed a and c=%s)"
+              % (held == CLIP, held == CLIP + "ac"))
         CLIPS.clear()  # from here on, the phone's clipboard must not change
         copied = True
         round_trip(client, deckctl, "MCP-109 EditText", k, keys_first=True)

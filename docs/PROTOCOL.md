@@ -1682,7 +1682,9 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
    - **`active` on a layer; `focus` (B6).** Exactly the layer with input focus
      (`AccessibilityWindowInfo.isFocused`) carries `active: true`, and none when no layer has
      it; a layer carries no `focused`. `focus` is sent only on the row of the node with input
-     focus in that active layer (`findFocus(FOCUS_INPUT)` on its root).
+     focus in that active layer (`findFocus(FOCUS_INPUT)` on its root; when that node is not
+     editable and hosts a virtual tree with an editable node that reports focus, as a WebView
+     does for its focused `<input>`, that node).
    - **Off-screen rows left out; `hidden`, `omitted`, `offscreen` (B6).** A row item 2 marks
      `off` is left out of the reply. A kept row with `scroll` carries `hidden: [before, after]`
      when either is non-zero: its left-out descendants before its first on-screen descendant
@@ -1693,7 +1695,7 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
     `text` 1–2000 characters, `clear` and `submit` optional (false). The phone finds the node
     with input focus in the active layer (item 9) of the stream's display. Text made only of
     characters `KeyCharacterMap.VIRTUAL_KEYBOARD` can produce is injected as KEY events at the
-    cursor, stamped like KEY frames from the Mac (`via: "keys"`); with `clear`, ctrl+A and DEL
+    cursor, with the key map's meta state and stamped like KEY frames from the Mac (`via: "keys"`); with `clear`, ctrl+A and DEL
     come first unless the focused node takes `ACTION_SET_TEXT`, in which case the text is set
     whole. Any other text is set whole on the focused node: `ACTION_SET_TEXT` with the
     node's text before its selection + `text` + the text after it (a shown hint counts as
