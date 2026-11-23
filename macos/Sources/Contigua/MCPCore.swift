@@ -37,6 +37,7 @@ enum MCPToolName: String, CaseIterable {
     case listWindows = "list_windows"
     case screenshot
     case uiTree = "ui_tree"
+    case wait
     case tap
     case longPress = "long_press"
     case swipe
@@ -88,6 +89,8 @@ enum MCPCall: Equatable {
     case screenshot(window: Int, ref: String?, wait: MCPWait = .none)
     /// WIN-79: the display's accessibility tree, for finding a node by its text.
     case uiTree(window: Int, wait: MCPWait = .none)
+    /// MCP-96, MCP-97, MCP-111: a clock, a text condition or the settle.
+    case wait(window: Int, mode: MCPWaitMode, timeoutMs: Int, observe: MCPObserve)
     // Every input tool settles and observes (MCP-81, MCP-82): `wait` defaults
     // to settle and `observe` to tree.
     case tap(window: Int, x: Double, y: Double, wait: MCPWait = .settle, observe: MCPObserve = .tree)
@@ -113,6 +116,7 @@ extension MCPCall {
         case .phoneStatus, .listApps, .openApp, .listWindows, .sendLink, .sendFile:
             return nil
         case .screenshot(let window, _, _), .uiTree(let window, _), .closeWindow(let window),
+             .wait(let window, _, _, _),
              .tap(let window, _, _, _, _), .tapRef(let window, _, _, _),
              .longPress(let window, _, _, _, _, _), .swipe(let window, _, _, _, _, _, _, _),
              .typeText(let window, _, _, _), .pressKey(let window, _, _, _),
@@ -241,6 +245,22 @@ enum MCPTools {
         MCPTool(name: .uiTree,
                 description: "The accessibility tree of the window's display: one entry per label or control, with its text, view id, bounds in the display's pixels, a tap point in 0..1 and a ref. displayId names the phone display it was read from; size names the pixel space box is in; snapshot counts this window's reads. An off-screen node keeps its text with off:true and no tap point. Cheaper and more exact than a screenshot for finding what to press. Read it again after an action: a ref only protects against a newer tree, not against a screen that changed under it.",
                 schema: object(["window": window, "wait": wait], required: ["window"])),
+        MCPTool(name: .wait,
+                description: "Wait on a window: for ms milliseconds, until text appears on it (with gone: true, until it disappears), or with settle: true until it stops changing and nothing on it is loading, at most timeoutMs; if timeoutMs ends first, reason says whether it was still loading. Use this instead of sleeping or re-reading the tree as a clock.",
+                schema: object([
+                    "window": window,
+                    "ms": ["type": "integer", "minimum": 1, "maximum": 30000,
+                           "description": "Wait this many milliseconds (1 to 30000)."],
+                    "text": ["type": "string", "minLength": 1, "maxLength": 200,
+                             "description": "Wait until a node's text or description contains this. The tree is read at most twice a second."],
+                    "gone": ["type": "boolean",
+                             "description": "With text: wait until no node contains it."],
+                    "settle": ["type": "boolean",
+                               "description": "true: wait until the window stops changing and nothing on it is loading."],
+                    "timeoutMs": ["type": "integer", "minimum": 1, "maximum": 30000,
+                                  "description": "For text or settle: give up after this long (default 10000); until is then timeout, which is not an error."],
+                    "observe": observe,
+                ], required: ["window"])),
         MCPTool(name: .tap,
                 description: "Tap a point in the window, or an element by the ref ui_tree gave. A ref wins over x and y. It is refused, with a sentence saying what to do, when a newer tree replaced it, when the window has had no tree read since it opened or since the phone reconnected, or when the node is off screen, and nothing is pressed. The answer names what was pressed and the tree it came from (on.snapshot). By default the call waits for the screen to settle and returns the new tree.",
                 schema: object([
@@ -412,6 +432,14 @@ enum MCPOutputSchemas {
                            "state": stateToken, "frame": frameObject],
                           required: ["window", "ok", "truncated", "layers", "nodes",
                                      "state", "frame"])
+        case .wait:
+            return object(["window": integer, "waitedMs": integer,
+                           "until": ["type": "string", "enum": ["met", "timeout"]],
+                           "match": object(["ref": string, "text": string]),
+                           "reason": ["type": "string", "enum": ["changes", "loading"]],
+                           "state": stateToken, "frame": frameObject,
+                           "tree": ["type": "object"], "treeError": string],
+                          required: ["window", "waitedMs", "state", "frame"])
         case .tap, .longPress, .swipe, .typeText, .pressKey:
             return actEnvelope
         case .inputProbe:
@@ -532,6 +560,34 @@ enum MCPArguments {
         return value
     }
 
+    /// MCP-96, MCP-97, MCP-111: exactly one of `ms`, `text` or `settle: true`.
+    private static func waitCall(_ args: [String: Any]) throws -> MCPCall {
+        let window = try integer(args, "window", minimum: 1, maximum: 1_000_000)
+        let settle = try boolean(args, "settle", default: false)
+        let hasMs = args["ms"] != nil
+        let hasText = args["text"] != nil
+        if settle && (hasMs || hasText) {
+            throw MCPArgumentError(message: "wait takes settle without ms or text")
+        }
+        if hasMs && hasText { throw MCPArgumentError(message: "wait takes ms or text, not both") }
+        if args["gone"] != nil && !hasText { throw MCPArgumentError(message: "gone needs text") }
+        let timeoutMs = args["timeoutMs"] != nil
+            ? try integer(args, "timeoutMs", minimum: 1, maximum: MCPWaitPlan.maxMs)
+            : MCPWaitPlan.defaultTimeoutMs
+        let mode: MCPWaitMode
+        if settle {
+            mode = .settle
+        } else if hasMs {
+            mode = .clock(ms: try integer(args, "ms", minimum: 1, maximum: MCPWaitPlan.maxMs))
+        } else if hasText {
+            mode = .text(try string(args, "text", maximum: 200),
+                         gone: try boolean(args, "gone", default: false))
+        } else {
+            throw MCPArgumentError(message: "wait needs ms, text or settle")
+        }
+        return .wait(window: window, mode: mode, timeoutMs: timeoutMs, observe: try observe(args))
+    }
+
     /// Validate `arguments` for a known tool. Throws `MCPArgumentError`; the
     /// dispatcher turns that into `-32602`.
     static func call(_ name: String, _ args: [String: Any]) throws -> MCPCall {
@@ -557,6 +613,8 @@ enum MCPArguments {
         case .uiTree:
             return .uiTree(window: try integer(args, "window", minimum: 1, maximum: 1_000_000),
                            wait: try wait(args, default: .none))
+        case .wait:
+            return try waitCall(args)
         case .tap:
             let window = try integer(args, "window", minimum: 1, maximum: 1_000_000)
             if args["ref"] != nil {

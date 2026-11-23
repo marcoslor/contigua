@@ -298,7 +298,7 @@ def png_stats(data):
 
 TOOLS = [
     "phone_status", "list_apps", "open_app", "list_windows", "screenshot", "ui_tree",
-    "tap", "long_press", "swipe", "type_text", "press_key",
+    "wait", "tap", "long_press", "swipe", "type_text", "press_key",
     "input_probe", "close_window", "send_link", "send_file",
 ]
 

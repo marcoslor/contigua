@@ -88,7 +88,7 @@ final class MCPCoreTests: XCTestCase {
         let tools = try XCTUnwrap(result["tools"] as? [[String: Any]])
         XCTAssertEqual(tools.compactMap { $0["name"] as? String }, [
             "phone_status", "list_apps", "open_app", "list_windows", "screenshot", "ui_tree",
-            "tap", "long_press", "swipe", "type_text", "press_key",
+            "wait", "tap", "long_press", "swipe", "type_text", "press_key",
             "input_probe", "close_window", "send_link", "send_file",
         ])
         for tool in tools {
@@ -150,6 +150,8 @@ final class MCPCoreTests: XCTestCase {
             ("screenshot", ["window": 3], .screenshot(window: 3, ref: nil)),
             ("screenshot", ["window": 3, "ref": "s2e1"], .screenshot(window: 3, ref: "s2e1")),
             ("ui_tree", ["window": 3], .uiTree(window: 3)),
+            ("wait", ["window": 3, "ms": 1000],
+             .wait(window: 3, mode: .clock(ms: 1000), timeoutMs: 10000, observe: .tree)),
             ("tap", ["window": 3, "x": 0.25, "y": 1], .tap(window: 3, x: 0.25, y: 1)),
             ("long_press", ["window": 3, "x": 0, "y": 0.5, "ms": 3000],
              .longPress(window: 3, x: 0, y: 0.5, ms: 3000)),
@@ -453,6 +455,37 @@ final class MCPCoreTests: XCTestCase {
         let oversized = Data(repeating: 0x20, count: MCPProtocol.maxLineBytes + 1)
         let data = await MCPDispatcher.handle(line: oversized, client: MCPClientID(1), perform: { _, _ in .answer([:]) })
         XCTAssertEqual(try errorCode(data), -32600)
+    }
+
+    // MARK: wait (plan T11)
+
+    // [MCP-96]
+    func testWaitNeedsMsOrText() async throws {
+        let none = await MCPDispatcher.handle(line: callRequest("wait", ["window": 3]),
+                                              client: MCPClientID(1), perform: { _, _ in .answer([:]) })
+        XCTAssertEqual(try errorCode(none), -32602)
+        let error = try XCTUnwrap(try decode(none)["error"] as? [String: Any])
+        XCTAssertEqual(error["message"] as? String, "wait needs ms, text or settle")
+        let long = await MCPDispatcher.handle(line: callRequest("wait", ["window": 3, "ms": 30001]),
+                                              client: MCPClientID(1), perform: { _, _ in .answer([:]) })
+        XCTAssertEqual(try errorCode(long), -32602)
+        XCTAssertEqual(try MCPArguments.call("wait", ["window": 3, "ms": 5000]),
+                       .wait(window: 3, mode: .clock(ms: 5000), timeoutMs: 10000, observe: .tree))
+        XCTAssertEqual(try MCPArguments.call("wait", ["window": 3, "text": "Continue", "gone": true,
+                                                      "timeoutMs": 1500]),
+                       .wait(window: 3, mode: .text("Continue", gone: true), timeoutMs: 1500, observe: .tree))
+        XCTAssertThrowsError(try MCPArguments.call("wait", ["window": 3, "text": "a", "timeoutMs": 30001]))
+    }
+
+    // [MCP-111]
+    func testSettleTakesNoMsOrText() async throws {
+        let data = await MCPDispatcher.handle(
+            line: callRequest("wait", ["window": 3, "settle": true, "ms": 500]),
+            client: MCPClientID(1), perform: { _, _ in .answer([:]) })
+        XCTAssertEqual(try errorCode(data), -32602)
+        XCTAssertThrowsError(try MCPArguments.call("wait", ["window": 3, "settle": true, "text": "a"]))
+        XCTAssertEqual(try MCPArguments.call("wait", ["window": 3, "settle": true]),
+                       .wait(window: 3, mode: .settle, timeoutMs: 10000, observe: .tree))
     }
 }
 
