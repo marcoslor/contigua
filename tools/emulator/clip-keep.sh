@@ -4,8 +4,9 @@
 #   bash tools/emulator/clip-keep.sh --check   # rehearse: no device, no boot
 #   bash tools/emulator/clip-keep.sh           # boot, pair, prove, kill (one boot)
 #
-# On the phone mirror (display 0), over the wire as the Mac sends it, with the
-# Mac's clipboard switch on (clip.enable) so SHARE-1's watcher is live:
+# In an app window (its own virtual display, as ime-focus does: display 0 sits
+# behind the keyguard), over the wire as the Mac sends it, with the Mac's
+# clipboard switch on (clip.enable) so SHARE-1's watcher is live:
 #   1. The debug activity's plain EditText, a text clip copied by the app:
 #      `text` "ação" lands by set text; the clip still pastes the same after it;
 #      no clip.set carried the run.
@@ -14,8 +15,10 @@
 #      clip.set carried the run.
 #   3. The same field, an image the Mac put on the clipboard (clip.image.*,
 #      the app's own provider URI): `text` "é" either lands by paste or is
-#      dropped because the shell cannot hand the URI back (the run says which);
-#      either way the image field then receives the same image.
+#      dropped because the shell cannot hand the URI back (an INFO line says
+#      which); either way the image field must then receive the same image.
+#      Boot 1 (2026-11-22, display 0): the shell's trial put-back of the image
+#      was taken, the put-back after the paste was refused.
 #   4. The phone's "typing:" log lines carry no typed text.
 # The rig is awake and past its PIN for the debug activity (a locked phone hides
 # its clip from every reader, so the fallback would never paste there).
@@ -97,11 +100,26 @@ def text(client, deckctl, s, settle=1.5):
     drain(client, deckctl, settle)
 
 
-def debug(client, deckctl, *extras):
-    """The debug activity on display 0, its log cleared first."""
-    adb("logcat", "-c")
-    adb("shell", "am", "start", "-W", "--display", "0", "-n", "app.contigua/.app.PasteDebugActivity", *extras)
-    drain(client, deckctl, 2.0)
+DISPLAY = [0]
+
+
+def debug(client, deckctl, field, *extras):
+    """The debug activity on the window's display, ready on [field]; its log cleared first."""
+    for _ in (0, 1):
+        adb("logcat", "-c")
+        # CLEAR_TOP: an earlier instance would take the intent as onNewIntent and keep its field.
+        adb("shell", "am", "start", "-W", "--display", str(DISPLAY[0]), "--activity-clear-top",
+            "-n", "app.contigua/.app.PasteDebugActivity", "--es", "field", field, *extras)
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            if any("ready field=%s" % field in l for l in debug_lines()):
+                drain(client, deckctl, 1.0)
+                return True
+            drain(client, deckctl, 0.3)
+        adb("shell", "input", "-d", str(DISPLAY[0]), "keyevent", "4")
+        drain(client, deckctl, 1.0)
+    line("FAIL", "rig", "the debug activity did not come up on display %d (field %s)" % (DISPLAY[0], field))
+    return False
 
 
 def debug_lines():
@@ -144,14 +162,16 @@ def main():
 
     state = deckctl.ClientState(args.state)
     client = deckctl.open_session(args.host, args.port, state, None, busy_retries=40)
-    client.send_json({"t": "window.open", "stream": 1, "w": 720, "h": 1560, "dpi": 320, "mode": "phone"})
-    expect(client, deckctl, "window.opened", 40)
+    client.send_json({"t": "window.open", "stream": 1, "w": 720, "h": 1280, "dpi": 320,
+                      "pkg": "com.android.settings"})
+    opened = expect(client, deckctl, "window.opened", 40)
+    DISPLAY[0] = int(opened.get("displayId") or 0)
+    check(DISPLAY[0] > 0, "rig", "an app window opened on its own display (%d)" % DISPLAY[0])
     client.send_json({"t": "clip.enable", "on": True})
     drain(client, deckctl, 1.0)
 
     # 1. An EditText takes "ação" by set text; the person's text clip stays.
-    debug(client, deckctl, "--es", "field", "plain", "--es", "action", "copy", "--es", "text", CLIP)
-    drain(client, deckctl, 1.0)
+    debug(client, deckctl, "plain", "--es", "action", "copy", "--es", "text", CLIP)
     CLIPS.clear()
     adb("logcat", "-c")
     text(client, deckctl, "ação")
@@ -168,8 +188,7 @@ def main():
           % (after, after == 4 + len(CLIP), len(run_clips)))
 
     # 2. A field with no set text: "é" by paste; the text clip is put back.
-    debug(client, deckctl, "--es", "field", "noset", "--es", "action", "copy", "--es", "text", CLIP)
-    drain(client, deckctl, 1.0)
+    debug(client, deckctl, "noset", "--es", "action", "copy", "--es", "text", CLIP)
     CLIPS.clear()
     adb("logcat", "-c")
     text(client, deckctl, "é")
@@ -191,7 +210,7 @@ def main():
           % len(run_clips))
 
     # 3. The same field, an image the Mac put on the clipboard.
-    debug(client, deckctl, "--es", "field", "noset")
+    debug(client, deckctl, "noset")
     data = png()
     client.send_json({"t": "clip.image.start", "id": 7, "mime": "image/png", "size": len(data), "paste": True})
     client.send_raw(proto.pack_frame(proto.TYPE_CLIP_DATA, 7, data))
@@ -206,8 +225,7 @@ def main():
     pasted = typed == 1
     line("INFO", "WIN-80 image", "\"é\" with an image clip: %s; dropped lines: %s" % (
         "landed by paste" if pasted else "not pasted", dropped))
-    check(pasted, "WIN-80 image", "\"é\" lands by paste over the image clip (the shell put the image back=%s)" % pasted)
-    debug(client, deckctl, "--es", "field", "rich")
+    debug(client, deckctl, "rich")
     key(client, deckctl, KEYCODE_PASTE)
     drain(client, deckctl, 1.5)
     rich = [l.split("rich image bytes=")[-1].strip() for l in debug_lines() if "rich image bytes=" in l]
