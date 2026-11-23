@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MCP refs e2e suite (docs/specs/mcp.md MCP-71, MCP-86, MCP-89, MCP-108; plan T10).
+"""MCP refs e2e suite (docs/specs/mcp.md MCP-71, MCP-86, MCP-89, MCP-108; WIN-79; plan T10).
 
 A ref is the phone's key `e<k>`: it names one element across reads, `tap` by
 ref goes to the phone as `ui.press`, and the phone presses the element where it
@@ -44,9 +44,26 @@ def suite(args):
                                       "clientInfo": {"name": "suite-refs", "version": "1"}})
         client.notify("notifications/initialized")
         mode(args)
+        # A window with no tree read since it opened: close the one an
+        # earlier suite read, and open it again without the tree.
         window = open_window(client)
+        client.tool("close_window", {"window": window})
+        reopened = client.tool("open_app", {"app": "com.android.settings", "observe": "none"}, timeout=30)
+        window = (reopened.get("structuredContent") or {}).get("window") or window
         time.sleep(1.0)
         tap = lambda ref: client.tool("tap", {"window": window, "ref": ref, "observe": "none"}, timeout=30)
+
+        # [WIN-79] A ref before any ui_tree on the window: the Mac refuses it,
+        # says why without claiming the window closed, and presses nothing.
+        since = time.time()
+        early = tap("e1")
+        time.sleep(0.5)
+        failure = error_of(early)
+        report(not reopened.get("isError") and failure.get("code") == "stale_ref"
+               and failure.get("message") == "e1 names nothing: this window has had no tree read since it "
+                                             "opened or since the phone reconnected. Call ui_tree first."
+               and not downs_since(args.events, window, since),
+               "[WIN-79] MCP a ref before the window's first ui_tree fails stale_ref, presses nothing")
 
         # [MCP-86] A ref from read 1 still presses after read 2.
         first = client.text("ui_tree", {"window": window})
