@@ -46,6 +46,20 @@ class UiAutomationTreeTest {
         )
     }
 
+    /**
+     * `initCause` refuses only a throwable's own self, so a chain can loop
+     * (A caused by B caused by A). The line is still written, and the connect
+     * thread never spins on it.
+     */
+    @Test(timeout = 5_000)
+    fun testAConnectFailureWithACauseLoopStillLogs() {
+        val outer = RuntimeException("a")
+        val inner = IllegalStateException("b", outer)
+        outer.initCause(inner)
+        val line = UiAutomationTree.connectFailureLine(outer)
+        assertEquals(true, line.startsWith("ui.tree: connect RuntimeException root="))
+    }
+
     @Test
     fun MCP107_anEventFromAnotherThreadRunsOnTheWatchLooper() {
         val looper = shadowOf(Looper.getMainLooper())
