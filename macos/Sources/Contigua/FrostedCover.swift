@@ -394,7 +394,7 @@ class FrostedCoverView: NSView {
     private func run(_ event: CoverFade.Event, at now: TimeInterval) {
         let before = fade.state
         var actions = fade.handle(event, at: now)
-        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, fade.isAnimating {
+        if Motion.reduce(system: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion), fade.isAnimating {
             actions += fade.handle(.tick(now + CoverFade.duration), at: now + CoverFade.duration)
         }
         if fade.state != before {
@@ -520,7 +520,7 @@ class FrostedCoverView: NSView {
         sweepLayer.frame = sweep.bounds
         sweepLayer.removeAnimation(forKey: "sweep")
         guard active else { return }
-        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+        guard !Motion.reduce(system: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion) else {
             sweepLayer.locations = [0.3, 0.45, 0.6]
             return
         }
