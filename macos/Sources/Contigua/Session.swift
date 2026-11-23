@@ -570,6 +570,21 @@ final class Session {
         queue.async { [weak self] in self?.doConnect() }
     }
 
+    /// The pin this dial authenticates with: the owner's record, else the
+    /// shared store's for the remembered id; nil means the dial pairs.
+    private func resolvedPin() -> PinnedPhoneV2? {
+        if let pinnedPhone { return pinnedPhone }
+        guard let store = phonePinStore, let id = knownDeviceId ?? strictDeviceId else { return nil }
+        return store.record(for: id)
+    }
+
+    /// PAIR-36: this session dials to pair — no pin, and its policy lets the
+    /// phone show a prompt — the same decision `doConnect` makes. The attempt
+    /// scheduler leaves such a dial alone while it is in flight.
+    var dialsToPair: Bool {
+        pairingPolicy == .allowed && resolvedPin() == nil
+    }
+
     private func doConnect() {
         guard !intentionalClose else { return }
 
@@ -577,12 +592,7 @@ final class Session {
         // attempts NEVER use one (§7: a stale pin must not block a person's
         // re-pair), and an automatic attempt without any record cannot
         // authenticate at all (v2 replaces the v1 key), so it fails up front.
-        var pinned = self.pinnedPhone
-        if pinned == nil, let store = phonePinStore {
-            if let id = knownDeviceId ?? strictDeviceId {
-                pinned = store.record(for: id)
-            }
-        }
+        let pinned = resolvedPin()
         if pinned == nil, pairingPolicy == .never {
             Log.session.notice("no pin for \(self.describeEndpoint(), privacy: .public); not connecting automatically")
             fail("no-pin"); return
