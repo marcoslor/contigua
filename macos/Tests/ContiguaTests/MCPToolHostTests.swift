@@ -159,6 +159,7 @@ final class MCPToolHostTests: XCTestCase {
             XCTAssertEqual((error as? MCPToolError)?.code, .failed)
             XCTAssertTrue((error as? MCPToolError)?.message.contains("Storage is full.") ?? false)
         }
+    }
 
     // MARK: phone_status (plan T8)
 
