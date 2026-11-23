@@ -185,6 +185,21 @@ class UiPressTest {
             UiTree.Node(role = "android.widget.TextView", text = "Item 4", box = UiTree.Box(0, 2_000, 1_080, 2_300)),
         ))
 
+    /** As the platform sends it: the first child, scrolled out, has its screen box clipped to nothing (MCP-106). */
+    private fun containerWithAClippedFirstChild() = UiTree.Node(role = "android.widget.LinearLayout",
+        box = UiTree.Box(0, 1_800, 1_080, 2_400), clickable = true, children = listOf(
+            UiTree.Node(role = "android.widget.TextView", text = "Item 3", box = UiTree.Box(0, 2_400, 1_080, 2_400),
+                visibleToUser = false, sized = true),
+            UiTree.Node(role = "android.widget.TextView", text = "Item 4", box = UiTree.Box(0, 1_800, 1_080, 2_100)),
+        ))
+
+    @Test
+    fun testAChildThePlatformClippedGivesNoLabel() { // [MCP-86] [MCP-106]
+        val row = containerWithAClippedFirstChild()
+        assertEquals("Item 4", UiPress.label(row, size))
+        assertTrue(UiPress.decide(Fake(true, row), size, "Item 4", ::nobody) is UiPress.Decision.Press)
+    }
+
     @Test
     fun testTheMacsLabelOfAFieldsRowIsThePhones() { // [MCP-86]
         val fields = listOf(
@@ -197,6 +212,7 @@ class UiPressTest {
             UiTree.Node(role = "android.widget.EditText", text = "hunter2", desc = "Password",
                 viewId = "com.x:id/pw", box = UiTree.Box(0, 500, 1_080, 600), editable = true, password = true),
             containerWithAnOffScreenFirstChild(),
+            containerWithAClippedFirstChild(),
         )
         for (field in fields) {
             val layer = UiTree.Layer(title = "App", type = "app", focused = true, nodes = listOf(field))
