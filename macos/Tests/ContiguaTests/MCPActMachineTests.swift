@@ -285,7 +285,8 @@ final class MCPActMachineTests: XCTestCase {
     func testTheDeadlineAnswersTimeout_MCP8() {
         for start in [M.State.queued, .pressing, .typing] {
             let (state, actions, _) = step(machine(start), .deadline(waitedMs: 5000))
-            XCTAssertEqual(state, .done)
+            // MCP-84: a press or a text still out drains until the phone answers it.
+            XCTAssertEqual(state, start == .queued ? .done : .draining, "\(start)")
             XCTAssertEqual(actions, [.fail("timeout")], "\(start)")
         }
         let (state, actions, _) = step(machine(.settling(1), nextReq: 2), .deadline(waitedMs: 4990))
@@ -301,7 +302,8 @@ final class MCPActMachineTests: XCTestCase {
     func testAClientThatLeftGetsNoAnswer() {
         for start in [M.State.queued, .opening, .pressing, .typing, .sent, .settling(1), .observing(2)] {
             let (state, actions, _) = step(machine(start, nextReq: 3), .clientGone)
-            XCTAssertEqual(state, .done)
+            // MCP-84: a press or a text still out drains until the phone answers it.
+            XCTAssertEqual(state, start == .pressing || start == .typing ? .draining : .done, "\(start)")
             XCTAssertEqual(actions, [], "\(start)")
         }
     }

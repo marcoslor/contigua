@@ -201,7 +201,12 @@ struct MCPActMachine: Equatable {
     private mutating func handle(_ event: Event) -> [Action] {
         if state == .done { return [] }
         if state == .draining {
-            if event == .inputSent { state = .done }
+            // The phone is done with the call's input: its input went out, or
+            // its `ui.press`/`ui.type` was answered or ran out its own bound.
+            switch event {
+            case .inputSent, .pressOK, .pressFailed, .typeOK, .typeFailed: state = .done
+            default: break
+            }
             return []
         }
         switch event {
@@ -209,7 +214,7 @@ struct MCPActMachine: Equatable {
             if !alsoActed.contains(source) { alsoActed.append(source) }
             return []
         case .clientGone:
-            return finish(nil)
+            return finish(nil, draining: state == .pressing || state == .typing)
         case .deadline(let waitedMs):
             return onDeadline(waitedMs)
         case .linkLost:
@@ -348,8 +353,11 @@ struct MCPActMachine: Equatable {
 
     private mutating func onDeadline(_ waitedMs: Int?) -> [Action] {
         switch state {
-        case .queued, .pressing, .typing:
+        case .queued:
             return finish(.fail("timeout"))
+        case .pressing, .typing:
+            // The phone may still be pressing or typing: the turn drains (MCP-84).
+            return finish(.fail("timeout"), draining: true)
         case .opening:
             return finish(answer(settle: Settle(state: "not_ready"), state: "opening"))
         case .sending, .sent:
@@ -396,8 +404,10 @@ struct MCPActMachine: Equatable {
 
     /// End the call. While the input is still going out the call drains:
     /// answered, but holding the window's turn until `inputSent` (MCP-84).
-    private mutating func finish(_ action: Action?) -> [Action] {
-        state = state == .sending ? .draining : .done
+    /// `draining`: a `ui.press` or `ui.type` is still out, so the turn is
+    /// held until the phone answers it or it runs out its own bound.
+    private mutating func finish(_ action: Action?, draining: Bool = false) -> [Action] {
+        state = state == .sending || draining ? .draining : .done
         return action.map { [$0] } ?? []
     }
 }
