@@ -106,6 +106,31 @@ final class FrontAppFlowTests: XCTestCase {
                        "the closed card kept asking for the foreground")
     }
 
+    /// PANEL-26 (#266 item 1): the card's next ask follows the shared budget,
+    /// 2 s after the last request from either side, not a free-running timer
+    /// the budget then refuses. An MCP read 1 s before the card opens leaves
+    /// the card's open ask refused; the card must ask again 2 s after that
+    /// read, not 2 s after it opened.
+    func testTheCardAsksAgainTwoSecondsAfterTheLastRequest_PANEL26() throws {
+        goOnline()
+        // An MCP phone_status's read starts with the gate's ask (FrontReadGate.read).
+        XCTAssertTrue(controller.frontReads.ask())
+        XCTAssertTrue(spin { self.received.contains { $0.t == "task.front" } }, "the MCP read sent no task.front")
+        let asked = Date()
+        let first = try XCTUnwrap(received.last { $0.t == "task.front" }?.int("seq"))
+        phone(["t": "task.front", "seq": first, "pkg": "com.example.maps"])
+        RunLoop.main.run(until: asked.addingTimeInterval(1))
+
+        controller.beginPanelFrontWatch()
+        defer { controller.endPanelFrontWatch() }
+        XCTAssertEqual(received.filter { $0.t == "task.front" }.count, 1,
+                       "the card's open ask went out within 2 s of the MCP read")
+        XCTAssertTrue(spin(until: { self.received.filter { $0.t == "task.front" }.count >= 2 }, timeout: 4),
+                      "the open card never asked again")
+        let gap = Date().timeIntervalSince(asked)
+        XCTAssertLessThan(gap, 2.5, "the card asked \(gap) s after the last request: its timer is not the budget's")
+    }
+
     /// The phone cannot read its task list (`not_available`): no row, and the
     /// Phone menu keeps its old one-shot fallback rather than claiming None.
     func testAForegroundReadOnAPhoneWithoutTaskAccessShowsNoRow() throws {
