@@ -1511,7 +1511,7 @@ The MCP `ui_tree` tool reads a window's screen as accessibility nodes instead of
 paired session: the Settings › Automation switch is the Mac's own gate on the tool, not
 something the phone checks.
 
-Items 1–5 are the read as it ships. PR #162 changes them before any #171 task starts:
+Items 1–5 are the read as #162 shipped it:
 the phone sends no `ref` and the Mac names refs `s<snapshot>e<row>` from its own per-window
 read count (S1); the reply carries `size: [w, h]`, the pixel space of `box`, and `at` is
 TOUCH's 0..1 input space (S2); `windows`/`w` become `layers`/`l` (S3); a node off the display,
