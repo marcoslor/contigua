@@ -48,3 +48,4 @@ jobs:
           sudo apt-get install -y -qq python3-openssl
           python3 -m unittest discover -s tools/fakephone -p 'test_*.py'
           python3 tools/test_phone_install_check.py
+          bash tools/emulator/lib-test.sh

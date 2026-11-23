@@ -211,7 +211,7 @@ fi
 # Fail fast and loudly: a silent downgrade failure leaves the previous build
 # answering on the port, and every later check would report the wrong code.
 WANT_CODE="$(apk_version_code "$APK")"
-GOT_CODE="$(installed_version_code "$PKG")"
+GOT_CODE="$(installed_version_code "$PKG")" || die "cannot read the installed versionCode of $PKG (see the line above)"
 [ -n "$WANT_CODE" ] || die "cannot read the APK's versionCode (aapt2 at $AAPT2)"
 [ "$GOT_CODE" = "$WANT_CODE" ] ||
   die "installed $PKG versionCode '${GOT_CODE:-none}' but the APK is '$WANT_CODE' (install -r -d did not land; check the signature and the log above)"
@@ -262,9 +262,12 @@ if lmkd_quiet 15 90; then
 else
   step "warn: lmkd not quiet after 90 s (waited $(( $(date +%s) - SETTLE_START ))s); starting the server anyway"
 fi
-CODE_PATH="$(emu shell dumpsys package "$SHIZUKU_PKG" 2>/dev/null |
-  sed -n 's/.*codePath=\(.*\)$/\1/p' | head -1 | tr -d '\r')"
-ABI="$(emu shell getprop ro.product.cpu.abi | tr -d '\r')"
+# Each read says why it failed: under `set -e` a bare failed `$(emu ...)` ended
+# the boot here with no message (#207).
+CODE_PATH="$(package_code_path "$SHIZUKU_PKG")" || die "cannot read $SHIZUKU_PKG's code path"
+[ -n "$CODE_PATH" ] || die "dumpsys package $SHIZUKU_PKG has no codePath"
+ABI="$(emu shell getprop ro.product.cpu.abi | tr -d '\r')" ||
+  die "getprop ro.product.cpu.abi failed (status $?)"
 case "$ABI" in
   arm64-v8a) ABI_DIR=arm64 ;;
   armeabi-v7a) ABI_DIR=arm ;;
