@@ -234,12 +234,21 @@ final class MCPHostActEnvironment: MCPActEnvironment {
     /// T10: before the press, the Mac refuses only what the phone cannot
     /// judge: a window with no tree since it opened or the phone reconnected (F4).
     func refusal() -> String? {
-        guard let ref else { return nil }
-        // A ref that is no key never gets here: the argument check refuses it (MCP-71).
-        guard host.controller.uiTreeLatestSnapshot(stream: UInt32(id)) == nil else { return nil }
-        let error = MCPToolError(.staleRef, UITreeRefusal.noTree(ref), ["window": id, "ref": ref])
-        refusalError = error
-        return error.code.rawValue
+        let error = Self.refusal(ref: ref, window: id,
+                                 latestSnapshot: host.controller.uiTreeLatestSnapshot(stream: UInt32(id)))
+        if let error { refusalError = error }
+        return error?.code.rawValue
+    }
+
+    /// The Mac's refusal, pure (WIN-79, MCP-86): nil for a point (no ref) and
+    /// for a ref on a window with a tree, which the phone judges; for a ref on
+    /// a window with no tree read since it opened or since the phone
+    /// reconnected (no latest snapshot), `stale_ref` with WIN-79's sentence,
+    /// which never says the window closed. A ref that is no key never gets
+    /// here: the argument check refuses it (MCP-71).
+    nonisolated static func refusal(ref: String?, window id: Int, latestSnapshot: Int?) -> MCPToolError? {
+        guard let ref, latestSnapshot == nil else { return nil }
+        return MCPToolError(.staleRef, UITreeRefusal.noTree(ref), ["window": id, "ref": ref])
     }
 
     /// `"e12"` → 12 (MCP-71).
