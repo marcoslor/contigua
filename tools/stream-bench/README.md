@@ -1,7 +1,7 @@
 # stream-bench — compare stream strategies run by run (ISS-40)
 
 `bench.py` drives a **running** Contigua Mac app through its automation socket
-with the same stdio shim `macos/scripts/mcp-driver.py` uses. It opens one app
+with the same stdio shim `macos/scripts/mcp/driver.py` uses. It opens one app
 window, runs one named script (default: the fixed swipe script below), closes
 the window, and summarises that run's **closing `stats total stream=…` line**
 itself. One table compares the arms; `--out` keeps every run as CSV.

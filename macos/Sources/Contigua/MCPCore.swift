@@ -100,11 +100,47 @@ enum MCPCall: Equatable {
     case sendFile(String)
 }
 
-/// What executing a call gave. `.image` is PNG bytes.
-enum MCPToolResult: Equatable {
-    case text(String)
-    case image(Data)
-    case error(String)
+extension MCPCall {
+    /// The window a call names, for the log line (MCP-14); nil for phone-level calls.
+    var window: Int? {
+        switch self {
+        case .phoneStatus, .listApps, .openApp, .listWindows, .sendLink, .sendFile:
+            return nil
+        case .screenshot(let window), .uiTree(let window), .closeWindow(let window),
+             .tap(let window, _, _), .tapRef(let window, _),
+             .longPress(let window, _, _, _), .swipe(let window, _, _, _, _, _),
+             .typeText(let window, _), .pressKey(let window, _),
+             .inputProbe(let window, _, _, _, _):
+            return window
+        }
+    }
+}
+
+/// What executing a call gave (MCP-5, MCP-6): an answer object, PNG bytes with
+/// their answer, or one closed-code failure.
+enum MCPToolResult {
+    case answer([String: Any])
+    case image(Data, [String: Any])
+    case failure(MCPToolError)
+}
+
+/// One connection to the server, counted by the server (plan T1). Tools may
+/// tell their callers apart by it; it is never logged with the client's name.
+struct MCPClientID: Hashable, Sendable {
+    let value: Int
+    init(_ value: Int) { self.value = value }
+}
+
+/// The one log line per tool call (MCP-14): name, duration, outcome code and
+/// window id. Nothing else reaches it.
+enum MCPLogLine {
+    static func format(tool: MCPToolName, duration: TimeInterval,
+                       code: MCPErrorCode?, window: Int?) -> String {
+        var line = "mcp \(tool.rawValue) \(Int((duration * 1000).rounded())) ms"
+        if let code { line += " code=\(code.rawValue)" }
+        if let window { line += " window=\(window)" }
+        return line
+    }
 }
 
 /// Argument validation errors are protocol faults (`-32602`), not tool errors.
@@ -120,7 +156,8 @@ struct MCPTool {
     let schema: [String: Any]
 
     var object: [String: Any] {
-        ["name": name.rawValue, "description": description, "inputSchema": schema]
+        ["name": name.rawValue, "description": description, "inputSchema": schema,
+         "outputSchema": MCPOutputSchemas.schema(for: name)]
     }
 }
 
@@ -236,6 +273,78 @@ enum MCPTools {
 
     static func tool(_ name: String) -> MCPTool? {
         all.first { $0.name.rawValue == name }
+    }
+}
+
+// MARK: - Output schemas (MCP-5)
+
+/// The answer shapes of the tools as they are today (design/mcp.md "Answer
+/// shapes"); each later task updates its own tool's.
+enum MCPOutputSchemas {
+    private static func object(_ properties: [String: Any], required: [String] = []) -> [String: Any] {
+        var schema: [String: Any] = ["type": "object", "properties": properties]
+        if !required.isEmpty { schema["required"] = required }
+        return schema
+    }
+
+    private static let integer: [String: Any] = ["type": "integer"]
+    private static let number: [String: Any] = ["type": "number"]
+    private static let boolean: [String: Any] = ["type": "boolean"]
+    private static let string: [String: Any] = ["type": "string"]
+    private static func nullable(_ type: String) -> [String: Any] { ["type": [type, "null"]] }
+    private static func array(_ items: [String: Any]) -> [String: Any] { ["type": "array", "items": items] }
+
+    private static let gesture = object(["ok": boolean, "window": integer, "ms": integer],
+                                        required: ["ok", "window"])
+
+    static func schema(for tool: MCPToolName) -> [String: Any] {
+        switch tool {
+        case .phoneStatus:
+            return object(["connected": boolean, "name": nullable("string"),
+                           "battery": nullable("integer"), "charging": boolean,
+                           "locked": boolean, "windows": integer],
+                          required: ["connected", "name", "battery", "charging", "locked", "windows"])
+        case .listApps:
+            return object(["apps": array(object(["label": string, "package": string],
+                                                required: ["label", "package"]))],
+                          required: ["apps"])
+        case .openApp:
+            return object(["window": integer, "package": string, "label": string],
+                          required: ["window", "package", "label"])
+        case .listWindows:
+            return object(["windows": array(object(["id": integer, "package": nullable("string"),
+                                                    "width": integer, "height": integer],
+                                                   required: ["id", "package", "width", "height"]))],
+                          required: ["windows"])
+        case .screenshot:
+            return object(["window": integer], required: ["window"])
+        case .uiTree:
+            return object(["window": integer, "ok": boolean, "displayId": integer,
+                           "snapshot": integer, "size": array(integer), "truncated": boolean,
+                           "layers": array(["type": "object"]), "nodes": array(["type": "object"]),
+                           "note": string],
+                          required: ["window", "ok", "truncated", "layers", "nodes"])
+        case .tap:
+            return object(["ok": boolean, "window": integer, "ref": string, "snapshot": integer,
+                           "x": number, "y": number, "box": array(integer)],
+                          required: ["ok", "window"])
+        case .longPress, .swipe:
+            return gesture
+        case .typeText:
+            return object(["ok": boolean, "window": integer, "characters": integer],
+                          required: ["ok", "window", "characters"])
+        case .pressKey:
+            return object(["ok": boolean, "window": integer, "key": string],
+                          required: ["ok", "window", "key"])
+        case .inputProbe:
+            return object(["ok": boolean, "window": integer, "frames": integer,
+                           "sent_ms": nullable("number"), "changed_ms": nullable("number")],
+                          required: ["ok", "window", "frames", "sent_ms", "changed_ms"])
+        case .closeWindow:
+            return object(["ok": boolean, "window": integer], required: ["ok", "window"])
+        case .sendLink, .sendFile:
+            return object(["message": string], required: ["message"])
+        }
     }
 }
 
@@ -398,9 +507,13 @@ private let mcpInvalidParams = -32602
 enum MCPDispatcher {
     /// Handle one line. Returns nil for notifications (no `id`), otherwise one
     /// response line ending in a newline.
+    /// The log hook: tool, duration, outcome code (nil on success), window.
+    typealias Log = (MCPToolName, TimeInterval, MCPErrorCode?, Int?) -> Void
+
     static func handle(line: Data,
-                       perform: (MCPCall) async -> MCPToolResult,
-                       log: ((MCPToolName, TimeInterval) -> Void)? = nil) async -> Data? {
+                       client: MCPClientID,
+                       perform: (MCPCall, MCPClientID) async -> MCPToolResult,
+                       log: Log? = nil) async -> Data? {
         guard line.count <= MCPProtocol.maxLineBytes else {
             return errorLine(id: nil, code: -32600,
                              message: "Request line is longer than 1 MiB")
@@ -431,15 +544,16 @@ enum MCPDispatcher {
         case "tools/list":
             return resultLine(id: id, result: ["tools": MCPTools.all.map(\.object)])
         case "tools/call":
-            return await toolCall(id: id, params: request.params, perform: perform, log: log)
+            return await toolCall(id: id, params: request.params, client: client,
+                                  perform: perform, log: log)
         default:
             return errorLine(id: id, code: -32601, message: "Method not found: \(request.method)")
         }
     }
 
-    private static func toolCall(id: MCPID, params: [String: Any],
-                                 perform: (MCPCall) async -> MCPToolResult,
-                                 log: ((MCPToolName, TimeInterval) -> Void)?) async -> Data {
+    private static func toolCall(id: MCPID, params: [String: Any], client: MCPClientID,
+                                 perform: (MCPCall, MCPClientID) async -> MCPToolResult,
+                                 log: Log?) async -> Data {
         guard let name = params["name"] as? String, !name.isEmpty else {
             return errorLine(id: id, code: mcpInvalidParams, message: "tools/call needs a tool name")
         }
@@ -459,22 +573,31 @@ enum MCPDispatcher {
             return errorLine(id: id, code: mcpInvalidParams, message: "Unknown tool: \(name)")
         }
         let started = ProcessInfo.processInfo.systemUptime
-        let outcome = await perform(call)
+        let outcome = await perform(call, client)
         if let log {
-            log(tool, ProcessInfo.processInfo.systemUptime - started)
+            var code: MCPErrorCode?
+            if case .failure(let failure) = outcome { code = failure.code }
+            log(tool, ProcessInfo.processInfo.systemUptime - started, code, call.window)
         }
         return resultLine(id: id, result: resultBody(outcome))
     }
 
-    private static func resultBody(_ outcome: MCPToolResult) -> [String: Any] {
+    /// MCP-5/MCP-6: an answer is structured content mirrored as one text
+    /// block (after the image, for a screenshot); a failure is the error
+    /// object as text, with no structured content.
+    static func resultBody(_ outcome: MCPToolResult) -> [String: Any] {
         switch outcome {
-        case .text(let text):
-            return ["content": [["type": "text", "text": text]]]
-        case .image(let data):
+        case .answer(let answer):
+            return ["content": [["type": "text", "text": MCPJSON.string(answer)]],
+                    "structuredContent": answer, "isError": false]
+        case .image(let data, let answer):
             return ["content": [["type": "image", "data": data.base64EncodedString(),
-                                 "mimeType": "image/png"]]]
-        case .error(let message):
-            return ["content": [["type": "text", "text": message]], "isError": true]
+                                 "mimeType": "image/png"],
+                                ["type": "text", "text": MCPJSON.string(answer)]],
+                    "structuredContent": answer, "isError": false]
+        case .failure(let failure):
+            return ["content": [["type": "text", "text": MCPJSON.string(failure.object)]],
+                    "isError": true]
         }
     }
 
@@ -533,7 +656,6 @@ enum MCPDispatcher {
         case .number(let value): object["id"] = value
         case nil: object["id"] = NSNull()
         }
-        let data = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data()
-        return data + Data("\n".utf8)
+        return MCPJSON.data(object) + Data("\n".utf8)
     }
 }

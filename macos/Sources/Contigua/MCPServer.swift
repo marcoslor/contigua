@@ -14,6 +14,8 @@ final class MCPSocketServer {
     private final class Client {
         let fd: Int32
         let source: DispatchSourceRead
+        /// The server's count of accepted connections when this one came in.
+        let id: MCPClientID
         var buffer = Data()
         var pending: [Data] = []
         var busy = false
@@ -21,15 +23,18 @@ final class MCPSocketServer {
         /// then close once the queue drains (MCP-10).
         var halfClosed = false
 
-        init(fd: Int32, source: DispatchSourceRead) {
+        init(fd: Int32, source: DispatchSourceRead, id: MCPClientID) {
             self.fd = fd
             self.source = source
+            self.id = id
         }
     }
 
     /// The socket file. Tests pass a temp path; the app uses the profile's.
     let path: String
-    private let handler: (Data) async -> Data?
+    private let handler: (Data, MCPClientID) async -> Data?
+    /// Accepted connections so far; each gets the next value as its id.
+    private var accepted = 0
 
     /// Whether a connecting process's uid is the app's own (MCP-2). Tests inject
     /// "not ours" to exercise the refusal; the default is the real `getpeereid`.
@@ -49,7 +54,7 @@ final class MCPSocketServer {
     }
 
     init(path: String,
-         handler: @escaping (Data) async -> Data?,
+         handler: @escaping (Data, MCPClientID) async -> Data?,
          peerIsOurs: @escaping @Sendable (Int32) -> Bool = { fd in
              MCPSocketServer.checkPeerIsOurs(fd)
          }) {
@@ -175,7 +180,8 @@ final class MCPSocketServer {
             return
         }
         let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
-        let client = Client(fd: fd, source: source)
+        accepted += 1
+        let client = Client(fd: fd, source: source, id: MCPClientID(accepted))
         source.setEventHandler { [weak self] in self?.read(client: fd) }
         // No cancel handler closes the fd here: closeClient() closes it after any
         // queued write, and a half-closed client cancels its read source while
@@ -248,7 +254,7 @@ final class MCPSocketServer {
         client.busy = true
         Task { @MainActor [weak self] in
             guard let self else { return }
-            let reply = await self.handler(line)
+            let reply = await self.handler(line, client.id)
             if let reply, self.clients[client.fd] === client {
                 self.send(reply, to: client.fd)
             }
