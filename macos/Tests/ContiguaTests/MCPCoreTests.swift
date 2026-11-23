@@ -469,6 +469,23 @@ final class MCPActArgumentTests: XCTestCase {
                        .screenshot(window: 3, ref: nil, wait: .none))
     }
 
+    func testShapeIsPhoneOrWindow_MCP100() throws {
+        XCTAssertEqual(try MCPArguments.call("open_app", ["app": "Shop"]),
+                       .openApp("Shop", newWindow: false, shape: .phone))
+        XCTAssertEqual(try MCPArguments.call("open_app", ["app": "Shop", "shape": "window"]),
+                       .openApp("Shop", newWindow: false, shape: .window))
+        XCTAssertEqual(try MCPArguments.call("send_link", ["url": "https://example.com"]),
+                       .sendLink("https://example.com", shape: .phone))
+        XCTAssertEqual(try MCPArguments.call("send_link", ["url": "https://example.com", "shape": "window"]),
+                       .sendLink("https://example.com", shape: .window))
+        XCTAssertThrowsError(try MCPArguments.call("open_app", ["app": "Shop", "shape": "tablet"])) {
+            XCTAssertTrue($0 is MCPArgumentError)
+        }
+        let schema = MCPTools.tool("open_app")?.schema["properties"] as? [String: Any]
+        let shape = schema?["shape"] as? [String: Any]
+        XCTAssertEqual(shape?["enum"] as? [String], ["phone", "window"])
+    }
+
     func testWaitAndObserveAreTakenOnEveryAction_MCP81_MCP82() throws {
         let act: [String: Any] = ["wait": "none", "observe": "none"]
         func with(_ args: [String: Any]) -> [String: Any] { args.merging(act) { a, _ in a } }

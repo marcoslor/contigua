@@ -24,12 +24,12 @@ extension MCPToolHost {
 
     private var opener: MCPWindowLedger.Opener { client.map { .client($0) } ?? .person }
 
-    func openApp(_ query: String, newWindow: Bool, wait: MCPWait, observe: MCPObserve) async throws -> [String: Any] {
+    func openApp(_ query: String, newWindow: Bool, shape: MCPWindowShape = .phone, wait: MCPWait, observe: MCPObserve) async throws -> [String: Any] {
         let phone = try onlinePhone()
         let app = try Self.chooseApp(query, in: IntentsBridge.apps(for: phone, in: controller))
         let before = Set(controller.windows.openStreams)
         // MCP-51: a window this call creates is this connection's.
-        controller.windows.opening(by: opener) {
+        controller.windows.opening(by: opener, shape: shape) {
             controller.intentsOpenApp(app.pkg, on: phone.id, newWindow: newWindow)
         }
         // The window is created or raised synchronously above; the newest
@@ -46,9 +46,9 @@ extension MCPToolHost {
 
     /// MCP-43: the link opens in a new window on the live link path; the
     /// answer is that window.
-    func sendLink(_ url: String, wait: MCPWait, observe: MCPObserve) async throws -> [String: Any] {
+    func sendLink(_ url: String, shape: MCPWindowShape = .phone, wait: MCPWait, observe: MCPObserve) async throws -> [String: Any] {
         _ = try onlinePhone()
-        let stream = try controller.windows.opening(by: opener) {
+        let stream = try controller.windows.opening(by: opener, shape: shape) {
             try IntentsBridge.openLinkWindow(url, controller: controller)
         }
         return try await opened(stream, kind: .link, opened: .new, wait: wait, observe: observe)
@@ -105,21 +105,31 @@ extension MCPToolHost {
                     try? await Task.sleep(for: .milliseconds(100))
                 }
             }
-            let window = controller.windows.controller(for: stream)
-            let size = window.map { pixelSize(of: $0) }.map { [$0.0, $0.1] } ?? [0, 0]
-            let named = names(of: stream)
-            var answer = MCPOpenAnswer.answer(
-                window: id, kind: kind, package: named.package, label: named.label, opened: opened,
-                openedBy: controller.windows.ledger.openedBy(stream, asker: client), size: size, result: result)
-            if let window {
-                if answer["state"] == nil { answer["state"] = stateToken(for: window) }
-                answer["frame"] = frameObject(for: window)
-            } else {
-                if answer["state"] == nil { answer["state"] = "closed" }
-                answer["frame"] = env.lastFrame ?? FrameClock.object(seq: 0, ageMs: nil)
-            }
-            return answer
+            return openAnswer(stream, kind: kind, opened: opened, result: result, lastFrame: env.lastFrame)
         }
+    }
+
+    /// The opened-window answer for `stream` now (MCP-41). A new window's
+    /// `size` is the display the phone made (`window.opened`), known before
+    /// its first frame; a raised one keeps the size its stream has (MCP-100,
+    /// MCP-101).
+    func openAnswer(_ stream: UInt32, kind: MCPOpenAnswer.Kind, opened: MCPOpenAnswer.Opened,
+                    result: MCPActMachine.Answer, lastFrame: [String: Any]?) -> [String: Any] {
+        let window = controller.windows.controller(for: stream)
+        let made = opened == .new ? controller.windows.openedSize(stream).map { [$0.width, $0.height] } : nil
+        let size = made ?? window.map { pixelSize(of: $0) }.map { [$0.0, $0.1] } ?? [0, 0]
+        let named = names(of: stream)
+        var answer = MCPOpenAnswer.answer(
+            window: Int(stream), kind: kind, package: named.package, label: named.label, opened: opened,
+            openedBy: controller.windows.ledger.openedBy(stream, asker: client), size: size, result: result)
+        if let window {
+            if answer["state"] == nil { answer["state"] = stateToken(for: window) }
+            answer["frame"] = frameObject(for: window)
+        } else {
+            if answer["state"] == nil { answer["state"] = "closed" }
+            answer["frame"] = lastFrame ?? FrameClock.object(seq: 0, ageMs: nil)
+        }
+        return answer
     }
 
     private func names(of stream: UInt32) -> (package: String?, label: String?) {

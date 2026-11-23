@@ -14,7 +14,7 @@ import os
 import threading
 import time
 
-from common import MCP, report
+from common import MCP, mode, report
 
 
 def control(directory, line, seq=[0]):
@@ -49,14 +49,6 @@ def during_held_tap(client, window, other):
     other()
     thread.join(30)
     return box.get("reply") or {}
-
-
-def mode(args, *words):
-    """Set the fake phone's modes for the requests that follow."""
-    path = os.path.join(os.path.dirname(os.path.abspath(args.events)), "fake-mode")
-    with open(path + ".tmp", "w") as handle:
-        handle.write(" ".join(words) + "\n")
-    os.rename(path + ".tmp", path)
 
 
 def open_window(client):

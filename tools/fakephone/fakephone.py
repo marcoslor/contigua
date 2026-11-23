@@ -343,9 +343,14 @@ MEDIA_MAX_VOLUME = 15
 
 
 
+# `hold-first-frame`'s wait: past the Mac's open bound (MCP-41, 10 s).
+HOLD_FIRST_FRAME_S = 12.0
+
+
 def mode_on(args, name):
     """A settle or close flag (B1's `--never-settle`, `--settle-loading`,
-    `--ignore-ui-settle`, `--close-on-back`), from the command line or, with
+    `--ignore-ui-settle`, `--close-on-back`; `hold-first-frame` is the mode
+    file's only), from the command line or, with
     `--mode-file`, from that file's words as each request arrives: one e2e run
     switches modes without restarting the phone (plan T5, suite_act)."""
     if getattr(args, name, False):
@@ -5147,9 +5152,13 @@ class Session(object):
             if len(mine) == self.phone.args.label_after_window:
                 threading.Thread(target=self._label_later, daemon=True).start()
 
-        if self.phone.args.first_frame_delay > 0:
-            window.start_after(self.phone.args.first_frame_delay,
-                               lambda: self.windows.get(stream_id) is window)
+        # `hold-first-frame` in --mode-file: frame one waits past the Mac's
+        # 10 s open bound (MCP-41), so the open answers `opening`.
+        delay = self.phone.args.first_frame_delay
+        if mode_on(self.phone.args, "hold_first_frame"):
+            delay = max(delay, HOLD_FIRST_FRAME_S)
+        if delay > 0:
+            window.start_after(delay, lambda: self.windows.get(stream_id) is window)
         else:
             window.start(cause="open")
         if mode == "phone" and self.phone.args.rotate_after > 0:
@@ -6677,7 +6686,8 @@ def build_parser():
                         "and ui.tree marks a spinner row loading")
     p.add_argument("--mode-file", metavar="PATH",
                    help="a file of words (never-settle, settle-loading, ignore-ui-settle, "
-                        "close-on-back) read at each request, on top of those flags")
+                        "close-on-back, hold-first-frame: a new window's first frame waits "
+                        "12 s) read at each request, on top of those flags")
     p.add_argument("--close-on-back", action="store_true",
                    help="a nav back closes the stream with window.closed reason app_exited")
     p.add_argument("--ignore-task-front", action="store_true",

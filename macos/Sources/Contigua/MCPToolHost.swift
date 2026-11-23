@@ -55,8 +55,9 @@ struct MCPToolHost {
                 return .answer(phoneStatus())
             case .listApps:
                 return .answer(try listApps())
-            case .openApp(let query, let newWindow, let wait, let observe):
-                return .answer(try await openApp(query, newWindow: newWindow, wait: wait, observe: observe))
+            case .openApp(let query, let newWindow, let shape, let wait, let observe):
+                return .answer(try await openApp(query, newWindow: newWindow, shape: shape, wait: wait,
+                                                 observe: observe))
             case .listWindows:
                 return .answer(listWindows())
             case .screenshot(let window, let ref, let wait):
@@ -82,8 +83,8 @@ struct MCPToolHost {
                                                     width: width, height: height))
             case .closeWindow(let window):
                 return .answer(try closeWindow(window))
-            case .sendLink(let url, let wait, let observe):
-                return .answer(try await sendLink(url, wait: wait, observe: observe))
+            case .sendLink(let url, let shape, let wait, let observe):
+                return .answer(try await sendLink(url, shape: shape, wait: wait, observe: observe))
             case .sendFile(let path):
                 return .answer(try await sendFile(path))
             }

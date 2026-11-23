@@ -34,6 +34,15 @@ def report(ok, text):
     sys.stdout.flush()
 
 
+def mode(args, *words):
+    """Set the fake phone's modes (fakephone.py `--mode-file`, the `fake-mode`
+    file beside the events log) for the requests that follow."""
+    path = os.path.join(os.path.dirname(os.path.abspath(args.events)), "fake-mode")
+    with open(path + ".tmp", "w") as handle:
+        handle.write(" ".join(words) + "\n")
+    os.rename(path + ".tmp", path)
+
+
 def note(text):
     print("DRIVER " + text)
     sys.stdout.flush()
