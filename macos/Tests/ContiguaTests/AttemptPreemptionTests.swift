@@ -41,13 +41,19 @@ final class AttemptPreemptionTests: XCTestCase {
         XCTAssertEqual(AttemptPreemption.decide(state: nil, dialsToPair: false), .dial)
     }
 
-    /// `--connect` and `--connect-phone` may pair (the phone's Allow is the
-    /// only step), on the first dial and on every retry: a retry after `busy`
-    /// or a refused first dial is still a pairing attempt, never a pinned-only
-    /// dial that ends in `no-pin`.
-    func testTheTestEntryPointsRetryAsPairingDials_PAIR36() {
-        XCTAssertEqual(DialPolicy.pairingPolicy(for: .manualConnect), .allowed)
+    /// `--connect` may pair (the phone's Allow is the only step) while its
+    /// launch's first pairing is unresolved: a retry after `busy` or a refused
+    /// first dial is still a pairing attempt, never a pin-only dial that ends
+    /// in `no-pin`. The `--connect-phone` hook dials as it always has.
+    func testAManualConnectRetryPairsWhileTheLaunchsPairingIsOpen_PAIR36() {
+        XCTAssertEqual(DialPolicy.pairingPolicy(for: .manualConnect(launchPairing: true)), .allowed)
         XCTAssertEqual(DialPolicy.pairingPolicy(for: .testHook), .allowed)
+    }
+
+    /// After the launch's first pairing outcome a retry is pin-only: a
+    /// cancelled sheet never leaves a quiet pairing dial (pairflow PF1).
+    func testAManualConnectRetryAfterTheFirstOutcomeIsPinOnly_PAIR36() {
+        XCTAssertEqual(DialPolicy.pairingPolicy(for: .manualConnect(launchPairing: false)), .never)
     }
 
     func testAnAutomaticReconnectNeverPairs_PAIR36() {
