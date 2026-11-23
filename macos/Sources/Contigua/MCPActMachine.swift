@@ -268,8 +268,14 @@ struct MCPActMachine: Equatable {
             self.via = via
             state = .sent
             return []
-        case (.typing, .typeFailed(let code)):
-            return finish(.fail(code))
+        case (.typing, .typeFailed(let why)):
+            // The phone's own codes that are no closed MCP code (busy) are failed (MCP-6).
+            switch why {
+            case "no_field", "not_supported", "no_window", "timeout", "phone_offline":
+                return finish(.fail(why))
+            default:
+                return finish(.fail("failed"))
+            }
 
         case (.sending, .inputSent):
             state = .sent

@@ -71,14 +71,16 @@ extension MCPToolHost {
                       })
     }
 
-    /// Until T13 ships `ui.type`, the text goes on the `text` message (the
-    /// Sent path); `did` never carries the text, only its length.
-    func typeText(window id: Int, text: String, wait: MCPWait, observe: MCPObserve) async throws -> [String: Any] {
-        try await act(id, wait: wait, observe: observe,
-                      did: { MCPActDid.type(characters: text.count) },
-                      input: { window in
-                          controller.windows.session.text(stream: window.stream, text: text)
-                      })
+    /// T13 (MCP-92, MCP-109): the text goes to the phone as `ui.type`, never
+    /// as the `text` message, and neither clipboard is touched (MCP-110).
+    /// `did` never carries the text: its length, `clear`, `submit`, and the
+    /// phone's `entry` and `via`.
+    func typeText(window id: Int, text: String, clear: Bool, submit: Bool,
+                  wait: MCPWait, observe: MCPObserve) async throws -> [String: Any] {
+        try await act(id, wait: wait, observe: observe, path: .type,
+                      typing: MCPTyping(text: text, clear: clear, submit: submit),
+                      did: { MCPActDid.type(characters: text.unicodeScalars.count, clear: clear, submit: submit) },
+                      input: { _ in })
     }
 
     func pressKey(window id: Int, key: MCPKey, wait: MCPWait, observe: MCPObserve) async throws -> [String: Any] {
@@ -112,12 +114,13 @@ extension MCPToolHost {
     /// is computed when the call's turn comes (from the window's latest tree
     /// then), `input` sends it.
     private func act(_ id: Int, wait: MCPWait, observe: MCPObserve, ref: String? = nil,
-                     path: MCPActMachine.Path = .input, gestureMs: Int = 0,
+                     path: MCPActMachine.Path = .input, typing: MCPTyping? = nil, gestureMs: Int = 0,
                      did: @escaping @MainActor () -> MCPActDid,
                      input: @escaping @MainActor (StreamWindowController) async -> Void) async throws -> [String: Any] {
         let client = self.client
         let acts = controller.windowActs
-        let env = MCPHostActEnvironment(host: self, id: id, ref: ref, client: client, did: did, input: { window in
+        let env = MCPHostActEnvironment(host: self, id: id, ref: ref, typing: typing, client: client, did: did,
+                                        input: { window in
             acts.agentInput(window: UInt32(id), client: client)  // MCP-84: another_agent for any other holder
             await input(window)
         })
@@ -196,6 +199,7 @@ final class MCPHostActEnvironment: MCPActEnvironment {
     private let host: MCPToolHost
     private let id: Int
     private let ref: String?
+    private let typing: MCPTyping?
     private let did: () -> MCPActDid
     private let input: (StreamWindowController) async -> Void
     /// What the call pressed, fixed when the input went out.
@@ -214,11 +218,12 @@ final class MCPHostActEnvironment: MCPActEnvironment {
 
     private let client: MCPClientID?
 
-    init(host: MCPToolHost, id: Int, ref: String?, client: MCPClientID? = nil, did: @escaping () -> MCPActDid,
-         input: @escaping (StreamWindowController) async -> Void) {
+    init(host: MCPToolHost, id: Int, ref: String?, typing: MCPTyping? = nil, client: MCPClientID? = nil,
+         did: @escaping () -> MCPActDid, input: @escaping (StreamWindowController) async -> Void) {
         self.host = host
         self.id = id
         self.ref = ref
+        self.typing = typing
         self.client = client
         self.did = did
         self.input = input
@@ -294,7 +299,40 @@ final class MCPHostActEnvironment: MCPActEnvironment {
         }
     }
 
-    func sendType() async -> MCPActMachine.Event { .typeFailed("not_supported") }  // T13: ui.type
+    /// T13 (MCP-109): `ui.type` through the phone's read queue. The phone
+    /// types nothing when it refuses; with no answer the text may be in.
+    func sendType() async -> MCPActMachine.Event {
+        guard let typing else { return .typeFailed("failed") }
+        let stream = UInt32(id)
+        guard let window = host.controller.windows.controller(for: stream) else { return .typeFailed("no_window") }
+        let frame = host.frameObject(for: window)
+        frameAtSend = frame
+        frameAtInput = frame["seq"] as? Int
+        let reply: UITypeReply
+        do {
+            reply = try await host.controller.uiType(stream: stream, text: typing.text, clear: typing.clear,
+                                                     submit: typing.submit,
+                                                     until: .now + MCPToolHost.actDeadline())
+        } catch {
+            // MCP-84: no answer, so the text may have gone in.
+            host.controller.windowActs.agentInput(window: stream, client: client)
+            switch error {
+            case UITreeError.timedOut: return .typeFailed("timeout")
+            case UITreeError.notConnected: return .typeFailed("phone_offline")
+            default: return .typeFailed("failed")  // the client left, or the queue failed
+            }
+        }
+        guard reply.ok else {
+            let code = reply.code ?? "failed"
+            refusalError = MCPToolError.typeRefusal(code: code, window: id)
+            return .typeFailed(code)
+        }
+        host.controller.windowActs.agentInput(window: stream, client: client)
+        didNow = MCPActDid.type(characters: reply.characters ?? typing.text.unicodeScalars.count,
+                                clear: typing.clear, submit: typing.submit)
+        // A phone always names both; "unknown"/"keys" only stand in for a torn reply.
+        return .typeOK(entry: reply.entry ?? "unknown", via: reply.via ?? "keys")
+    }
 
     func settle(quietMs: Int, timeoutMs: Int, until: ContinuousClock.Instant) async -> MCPSettleResult {
         await host.settleResult(id, quietMs: quietMs, timeoutMs: timeoutMs, until: until)
@@ -377,10 +415,10 @@ struct MCPActDid {
         MCPActDid(object: ["action": "swipe", "from": from, "to": to, "ms": ms], snapshot: nil)
     }
 
-    /// Never the text: only how many characters (MCP-14).
-    static func type(characters: Int) -> MCPActDid {
-        MCPActDid(object: ["action": "type", "characters": characters, "clear": false,
-                           "submit": false], snapshot: nil)
+    /// Never the text: only how many characters, in code points (MCP-14, MCP-92).
+    static func type(characters: Int, clear: Bool, submit: Bool) -> MCPActDid {
+        MCPActDid(object: ["action": "type", "characters": characters, "clear": clear,
+                           "submit": submit], snapshot: nil)
     }
 
     static func key(_ key: String) -> MCPActDid {
@@ -427,5 +465,30 @@ enum MCPActEnvelope {
         if let waitedMs = settle.waitedMs { object["waitedMs"] = waitedMs }
         if let reason = settle.reason { object["reason"] = reason }
         return object
+    }
+}
+
+/// What `type_text` sends as `ui.type` (MCP-109). Never logged.
+struct MCPTyping {
+    let text: String
+    let clear: Bool
+    let submit: Bool
+}
+
+extension MCPToolError {
+    /// The phone's `ui.type` refusal as a closed code with design/mcp.md's
+    /// sentence; nil for a code whose generic sentence stands (MCP-6, MCP-109).
+    static func typeRefusal(code: String, window id: Int) -> MCPToolError? {
+        switch code {
+        case "no_field":
+            return MCPToolError(.noField, "Window \(id) has no focused text field. Tap the field first.",
+                                ["window": id])
+        case "not_supported":
+            return MCPToolError(.notSupported,
+                                "The focused field on window \(id) can't take this text: type only letters, digits and symbols a keyboard has, or pass clear: true to replace what is there.",
+                                ["window": id])
+        default:
+            return nil
+        }
     }
 }

@@ -219,6 +219,8 @@ final class ConnectionController {
     @ObservationIgnored private var uiSettleBroker = UISettleBroker()
     /// `ui.press` (MCP-86): each press waits for the reply carrying its seq.
     @ObservationIgnored private var uiPressBroker = UIPressBroker()
+    /// `ui.type` (MCP-109): each type waits for the reply carrying its seq.
+    @ObservationIgnored private var uiTypeBroker = UITypeBroker()
     /// MCP-9: every `ui.*` request to the phone, one at a time, in arrival order.
     @ObservationIgnored private var phoneReads = PhoneReadQueue()
     /// MCP-84: input calls on one window, one at a time across clients.
@@ -1353,6 +1355,19 @@ final class ConnectionController {
         }
     }
 
+    /// `ui.type` for a window's display (MCP-109), in the phone's read queue
+    /// (MCP-9). The text goes as keys or set text, never through either
+    /// clipboard (MCP-110).
+    func uiType(stream: UInt32, text: String, clear: Bool, submit: Bool,
+                until: ContinuousClock.Instant) async throws -> UITypeReply {
+        guard link.isOnline, let session else { throw UITreeError.notConnected }
+        return try await phoneReads.run(until: until) { [uiTypeBroker] in
+            try await uiTypeBroker.type { seq in
+                session.requestUIType(stream: stream, seq: seq, text: text, clear: clear, submit: submit)
+            }
+        }
+    }
+
     /// A tree answered to [client]: its labels become that client's `expect`s.
     func uiTreeAnswered(_ tree: UITree, client: MCPClientID?) {
         uiTreeBroker.answered(tree, client: client)
@@ -1398,6 +1413,7 @@ final class ConnectionController {
         phoneReads.fail(error)
         uiSettleBroker.fail(error)
         uiPressBroker.fail(error)
+        uiTypeBroker.fail(error)
         windowActs.linkLost()
         uiTreeBroker.fail(error)
     }
@@ -3334,6 +3350,8 @@ final class ConnectionController {
             uiSettleBroker.reply(reply)
         case .uiPress(let reply):
             uiPressBroker.reply(reply)
+        case .uiType(let reply):
+            uiTypeBroker.reply(reply)
         case .phoneState(let locked, let battery, let charging, let dnd, let ringer, let volume,
                          let volumeMax, let screen, let secure, let panel):            status = PhoneStatus(locked: locked, battery: battery, charging: charging, dnd: dnd, ringer: ringer,
                                  volume: volume, volumeMax: volumeMax, screen: screen)
@@ -5196,5 +5214,40 @@ final class ConnectionController {
             FileHandle.standardError.write(Data("--preview \(name): unknown state\n".utf8))
             exit(2)
         }
+    }
+}
+
+/// Pairs each `ui.type` with its reply by `seq`; a silent phone fails
+/// `timedOut` after the read deadline, a late reply is ignored (MCP-9).
+@MainActor
+final class UITypeBroker {
+    private var seq = 0
+    private var waiters: [Int: CheckedContinuation<UITypeReply, Error>] = [:]
+
+    func type(send: (Int) -> Void) async throws -> UITypeReply {
+        seq += 1
+        let id = seq
+        let wait = UITreeBroker.deadline
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<UITypeReply, Error>) in
+            waiters[id] = cont
+            send(id)
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+                self?.finish(id: id, .failure(UITreeError.timedOut))
+            }
+        }
+    }
+
+    func reply(_ reply: UITypeReply) { finish(id: reply.seq, .success(reply)) }
+
+    func fail(_ error: UITreeError) {
+        let waiting = Array(waiters.values)
+        waiters.removeAll()
+        for waiter in waiting { waiter.resume(throwing: error) }
+    }
+
+    private func finish(id: Int, _ result: Result<UITypeReply, Error>) {
+        guard let waiter = waiters.removeValue(forKey: id) else { return }
+        waiter.resume(with: result)
     }
 }

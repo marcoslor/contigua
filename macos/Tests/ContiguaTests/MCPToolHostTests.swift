@@ -150,7 +150,7 @@ private final class TypeTextFixture {
     /// work runs (an async test cannot spin the run loop for it).
     private func wait(until condition: () -> Bool, timeout: TimeInterval = 10) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
-        while !condition(), Date() < deadline { try? await Task.sleep(for: .milliseconds(20)) }
+        while !condition(), Date() < deadline { try? await Task.sleep(for: .milliseconds(20)) }  // real-time: polls the live controller's pairing with the fake server, to the deadline
         return condition()
     }
 

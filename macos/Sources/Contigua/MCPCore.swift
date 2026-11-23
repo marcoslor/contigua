@@ -96,7 +96,8 @@ enum MCPCall: Equatable {
                    wait: MCPWait = .settle, observe: MCPObserve = .tree)
     case swipe(window: Int, x1: Double, y1: Double, x2: Double, y2: Double, ms: Int,
                wait: MCPWait = .settle, observe: MCPObserve = .tree)
-    case typeText(window: Int, text: String, wait: MCPWait = .settle, observe: MCPObserve = .tree)
+    case typeText(window: Int, text: String, clear: Bool = false, submit: Bool = false,
+                  wait: MCPWait = .settle, observe: MCPObserve = .tree)
     case pressKey(window: Int, key: MCPKey, wait: MCPWait = .settle, observe: MCPObserve = .tree)
     /// P0 (pmaxx): tap, then time the first displayed frame that changed.
     case inputProbe(window: Int, x: Double, y: Double, width: Double?, height: Double?)
@@ -114,7 +115,7 @@ extension MCPCall {
         case .screenshot(let window, _, _), .uiTree(let window, _), .closeWindow(let window),
              .tap(let window, _, _, _, _), .tapRef(let window, _, _, _),
              .longPress(let window, _, _, _, _, _), .swipe(let window, _, _, _, _, _, _, _),
-             .typeText(let window, _, _, _), .pressKey(let window, _, _, _),
+             .typeText(let window, _, _, _, _, _), .pressKey(let window, _, _, _),
              .inputProbe(let window, _, _, _, _):
             return window
         }
@@ -253,11 +254,14 @@ enum MCPTools {
                     "ms": duration(2000), "wait": wait, "observe": observe,
                 ], required: ["window", "x1", "y1", "x2", "y2"])),
         MCPTool(name: .typeText,
-                description: "Type text into the Phone Mirror, on the same path as the keyboard.",
+                description: "Type text into the window's focused field at the cursor: what is there stays, and entry in the answer says inserted. clear: true replaces the field's text instead (entry: replaced); submit: true presses Enter after. The phone's clipboard is never used. Tap the field first if nothing is focused.",
                 schema: object([
                     "window": window,
                     "text": ["type": "string", "maxLength": 2000,
                              "description": "Up to 2000 characters."],
+                    "clear": ["type": "boolean",
+                              "description": "Replace the field's text instead of inserting at the cursor."],
+                    "submit": ["type": "boolean", "description": "Press Enter after the text."],
                     "wait": wait, "observe": observe,
                 ], required: ["window", "text"])),
         MCPTool(name: .pressKey,
@@ -349,6 +353,20 @@ enum MCPOutputSchemas {
         "treeError": string,
     ], required: ["window", "did", "on", "settle", "state", "frame"])
 
+    /// `type_text`'s envelope: `did` says how it typed and never the text
+    /// (MCP-92, MCP-109).
+    private static let typeEnvelope: [String: Any] = {
+        var envelope = actEnvelope
+        var properties = envelope["properties"] as? [String: Any] ?? [:]
+        properties["did"] = object([
+            "action": string, "characters": integer, "clear": boolean, "submit": boolean,
+            "entry": ["type": "string", "enum": ["inserted", "replaced", "unknown"]],
+            "via": ["type": "string", "enum": ["keys", "set_text"]],
+        ], required: ["action", "characters", "clear", "submit"])
+        envelope["properties"] = properties
+        return envelope
+    }()
+
     static func schema(for tool: MCPToolName) -> [String: Any] {
         switch tool {
         case .phoneStatus:
@@ -382,8 +400,10 @@ enum MCPOutputSchemas {
                            "state": stateToken, "frame": frameObject],
                           required: ["window", "ok", "truncated", "layers", "nodes",
                                      "state", "frame"])
-        case .tap, .longPress, .swipe, .typeText, .pressKey:
+        case .tap, .longPress, .swipe, .pressKey:
             return actEnvelope
+        case .typeText:
+            return typeEnvelope
         case .inputProbe:
             return object(["ok": boolean, "window": integer, "frames": integer,
                            "sent_ms": nullable("number"), "changed_ms": nullable("number"),
@@ -546,6 +566,8 @@ enum MCPArguments {
         case .typeText:
             return .typeText(window: try integer(args, "window", minimum: 1, maximum: 1_000_000),
                              text: try string(args, "text", minimum: 0, maximum: 2000),
+                             clear: try boolean(args, "clear", default: false),
+                             submit: try boolean(args, "submit", default: false),
                              wait: try wait(args), observe: try observe(args))
         case .pressKey:
             let window = try integer(args, "window", minimum: 1, maximum: 1_000_000)
