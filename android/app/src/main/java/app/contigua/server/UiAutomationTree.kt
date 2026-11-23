@@ -423,6 +423,10 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
         focus: Any? = null,
     ): UiTree.Node {
         val box = Rect().also { node.getBoundsInScreen(it) }
+        // Deprecated but still filled from the view's own drawing rect: a row
+        // its parent clips out keeps its size here (MCP-106).
+        @Suppress("DEPRECATION")
+        val inParent = Rect().also { node.getBoundsInParent(it) }
         val identity = NodeIdentity.of(node)
         seen[identity] = node
         return UiTree.Node(
@@ -431,6 +435,7 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
             desc = node.contentDescription?.toString(),
             viewId = node.viewIdResourceName,
             box = UiTree.Box(box.left, box.top, box.right, box.bottom),
+            sized = inParent.width() > 0 && inParent.height() > 0,
             clickable = node.isClickable,
             editable = node.isEditable,
             scrollable = node.isScrollable,

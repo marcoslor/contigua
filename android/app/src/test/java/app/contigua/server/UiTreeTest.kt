@@ -48,6 +48,7 @@ class UiTreeTest {
         password: Boolean = false,
         visibleToUser: Boolean = true,
         hasRange: Boolean = true,
+        sized: Boolean = !box.empty,
     ): UiTree.Node = UiTree.Node(
         role = role,
         text = text,
@@ -66,6 +67,7 @@ class UiTreeTest {
         visibleToUser = visibleToUser,
         hasRange = hasRange,
         children = children,
+        sized = sized,
     )
 
     @Test
@@ -532,6 +534,49 @@ class UiTreeTest {
         val whole = reply(listOf(layer(list(0, 4, 0))))
         assertTrue(nodes(whole).none { it.containsKey("hidden") })
         assertEquals(0, whole["omitted"])
+    }
+
+    /**
+     * [list] as the platform sends it: a View's screen bounds are clipped to
+     * its parent (`getBoundsOnScreen(…, clipToParent = true)`), so a row
+     * scrolled out arrives with an empty box — zero height at the edge, or
+     * inverted further out — and not visible to the user, while its bounds in
+     * its parent keep its size.
+     */
+    private fun clippedList(above: Int, on: Int, below: Int): UiTree.Node {
+        val rows = ArrayList<UiTree.Node>()
+        var n = 1
+        for (i in above downTo 1) rows += node(text = "Item ${n++}", clickable = true, visibleToUser = false,
+            sized = true, box = UiTree.Box(0, 0, 1_000, -400 * (i - 1)))
+        for (i in 0 until on) rows += node(text = "Item ${n++}", clickable = true,
+            box = UiTree.Box(0, 400 * i, 1_000, 400 * i + 400))
+        for (i in 0 until below) rows += node(text = "Item ${n++}", clickable = true, visibleToUser = false,
+            sized = true, box = UiTree.Box(0, 2_000 + 400 * i, 1_000, 2_000))
+        return node(role = "android.widget.ScrollView", scrollable = true,
+            box = UiTree.Box(0, 0, 1_000, 2_000), children = rows)
+    }
+
+    @Test
+    fun testRowsThePlatformClippedAreCountedNotFolded() { // [MCP-106]
+        val body = reply(listOf(layer(clippedList(3, 4, 112))))
+        val rows = nodes(body)
+        val listRow = rows.single { it["scroll"] == true }
+        assertEquals(listOf("Item 4", "Item 5", "Item 6", "Item 7"),
+            rows.filter { it["p"] == listRow["i"] }.map { it["text"] })
+        assertEquals(listOf(3, 112), listRow["hidden"])
+        assertEquals(115, body["omitted"])
+        // `offscreen` sends them `off`, with no tap point and nothing on the display to box.
+        val all = nodes(reply(listOf(layer(clippedList(3, 4, 112))), offscreen = true))
+        val off = all.filter { it["off"] == true }
+        assertEquals(115, off.size)
+        assertTrue(off.none { it.containsKey("at") || it.containsKey("box") })
+        // A node with no size of its own has no drawable bounds: folded, not counted (WIN-79).
+        val zero = node(role = "android.widget.ScrollView", scrollable = true, box = UiTree.Box(0, 0, 1_000, 2_000),
+            children = listOf(node(text = "Item 1", clickable = true, box = UiTree.Box(0, 0, 1_000, 400)),
+                node(text = "Spacer", visibleToUser = false, box = UiTree.Box(0, 900, 1_000, 900))))
+        val folded = reply(listOf(layer(zero)), offscreen = true)
+        assertEquals(listOf("Item 1"), nodes(folded).mapNotNull { it["text"] })
+        assertEquals(0, reply(listOf(layer(zero)))["omitted"])
     }
 
     @Test

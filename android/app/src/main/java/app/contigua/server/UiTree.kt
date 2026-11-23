@@ -37,6 +37,13 @@ object UiTree {
         val desc: String? = null,
         val viewId: String? = null,
         val box: Box? = null,
+        /**
+         * Whether the node has a size of its own (its bounds in its parent,
+         * `getBoundsInParent`, are not empty). The platform clips a View's
+         * screen bounds to its parent, so a list row scrolled out arrives with
+         * an empty [box] that is still a row a person could scroll to (MCP-106).
+         */
+        val sized: Boolean = box?.empty == false,
         val clickable: Boolean = false,
         val editable: Boolean = false,
         val scrollable: Boolean = false,
