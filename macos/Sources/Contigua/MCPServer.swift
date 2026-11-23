@@ -177,9 +177,12 @@ final class MCPSocketServer {
         let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
         let client = Client(fd: fd, source: source)
         source.setEventHandler { [weak self] in self?.read(client: fd) }
-        // No cancel handler closes the fd here: closeClient() closes it after any
-        // queued write, and a half-closed client cancels its read source while
-        // keeping the fd open long enough to write its pending replies.
+        // The fd closes only once the source's cancellation is done (libdispatch's
+        // rule: a number closed earlier can be reused by the next accept while the
+        // old source still watches it). closeClient() cancels from `queue`, after
+        // any write queued before it. A half-closed client suspends the source
+        // instead, so the fd stays open to write its pending replies.
+        source.setCancelHandler { close(fd) }
         clients[fd] = client
         source.resume()
         clientCount = clients.count
@@ -202,9 +205,10 @@ final class MCPSocketServer {
     /// closed). Keep the connection open to finish and write the requests already
     /// read, then close (MCP-10).
     private func halfClose(_ fd: Int32) {
-        guard let client = clients[fd] else { return }
+        // EOF keeps the source firing until it is suspended: suspend it once.
+        guard let client = clients[fd], !client.halfClosed else { return }
         client.halfClosed = true
-        client.source.cancel()     // stop the read source; the fd stays open to write
+        client.source.suspend()    // stop reading; the fd stays open to write
         client.buffer.removeAll()  // a buffered tail without a newline is dropped
         finishIfDone(client)
     }
@@ -280,11 +284,16 @@ final class MCPSocketServer {
         clientCount = clients.count
     }
 
-    /// Cancel a client's read source and close its fd after any queued write, so
-    /// a reply already being written is flushed before the socket goes away.
+    /// Cancel a client's read source from `queue`, behind any queued write, so a
+    /// reply already queued is written before the cancel handler closes the fd.
+    /// A suspended source runs that handler only once resumed.
     private func closeClient(_ client: Client) {
-        client.source.cancel()
-        queue.async { close(client.fd) }
+        nonisolated(unsafe) let source = client.source
+        let suspended = client.halfClosed
+        queue.async {
+            source.cancel()
+            if suspended { source.resume() }
+        }
     }
 
     private nonisolated static func writeAll(_ fd: Int32, _ data: Data) -> Bool {
