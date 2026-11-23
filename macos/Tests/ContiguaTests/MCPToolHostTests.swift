@@ -670,6 +670,73 @@ final class MCPToolHostTests: XCTestCase {
         XCTAssertEqual(structured["state"] as? String, "delivered")
         XCTAssertEqual(structured["bytes"] as? Int, 4096)
     }
+
+    /// [MCP-84] [MCP-109] (#262 item 14) A `ui.type` the phone answers only
+    /// after the Mac's 5 s read deadline: the call still answers `timeout` on
+    /// time, and the window's turn is held until the phone's late answer (here
+    /// before the text's own bound, 5 s + 300 × 10 ms), so a tap queued behind
+    /// it sends no TOUCH while the phone may still be typing.
+    @MainActor
+    func testATypeTextReplyTimeoutDrainsBeforeTheTurnIsFree_MCP84() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        let id = Int(try await fixture.liveWindow().stream)
+        fixture.hold("ui.type")
+        let typed = Task {
+            await fixture.call("type_text", ["window": id, "text": String(repeating: "a", count: 300),
+                                             "wait": "none", "observe": "none"])
+        }
+        let asked = await fixture.wait { !fixture.sent("ui.type").isEmpty }
+        XCTAssertTrue(asked, "no ui.type went out: \(fixture.sentTypes())")
+        let sentAt = ContinuousClock.now
+        let (answer, _) = await typed.value
+        XCTAssertEqual(error(answer)?["code"] as? String, "timeout", "\(answer)")
+        XCTAssertLessThan(ContinuousClock.now - sentAt, .milliseconds(5600), "the call did not answer on time")
+
+        let tapped = Task {
+            await fixture.call("tap", ["window": id, "x": 0.5, "y": 0.5, "wait": "none", "observe": "none"],
+                               client: MCPClientID(2), clearSent: false)
+        }
+        try await Task.sleep(until: sentAt + .milliseconds(6500), clock: .continuous)  // real-time: past the 5 s read deadline
+        XCTAssertEqual(fixture.touches, 0, "a tap went out while the phone may still be typing")
+        fixture.release("ui.type")
+        let (tap, _) = await tapped.value
+        XCTAssertEqual(tap["isError"] as? Bool, false, "\(tap)")
+        XCTAssertEqual(fixture.touches, 2)
+        XCTAssertLessThan(ContinuousClock.now - sentAt, .milliseconds(7800),
+                          "the turn waited for the bound, not for the phone's answer")
+    }
+
+    /// [MCP-84] [MCP-109] (#262 item 14) A `ui.type` the phone never answers:
+    /// the window's turn frees at the text's own bound, 5 s + 10 ms per code
+    /// point from the send (8 s for 300), and not before.
+    @MainActor
+    func testATypeTextThePhoneNeverAnswersFreesTheTurnAtItsBound_MCP84() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        let id = Int(try await fixture.liveWindow().stream)
+        fixture.hold("ui.type")
+        let typed = Task {
+            await fixture.call("type_text", ["window": id, "text": String(repeating: "a", count: 300),
+                                             "wait": "none", "observe": "none"])
+        }
+        let asked = await fixture.wait { !fixture.sent("ui.type").isEmpty }
+        XCTAssertTrue(asked, "no ui.type went out: \(fixture.sentTypes())")
+        let sentAt = ContinuousClock.now
+        let (answer, _) = await typed.value
+        XCTAssertEqual(error(answer)?["code"] as? String, "timeout", "\(answer)")
+
+        let tapped = Task {
+            await fixture.call("tap", ["window": id, "x": 0.5, "y": 0.5, "wait": "none", "observe": "none"],
+                               client: MCPClientID(2), clearSent: false)
+        }
+        try await Task.sleep(until: sentAt + .milliseconds(7500), clock: .continuous)  // real-time: short of the 8 s bound
+        XCTAssertEqual(fixture.touches, 0, "the turn freed before the text's bound")
+        let (tap, _) = await tapped.value
+        XCTAssertEqual(tap["isError"] as? Bool, false, "\(tap)")
+        XCTAssertEqual(fixture.touches, 2)
+        XCTAssertGreaterThanOrEqual(ContinuousClock.now - sentAt, .milliseconds(7900))
+    }
 }
 
 /// A real controller online with the fake phone server, which answers
