@@ -340,9 +340,17 @@ def shapes(client, deckctl, where):
         if "ResumedActivity" in l and "/" in l:
             resumed = l.split("/")[0].split()[-1]
             break
-    line("INFO", "evidence", "%s: tree ok=%s code=%s rows=%d layers=%s resumed=%s" % (
+    # The window with focus, by its system name (an activity, NotificationShade,
+    # an "Application Not Responding" dialog): a system layer over the app is
+    # named here, never read.
+    focused = "?"
+    for l in shell("dumpsys", "window").splitlines():
+        if "mCurrentFocus=" in l:
+            focused = l.split("mCurrentFocus=", 1)[1].strip().rstrip("}").split(" ")[-1]
+            break
+    line("INFO", "evidence", "%s: tree ok=%s code=%s rows=%d layers=%s resumed=%s focus=%s" % (
         where, reply.get("ok"), reply.get("code"), len(reply.get("nodes") or []),
-        [(l.get("type"), bool(l.get("active"))) for l in reply.get("layers") or []], resumed))
+        [(l.get("type"), bool(l.get("active"))) for l in reply.get("layers") or []], resumed, focused))
     for n in (reply.get("nodes") or [])[:40]:
         line("INFO", "evidence", "  %s %s" % (n.get("role"), sorted(f for f in (
             "click", "edit", "focus", "hint", "pwd", "scroll") if n.get(f))))
