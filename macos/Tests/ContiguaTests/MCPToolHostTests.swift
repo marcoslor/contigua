@@ -739,6 +739,34 @@ final class MCPToolHostTests: XCTestCase {
         XCTAssertEqual(controller.windows.openStreams.count, before + 1)
         XCTAssertNil(controller.pendingOpen)
     }
+
+    /// [MCP-44] A person's drag that fails while an agent's file is sending
+    /// does not end the agent's `send_file`: the wait hears only its own
+    /// drop's end, and the file still arrives.
+    @MainActor
+    func testAPersonsFailedDragDoesNotEndAnAgentsSendFile_MCP44() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        _ = try await fixture.liveWindow()
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("mcp-drop-\(UUID().uuidString).bin")
+        try Data(repeating: 7, count: 4096).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+
+        let call = Task { await fixture.call("send_file", ["path": file.path]) }
+        let started = await fixture.wait { !fixture.sent("drop.start").isEmpty }
+        XCTAssertTrue(started, "no drop.start went out: \(fixture.sentTypes())")
+        let id = try XCTUnwrap(fixture.sent("drop.start").first?.int("id"))
+        // The person's earlier drag resolves to nothing while the agent's file sends.
+        fixture.controller.dropSender.refuse("Couldn't read that image.", outcome: .phone("source_unreadable"))
+        try await Task.sleep(for: .milliseconds(100))  // real-time: a wrongly ended wait would answer now
+        fixture.phoneSends(["t": "drop.result", "id": id, "ok": true, "path": "Download/Contigua/x.bin"])
+        let (answer, _) = await call.value
+
+        XCTAssertEqual(answer["isError"] as? Bool, false, "send_file failed: \(answer)")
+        let structured = try XCTUnwrap(answer["structuredContent"] as? [String: Any])
+        XCTAssertEqual(structured["state"] as? String, "delivered")
+        XCTAssertEqual(structured["bytes"] as? Int, 4096)
+    }
 }
 
 /// A real controller online with the fake phone server, which answers
