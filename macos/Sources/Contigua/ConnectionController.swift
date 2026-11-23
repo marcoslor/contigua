@@ -2730,9 +2730,14 @@ final class ConnectionController {
         guard let record = book.record(for: id) else { return }
         record.attemptTask = nil
         guard let ref = record.machine.link.phone, !isPairing(on: id) else { return }
-        // A preempted attempt that has not authenticated is cancelled, never leaked.
-        if let session = record.session, session.state != .ready { session.close() }
-        if record.session?.state == .ready { return }
+        // PAIR-36: a pairing dial in flight is left alone; any other attempt
+        // that has not authenticated is cancelled, never leaked.
+        switch AttemptPreemption.decide(state: record.session?.state,
+                                        dialsToPair: record.session?.dialsToPair ?? false) {
+        case .leave: return
+        case .replace: record.session?.close()
+        case .dial: break
+        }
         // A test profile never dials a Bonjour-discovered phone on its own:
         // discovery would find the real phones on this Mac's LAN (DialPolicy).
         let found = DialPolicy.mayDialDiscovered(profile)
@@ -2746,7 +2751,7 @@ final class ConnectionController {
                           identity: identity, pinnedPhone: pins.record(for: ref.id),
                           pinStore: pins,
                           onPinEstablished: { [weak self] record in self?.mirrorIdentityPin(record: record) }),
-                  for: record, policy: .allowed)
+                  for: record, policy: DialPolicy.pairingPolicy(for: .testHook))
             return
         }
         if found == nil, let connect = options.connect, id == book.currentId {
@@ -2757,7 +2762,7 @@ final class ConnectionController {
                           identity: identity, pinnedPhone: pins.record(for: ref.id),
                           pinStore: pins,
                           onPinEstablished: { [weak self] record in self?.mirrorIdentityPin(record: record) }),
-                  for: record, policy: .never)
+                  for: record, policy: DialPolicy.pairingPolicy(for: .manualConnect))
             return
         }
         let cached = cache.address(forDeviceId: ref.id)
@@ -2789,7 +2794,7 @@ final class ConnectionController {
                       clientId: clientId, identity: identity, pinnedPhone: pins.record(for: ref.id),
                       pinStore: pins,
                       onPinEstablished: { [weak self] record in self?.mirrorIdentityPin(record: record) }),
-              for: record, policy: .never)
+              for: record, policy: DialPolicy.pairingPolicy(for: .automatic))
     }
 
     /// identity.json's §3 `pin` mirrors the fingerprint of the phone in use.
