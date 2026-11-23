@@ -282,16 +282,18 @@ def keyboard_down():
 
 def picker(client, window):
     """The Files picker, read with a settle; prints the Mac's and the phone's times."""
+    # Quoted for the guest's shell, which would expand a bare */* into paths.
     shell("am", "start", "-W", "--display", "0", "-a", "android.intent.action.OPEN_DOCUMENT",
-          "-c", "android.intent.category.OPENABLE", "-t", "*/*")
+          "-c", "android.intent.category.OPENABLE", "-t", "'*/*'")
     started = time.time()
     tree = tree_of(client, window, wait="settle")
     took = int((time.time() - started) * 1000)
+    package = resumed()
     evidence("files", tree)
-    print("  files: resumed %s, %d rows, ui_tree settle+read %d ms on the Mac" % (resumed(), len(rows(tree)), took))
+    print("  files: resumed %s, %d rows, ui_tree settle+read %d ms on the Mac" % (package, len(rows(tree)), took))
     print("  files: phone %s" % phone_ui("settle"))
     print("  files: phone %s" % phone_ui("tree"))
-    return tree, took
+    return tree, took, "documentsui" in package
 
 def search_of(tree):
     return next((r for r in rows(tree) if r.get("ref") and r.get("at") and not r.get("edit")
@@ -325,8 +327,8 @@ try:
         # The Files picker's search, when Contacts shows none (a first-run screen
         # is left alone: never an account step).
         shell("input", "keyevent", "KEYCODE_BACK")
-        tree, took = picker(client, mirror)
-        files = (len(rows(tree)), took)
+        tree, took, shown = picker(client, mirror)
+        files = (shown, len(rows(tree)), took)
         search = search_of(tree)
         print("  files: search %s" % (search is not None))
     report(search is not None, "a search control is on screen (%d rows)" % len(rows(tree)))
@@ -361,10 +363,11 @@ try:
 
     # 2. The Files picker, when step 1 did not already read it; nothing is opened.
     if files is None:
-        tree, took = picker(client, mirror)
-        files = (len(rows(tree)), took)
+        tree, took, shown = picker(client, mirror)
+        files = (shown, len(rows(tree)), took)
         shell("input", "keyevent", "KEYCODE_BACK")
-    report(files[0] > 0, "the Files picker's settled tree answers (%d rows, %d ms)" % files)
+    report(files[0] and files[1] > 0, "the Files picker is resumed and its settled tree answers (%d rows, %d ms)"
+           % files[1:])
 
     # 3. A long view-based list: Settings' home. Nothing is switched.
     report(keyboard_down(), "the keyboard is down before the list is read")
