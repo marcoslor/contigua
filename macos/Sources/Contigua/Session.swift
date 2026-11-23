@@ -460,7 +460,12 @@ final class Session {
     /// rejoin after an outage, so the phone resends its active set. A box
     /// because the controller sets it from main and the session queue reads it.
     private let notifyEnabled = SessionLockedBox(value: false)
-    private var pairingAttempt = false
+    /// PAIR-36: whether this session's dial pairs, the decision `doConnect`
+    /// made (nil until it has). A box because the attempt scheduler reads it
+    /// from main (`dialsToPair`) while the session queue owns the dial: the
+    /// welcome stores the pin before the session is ready, so a recomputation
+    /// in that gap would read "pinned, not pairing" (#241 review).
+    private let pairingAttempt = SessionLockedBox<Bool?>(value: nil)
     /// The founding path's phone identity, for the pairing pin record.
     private var foundingPeerPin = ""
     private var foundingPeerCert: NIOSSLCertificate?
@@ -566,12 +571,14 @@ final class Session {
         // open: the dial needs it (N1). One line per session, once the
         // socket exists, so `net_svc` can be read back.
         netStrategy = MacStreamStrategy.read(from: Profile.active.defaults).net
+        pairingAttempt.set(nil)
         transition(.connecting, nil)
         queue.async { [weak self] in self?.doConnect() }
     }
 
     /// The pin this dial authenticates with: the owner's record, else the
     /// shared store's for the remembered id; nil means the dial pairs.
+    /// Session queue only: it reads the welcome's `knownDeviceIdReal`.
     private func resolvedPin() -> PinnedPhoneV2? {
         if let pinnedPhone { return pinnedPhone }
         guard let store = phonePinStore, let id = knownDeviceId ?? strictDeviceId else { return nil }
@@ -579,10 +586,16 @@ final class Session {
     }
 
     /// PAIR-36: this session dials to pair — no pin, and its policy lets the
-    /// phone show a prompt — the same decision `doConnect` makes. The attempt
-    /// scheduler leaves such a dial alone while it is in flight.
+    /// phone show a prompt. Once `doConnect` has decided, it is that decision,
+    /// so the pin the welcome stores before ready never turns a pairing dial
+    /// into one a due attempt replaces. Before that it is the same decision
+    /// from the inputs the dial will read: the remembered id the owner gave
+    /// (no welcome has set a real one yet) and the shared store. Any thread.
     var dialsToPair: Bool {
-        pairingPolicy == .allowed && resolvedPin() == nil
+        if let decided = pairingAttempt.get() { return decided }
+        guard pairingPolicy == .allowed, pinnedPhone == nil else { return false }
+        guard let store = phonePinStore, let id = knownDeviceFor ?? strictDeviceId else { return true }
+        return store.record(for: id) == nil
     }
 
     private func doConnect() {
@@ -597,7 +610,7 @@ final class Session {
             Log.session.notice("no pin for \(self.describeEndpoint(), privacy: .public); not connecting automatically")
             fail("no-pin"); return
         }
-        pairingAttempt = pinned == nil && pairingPolicy == .allowed
+        pairingAttempt.set(pinned == nil && pairingPolicy == .allowed)
 
         if dialGroup == nil {
             dialGroup = injectedGroup.map { DialGroup(group: $0, owned: false) }
@@ -839,7 +852,8 @@ final class Session {
             "videoChunks": true,
         ]
         if let join { hello["join"] = join }
-        if pairingAttempt, join == nil { hello["pair"] = true }
+        let pairing = pairingAttempt.get() == true
+        if pairing, join == nil { hello["pair"] = true }
         // Through the one recorder, so `ready --hello--> hello` is logged like
         // every other attempt transition (R-14): the machine call here was
         // silent.
@@ -848,7 +862,7 @@ final class Session {
         if join == nil {
             preWelcomeSender.set(send)
             exporterProvider = attempt.exporter
-            if pairingAttempt {
+            if pairing {
                 send(Frame(type: MessageType.json.rawValue, stream: 0,
                            payload: JSONFrame.payload(["t": "pair.request"])).encoded)
             }
