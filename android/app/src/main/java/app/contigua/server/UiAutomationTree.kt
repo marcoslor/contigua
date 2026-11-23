@@ -31,7 +31,11 @@ import kotlin.concurrent.withLock
  * `UiAutomationConnection` is the platform's own. Nothing here reads a node's
  * text into a log; only counts and codes leave.
  */
-internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSource, UiPressSource, UiTypeSource, FocusedFieldSource {
+internal class UiAutomationTree(
+    private val log: (String) -> Unit,
+    /** Tests only: stands in for [connect] (the platform's hidden connection). */
+    private val connector: (() -> UiAutomation)? = null,
+) : UiTreeSource, UiPressSource, UiTypeSource, FocusedFieldSource {
 
     private val lock = Any()
     private val startLock = Any()
@@ -332,13 +336,13 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
      * The one connection, made once. Another client taking the automation
      * makes the next read fail, and [restart] gives this one a fresh connection.
      */
-    private fun ensureAutomation(): UiAutomation? {
+    internal fun ensureAutomation(): UiAutomation? {
         synchronized(lock) { automation?.let { return it } }
         startThread()
         val gate = CountDownLatch(1)
         val posted = handler?.post {
             val made = try {
-                connect()
+                connector?.invoke() ?: connect()
             } catch (t: Throwable) {
                 synchronized(lock) { failure = sentence(t) } // WIN-79 F10: under the lock
                 log(connectFailureLine(t)) // log-ok: class names only
