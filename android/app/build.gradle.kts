@@ -117,6 +117,15 @@ dependencies {
 // Screenshot tests record PNGs into app/src/test/screenshots (commit-ready).
 tasks.withType<Test>().configureEach {
     systemProperty("roborazzi.test.record", "true")
+    // A failure names its class, test and message in the log, so it survives
+    // the report artifact's expiry. Set for both levels: CI runs Gradle with -q.
+    testLogging {
+        listOf(quiet, lifecycle).forEach {
+            it.events(org.gradle.api.tasks.testing.logging.TestLogEvent.FAILED)
+            it.exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+            it.showStackTraces = true
+        }
+    }
 }
 
 // Runs the C4 harness (see tools/fakephone/deckctl.py) on the JVM with the same

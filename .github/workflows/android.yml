@@ -30,4 +30,4 @@ jobs:
         with:
           name: k1-reports
           path: android/app/build/reports/tests
-          retention-days: 3
+          retention-days: 30
