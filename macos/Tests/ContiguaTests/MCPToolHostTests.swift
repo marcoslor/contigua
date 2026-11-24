@@ -645,6 +645,34 @@ final class MCPToolHostTests: XCTestCase {
         XCTAssertNotEqual(first.stream, 0)
     }
 
+    /// [MCP-42] The phone's own refusal at its window cap answers as the
+    /// Mac's does: `too_many_windows` with `maxWindows` and the table's sentence.
+    @MainActor
+    func testThePhonesCapRefusalCarriesMaxWindows_MCP42() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        _ = try await fixture.liveWindow()
+        await fixture.sendApps([Self.settingsMulti])
+        let windows = fixture.controller.windows
+        windows.setMaxWindows(3)
+        let before = Set(windows.openStreams)
+
+        let opening = Task {
+            await fixture.call("open_app", ["app": "Settings", "newWindow": true,
+                                            "wait": "none", "observe": "none"])
+        }
+        let asked = await fixture.wait { windows.openStreams.count == before.count + 1 }
+        XCTAssertTrue(asked, "no second window was opened: \(fixture.sentTypes())")
+        let stream = try XCTUnwrap(Set(windows.openStreams).subtracting(before).first)
+        fixture.phoneSends(["t": "error", "code": "too_many_windows", "stream": Int(stream)])
+        let (answer, _) = await opening.value
+        let failure = try XCTUnwrap(error(answer), "the phone's refusal did not fail the call: \(answer)")
+        XCTAssertEqual(failure["code"] as? String, "too_many_windows")
+        XCTAssertEqual(failure["maxWindows"] as? Int, 3)
+        XCTAssertEqual(failure["message"] as? String,
+                       "The phone allows 3 app windows at once. Close one with close_window, then try again.")
+    }
+
     /// [MCP-42] `newWindow: true` while a window of the app is still opening
     /// fails `not_ready` naming that window, and opens nothing.
     @MainActor
