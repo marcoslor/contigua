@@ -259,6 +259,87 @@ final class PathSessionTests: XCTestCase {
         XCTAssertEqual(Set(["a"]), machine.standby)
     }
 
+    // MARK: PATH-54: a path whose answers are always late
+
+    /// One E-9 orphan on `b` and its late answer; returns the revive's actions.
+    @discardableResult
+    private func cycle(_ machine: inout PathSessionMachine, orphanAt t: TimeInterval) -> [PathSessionAction] {
+        _ = machine.handle(.pongLost(id: "b"), now: t)
+        XCTAssertEqual(machine.state, .orphaned(since: t), "no orphan at \(t)")
+        return machine.handle(.standbyAnswered(id: "b"), now: t + 0.5)
+    }
+
+    private func lateAnswerer() -> PathSessionMachine {
+        PathSessionMachine(state: .live(current: "b"), live: ["a", "b"],
+                           standby: ["a"], scores: ["a": 300, "b": 700])
+    }
+
+    /// Up to three revives by one path's answers within 30 s: each brings the
+    /// session back (the path does carry frames).
+    func testALatePathRevivesTheSessionThreeTimesWithinTheGrace_PATH54() {
+        var machine = lateAnswerer()
+        for t in [10.0, 14, 18] {
+            XCTAssertEqual(cycle(&machine, orphanAt: t),
+                           [.switchTo(path: "b"), .replayFromLastAck,
+                            .requestKeyframes, .ranking(.externalSwitch("b"))], "revive after \(t)")
+            XCTAssertEqual(machine.state, .live(current: "b"))
+        }
+    }
+
+    /// The fourth orphan within 30 s of those revives is not revived by that
+    /// path's answer, so its own grace runs out and the session ends instead
+    /// of cycling (and restarting the grace) for ever.
+    func testAFourthOrphanWithinTheGraceIsNotRevivedByTheSamePath_PATH54() {
+        var machine = lateAnswerer()
+        for t in [10.0, 14, 18] { cycle(&machine, orphanAt: t) }
+        XCTAssertEqual(cycle(&machine, orphanAt: 22), [])
+        XCTAssertEqual(machine.state, .orphaned(since: 22))
+        // The refusal holds for the whole orphan, even once the revives age out.
+        XCTAssertEqual(machine.handle(.standbyAnswered(id: "b"), now: 45), [])
+        XCTAssertEqual(machine.state, .orphaned(since: 22))
+        XCTAssertEqual(Set(["a", "b"]), machine.live, "refused, never detached")
+        XCTAssertEqual(machine.handle(.graceExpired, now: 52), [.end(reason: "graceExpired")])
+        XCTAssertEqual(machine.state, .ended(reason: "graceExpired"))
+    }
+
+    /// Only revives in the 30 s before the orphan began count: the window
+    /// slides, so a path that is late now and then keeps reviving.
+    func testOnlyRevivesWithinTheGraceBeforeTheOrphanCount_PATH54() {
+        var machine = lateAnswerer()
+        for t in [10.0, 14, 18] { cycle(&machine, orphanAt: t) }
+        // 10.5 is 30.5 s before 41: two revives in the window.
+        XCTAssertFalse(cycle(&machine, orphanAt: 41).isEmpty, "two revives in the window")
+        // 14.5 is 30.5 s before 45: 18.5 and 41.5 remain.
+        XCTAssertFalse(cycle(&machine, orphanAt: 45).isEmpty, "two revives in the window")
+        // 18.5, 41.5 and 45.5 are all within 30 s of 47.
+        XCTAssertEqual(cycle(&machine, orphanAt: 47), [], "three revives in the window")
+        XCTAssertEqual(machine.state, .orphaned(since: 47))
+    }
+
+    /// The count is the path's own: another attached path's answer still
+    /// revives an orphan the late path may no longer revive.
+    func testAnotherPathsAnswerStillRevivesTheSession_PATH54() {
+        var machine = lateAnswerer()
+        for t in [10.0, 14, 18] { cycle(&machine, orphanAt: t) }
+        XCTAssertEqual(cycle(&machine, orphanAt: 22), [])
+        XCTAssertEqual(machine.handle(.standbyAnswered(id: "a"), now: 23),
+                       [.switchTo(path: "a"), .replayFromLastAck,
+                        .requestKeyframes, .ranking(.externalSwitch("a"))])
+        XCTAssertEqual(machine.state, .live(current: "a"))
+    }
+
+    /// A new path that reuses a closed one's id starts with no revives.
+    func testANewPathWithAReusedIdStartsWithNoRevives_PATH54() {
+        var machine = lateAnswerer()
+        for t in [10.0, 14, 18] { cycle(&machine, orphanAt: t) }
+        _ = machine.handle(.pathDown(id: "b"), now: 19)
+        XCTAssertEqual(machine.state, .orphaned(since: 19))
+        _ = machine.handle(.pathUp(id: "b", joined: true), now: 20)
+        XCTAssertEqual(machine.state, .live(current: "b"))
+        XCTAssertFalse(cycle(&machine, orphanAt: 22).isEmpty, "the new b has no history")
+        XCTAssertEqual(machine.state, .live(current: "b"))
+    }
+
     func testAPathDownForAnotherPathKeepsTheSessionLive() {
         var machine = machine(live: ["a", "b"])
         XCTAssertEqual(machine.handle(.pathDown(id: "b"), now: 1),
