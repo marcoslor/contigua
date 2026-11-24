@@ -587,6 +587,11 @@ The task sections below are grouped by area; the schedule above is the order.
 ## T9 — Read less: text view, find, `list_apps` query
 
 - **Closes** #170. **Rows** MCP-34, MCP-74, MCP-75, MCP-104 (text view), MCP-106 (`find` over off-screen nodes, `in`, the text view's counts) (and MCP-72's tool half via T10's parse). **Wire** consumes B6's `offscreen` request. **Review** normal.
+- **Tools table.** T2 left `list_apps` and `ui_tree` in design/mcp.md's tools
+  table without T9's arguments, so `tools/list` never offers an argument the
+  server refuses. T9 adds `query`, `limit`, `format` and `find` back to those
+  two rows, both columns, with the descriptions that say what they do
+  (`testDescriptionsMatchTheDesignDoc` holds the two equal).
 - **Files** `MCPCore.swift` (`list_apps` `query`/`limit`, `ui_tree` `format`/`find`,
   `observe: "text"` on input tools), new `UITreeText.swift` (text view and
   find, pure; `in` from the nearest `scroll` ancestor by `p`),
