@@ -30,7 +30,17 @@ struct MCPWaitAnswer {
     var match: [String: Any]?
     var reason: String?
     var tree: [String: Any]?
+    var text: String?
     var treeError: String?
+
+    /// The observed read as [observe] shows it (MCP-82).
+    mutating func observed(_ read: [String: Any], _ observe: MCPObserve) {
+        switch observe {
+        case .tree: tree = read
+        case .text: text = UITreeText.text(answer: read)
+        case .none: break
+        }
+    }
 
     func object(window: Int) -> [String: Any] {
         var object: [String: Any] = ["window": window, "waitedMs": waitedMs]
@@ -38,6 +48,7 @@ struct MCPWaitAnswer {
         if let match { object["match"] = match }
         if let reason { object["reason"] = reason }
         if let tree { object["tree"] = tree }
+        if let text { object["text"] = text }
         if let treeError { object["treeError"] = treeError }
         return object
     }
@@ -141,7 +152,7 @@ enum MCPWaitRunner {
                     if let lastBusy { return .fail(lastBusy) }
                     await env.pause(untilMs: end)
                     var answer = MCPWaitAnswer(waitedMs: env.nowMs() - start, until: "timeout")
-                    if observe == .tree { answer.tree = lastTree }
+                    if let lastTree { answer.observed(lastTree, observe) }
                     return .answer(answer)
                 }
                 await env.pause(untilMs: next)
@@ -157,7 +168,7 @@ enum MCPWaitRunner {
                     if gone ? found == nil : found != nil {
                         var answer = MCPWaitAnswer(waitedMs: env.nowMs() - start, until: "met",
                                                    match: gone ? nil : found)
-                        if observe == .tree { answer.tree = tree }
+                        answer.observed(tree, observe)
                         return .answer(answer)
                     }
                 }
@@ -193,9 +204,9 @@ enum MCPWaitRunner {
 
     private static func observeRead(_ answer: inout MCPWaitAnswer, observe: MCPObserve,
                                     env: MCPWaitEnvironment, until: Int) async {
-        guard observe == .tree else { return }
+        guard observe != .none else { return }
         switch await env.readTree(untilMs: until) {
-        case .tree(let tree): answer.tree = tree
+        case .tree(let tree): answer.observed(tree, observe)
         case .failed(let code): answer.treeError = code
         }
     }

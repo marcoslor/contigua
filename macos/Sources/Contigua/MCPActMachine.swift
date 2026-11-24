@@ -15,10 +15,10 @@ enum MCPWait: String, Equatable, CaseIterable {
     case settle, none
 }
 
-/// `observe`: the screen an action returns after its settle (MCP-82). The
-/// `text` view (MCP-74) ships with T9.
+/// `observe`: the screen an action returns after its settle (MCP-82): the
+/// `ui_tree` answer, its text view (MCP-74), or none.
 enum MCPObserve: String, Equatable, CaseIterable {
-    case tree, none
+    case tree, text, none
 }
 
 struct MCPActMachine: Equatable {
@@ -372,7 +372,8 @@ struct MCPActMachine: Equatable {
 
     private mutating func observeOrAnswer() -> [Action] {
         switch observe {
-        case .tree:
+        case .tree, .text:
+            // `text` reads the same tree; the answer shows its text view (MCP-82).
             let req = takeReq()
             state = .observing(req)
             return [.sendTree(req: req)]

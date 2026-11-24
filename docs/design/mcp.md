@@ -126,8 +126,8 @@ that names the next step. Extra fields depend on the code:
 | `off_screen` | the ref's node is off the display (F9, MCP-106) | <ref> is off screen: scroll it into view and read the tree again. | `window`, `ref`, `in` (its scrollable's ref) when known |
 | `covered` | the ref's element is under another one at the press (MCP-89) | <ref> is covered by <cover ref \| another window>, so nothing was pressed. Close or move what covers it, then call ui_tree. | `window`, `ref`, `snapshot`, `coveredBy` (a ref or `"window"`) |
 | `no_field` | `type_text` needs a focused field and none has input focus (MCP-109) | Window <id> has no focused text field. Tap the field first. | `window` |
-| `not_found` | no app matches | No app on the phone matches "<query>". Call list_apps and pass its package as app. (T9: "Call list_apps with a query to find it.") | — |
-| `ambiguous` | several apps match | Several apps match "<query>". Pass one of these packages as app. — or, where no list is at hand: Several apps match "<query>". Call list_apps and pass one package as app. (T9: "…with a query to see them.") | `matches: [{label, package}]` (empty in the second form) |
+| `not_found` | no app matches | No app on the phone matches "<query>". Call list_apps with a query to find it. | — |
+| `ambiguous` | several apps match | Several apps match "<query>". Pass one of these packages as app. — or, where no list is at hand: Several apps match "<query>". Call list_apps with a query to see them. | `matches: [{label, package}]` (empty in the second form) |
 | `too_many_windows` | the phone's window cap is reached | The phone allows <n> app windows at once. Close one with close_window, then try again. | `maxWindows` |
 | `bad_url` | LinkPolicy refused the URL | That link can't be opened: only http, https, geo, tel and mailto links up to 8 KiB are allowed. | — |
 | `bad_file` | the path is missing, unreadable, not a regular file or over the cap | That file can't be sent: it must be an absolute path to a readable regular file of at most <cap>. | — |
@@ -181,8 +181,8 @@ Two arguments recur on every tool that acts or opens:
   until the window's accessibility tree has not changed for 300 ms, at most 2 s
   (MCP-81).
 - `observe`: `"tree"` (the default), `"text"` or `"none"`: what screen to
-  return after the settle (MCP-82). `"text"` is taken once T9 ships the text
-  view (MCP-74); until then the argument is `"tree"` or `"none"`.
+  return after the settle (MCP-82). `"text"` returns that read as `ui_tree`'s
+  text view (MCP-74), a string in `text`, in place of `tree`.
 
 `open_app` and `send_link` also take `shape`: `"phone"` (the default for a new
 window) or `"window"` (MCP-100, "A window an agent opens" below).
@@ -190,14 +190,14 @@ window) or `"window"` (MCP-100, "A window an agent opens" below).
 | tool | arguments | description |
 |---|---|---|
 | `phone_status` | — | The phone in use: connected or not, its name, battery, screen and lock state, the app in front on the phone's own screen, and how many windows are open. App windows take input whether or not the phone is locked. |
-| `list_apps` | — | Apps on the phone that can be opened, as label and package. |
+| `list_apps` | `query`?, `limit`? (1–500, default 20 with `query`) | Apps on the phone that can be opened, as label and package. query keeps only the apps whose label or package contains it, ignoring case and accents, those whose label starts with it first; total says how many matched, and at most limit (default 20) are listed. |
 | `open_app` | `app`, `newWindow`?, `shape`? (`"phone"`/`"window"`), `wait`?, `observe`? | Open a phone app in a window on this Mac, or bring its window to the front if it has one, and return that window and the screen it shows. The app opens on whatever screen it last showed. A new window has the phone's shape unless shape is "window"; a window brought to the front keeps its shape, and size says what it is. newWindow: true opens a second window of an app that allows it. |
 | `send_link` | `url`, `shape`?, `wait`?, `observe`? | Open a link (http, https, geo, tel or mailto) on the phone in a new window, in the app the phone picks, and return that window and the screen it shows. The window has the phone's shape unless shape is "window". |
 | `send_file` | `path` | Copy one file from this Mac to the phone's Download/Contigua folder and wait until the phone has it. Nothing on the phone is replaced or removed. |
 | `list_windows` | — | Every open window: its id, what it shows, who opened it (you, another agent, the person or the app itself), its state and how fresh its picture is, and the windows that closed in the last 10 minutes with the reason. A window id is a handle, never reused for another window while Contigua runs. |
 | `close_window` | `window`, `force`? | Close a window. On the phone this ends the app's screen on that window's own display; the app is not uninstalled and its data (a browser's tabs, a document) stays. A window the person opened needs force: true. |
 | `screenshot` | `window`, `ref`?, `wait`? | A PNG of the window, from a frame the phone sends after this call (never an older one), longest side at most 1280 px. ui_tree's box values are in the window's pixels (size), not the image's. Pass ref to get only that element. |
-| `ui_tree` | `window`, `wait`? (default `"none"`) | What the window shows, as accessibility nodes in reading order: text, role, view id, states, a tap point (at, 0..1) and a ref for tap; box is in the display's pixels (size). A ref names one element for as long as it is on screen, across reads; a ref whose element is gone is refused. Only what is on screen is listed: a list says how many items it hides before and after; swipe the list to reach them. A field showing its hint has hint: true and no text. loading: true means the screen is still loading. Exact, and cheaper than a screenshot for finding what to press. |
+| `ui_tree` | `window`, `wait`? (default `"none"`), `format`? (`"tree"`/`"text"`), `find`? | What the window shows, as accessibility nodes in reading order: text, role, view id, states, a tap point (at, 0..1) and a ref for tap; box is in the display's pixels (size). A ref names one element for as long as it is on screen, across reads; a ref whose element is gone is refused. Only what is on screen is listed: a list says how many items it hides before and after; swipe the list to reach them. A field showing its hint has hint: true and no text. loading: true means the screen is still loading. Exact, and cheaper than a screenshot for finding what to press. find keeps only the nodes whose text, description or view id contains it, ignoring case and accents, off-screen ones included (off: true, no at, and in names the list to swipe), and says how many matched of the total. format: "text" answers text instead of nodes: one line per label in reading order, # before a heading, and [ref role states] after what can be acted on. |
 | `wait` | `window`, one of `ms` (1–30000), `text` (+ `gone`?) or `settle: true`; `timeoutMs`? (≤ 30000, default 10000), `observe`? | Wait on a window: for ms milliseconds, until text appears on it (with gone: true, until it disappears), or with settle: true until it stops changing and nothing on it is loading, at most timeoutMs; if timeoutMs ends first, reason says whether it was still loading. Use this instead of sleeping or re-reading the tree as a clock. |
 | `tap` | `window`, `ref` or `x`+`y`, `holdMs`? (1–3000), `wait`?, `observe`? | Tap an element by its ref from ui_tree (preferred), or a point x, y (0..1 of the window); holdMs makes it a long press. A ref names one element for as long as it is on screen, across reads; a ref whose element is gone is refused. A ref whose element is off screen or covered is refused too, and nothing is pressed. The answer names what was pressed (its role and label). By default the call waits for the screen to settle and returns the new tree. |
 | `swipe` | `window`, `direction` (+ `ref`?) or `x1`,`y1`,`x2`,`y2`; `ms`? (1–2000, default 300), `wait`?, `observe`? | Swipe in a window. direction is the way the finger moves (swipe up to see what is further down), through the centre of ref's element or of the window; or give the points x1,y1 to x2,y2. By default the call waits for the screen to settle and returns the new tree. |
@@ -238,7 +238,7 @@ closed token is listed in the spec row cited.
 - `state`: `opening`, `live`, `paused`, `stalled`, `offline`, `closed` (MCP-21).
 - `alsoActed?`: `person`, `another_agent` — other input that reached the window during this call (MCP-84).
 - `closed?`: when the window closed during the call, `{reason, closedBy}` (MCP-83); then `state: "closed"`, `settle.state: "window_closed"`, and no `tree`.
-- `tree?` (observe `tree`), `text?` (observe `text`), `treeError?` (a code, when that read failed after the action: MCP-82).
+- `tree?` (observe `tree`), `text?` (observe `text`: the text view of that read, a string), `treeError?` (a code, when that read failed after the action: MCP-82).
 
 A `press_key back` that ends the app:
 
@@ -347,7 +347,7 @@ Mac scales it by frame/`size` to cut the decoded frame. `crop` only with `ref`, 
 `until` is `met` or `timeout`, absent for a plain `ms` wait; `match` only when
 met on `text` (none with `gone: true`), the first node whose text or
 description contains it ignoring case and accents, with its own text; `reason` (`loading` or `changes`) only
-for a `settle: true` wait that timed out. `tree` is the `observe` read: after
+for a `settle: true` wait that timed out. `tree` (or `text`) is the `observe` read: after
 the clock or the settle, or the poll's last read for `text`; `treeError` when
 that read failed. The tree is read at most every 500 ms, each read in the
 phone's read queue (MCP-9) and bounded by the call (MCP-8): `ms` + 3 s, or

@@ -24,6 +24,45 @@ final class MCPToolHostTests: XCTestCase {
         XCTAssertEqual((answer?["apps"] as? [[String: String]])?.first?["package"], "com.android.settings")
     }
 
+    // [MCP-34] A query keeps the apps whose label or package holds it,
+    // label-prefix matches first, then the other label matches, then the
+    // package-only ones; `total` counts them all, whatever `limit` keeps.
+    func testListAppsFiltersAndRanksPrefixesFirst() throws {
+        let apps = [
+            AppInfo(json: ["pkg": "org.example.mycalc", "label": "My Calc"])!,
+            AppInfo(json: ["pkg": "com.example.calc", "label": "Numbers"])!,
+            AppInfo(json: ["pkg": "com.google.android.calendar", "label": "Calendar"])!,
+            AppInfo(json: ["pkg": "com.google.android.calculator", "label": "Calculator"])!,
+        ]
+        func labels(_ answer: [String: Any]) -> [String] {
+            (answer["apps"] as? [[String: String]] ?? []).compactMap { $0["label"] }
+        }
+        let calc = try MCPToolHost.appsAnswer(apps, query: "calc", limit: nil)
+        XCTAssertEqual(labels(calc), ["Calculator", "My Calc", "Numbers"])
+        XCTAssertEqual(calc["total"] as? Int, 3)
+        let folded = try MCPToolHost.appsAnswer(apps, query: "C\u{C1}LC", limit: nil)
+        XCTAssertEqual(labels(folded), ["Calculator", "My Calc", "Numbers"], "case and diacritics")
+
+        let all = try MCPToolHost.appsAnswer(apps, query: nil, limit: nil)
+        XCTAssertEqual(labels(all), ["Calculator", "Calendar", "My Calc", "Numbers"])
+        XCTAssertEqual(all["total"] as? Int, 4)
+
+        let one = try MCPToolHost.appsAnswer(apps, query: "calc", limit: 1)
+        XCTAssertEqual(labels(one), ["Calculator"])
+        XCTAssertEqual(one["total"] as? Int, 3)
+
+        let many = (1...25).map { AppInfo(json: ["pkg": "com.example.tool\($0)", "label": "Tool \($0)"])! }
+        let capped = try MCPToolHost.appsAnswer(many, query: "tool", limit: nil)
+        XCTAssertEqual(labels(capped).count, 20, "a query answers at most 20 by default")
+        XCTAssertEqual(capped["total"] as? Int, 25)
+        XCTAssertEqual(labels(try MCPToolHost.appsAnswer(many, query: nil, limit: nil)).count, 25,
+                       "no query answers every app")
+
+        let nothing = try MCPToolHost.appsAnswer(apps, query: "zzz", limit: nil)
+        XCTAssertEqual(labels(nothing), [])
+        XCTAssertEqual(nothing["total"] as? Int, 0)
+    }
+
     // MARK: phone_status (plan T8)
 
     private final class TestClock {
@@ -424,16 +463,23 @@ final class MCPToolHostTests: XCTestCase {
 
 /// A real controller online with the fake phone server, which answers
 /// `ui.type` (entry `replaced` with `clear`, else `inserted`; via `set_text`),
-/// `ui.settle` (settled) and `ui.tree` (no nodes), and records what the Mac
-/// sent from the moment a call starts.
+/// `ui.settle` (settled) and `ui.tree` ([treeNodes], none by default), and
+/// records what the Mac sent from the moment a call starts.
 @MainActor
-private final class TypeTextFixture {
+final class TypeTextFixture {
     let server: FakeServer
     let brain: FakeV2PhoneBrain
     let controller: ConnectionController
     let profile: Profile
     private let lock = NSLock()
     nonisolated(unsafe) private var received: [JSONMessage] = []
+    nonisolated(unsafe) private var nodes: [[String: Any]] = []
+
+    /// The rows every `ui.tree` reply carries from now on (plan T9).
+    nonisolated var treeNodes: [[String: Any]] {
+        get { lock.lock(); defer { lock.unlock() }; return nodes }
+        set { lock.lock(); nodes = newValue; lock.unlock() }
+    }
 
     init() throws {
         // A window's open edits the main menu: the app object must exist.
@@ -450,7 +496,7 @@ private final class TypeTextFixture {
             guard frame.messageType == .json,
                   let message = JSONFrame.decode(payload: frame.payload) else { return }
             self?.record(message)
-            Self.answer(message, on: connection)
+            self?.answer(message, on: connection)
         }
     }
 
@@ -458,7 +504,7 @@ private final class TypeTextFixture {
         lock.lock(); received.append(message); lock.unlock()
     }
 
-    nonisolated private static func answer(_ message: JSONMessage, on connection: FakeServer.Connection) {
+    nonisolated private func answer(_ message: JSONMessage, on connection: FakeServer.Connection) {
         guard let stream = message.int("stream"), let seq = message.int("seq") else { return }
         switch message.t {
         case "ui.type":
@@ -471,7 +517,7 @@ private final class TypeTextFixture {
                                  "settled": true, "waitedMs": 300, "events": 0])
         case "ui.tree":
             connection.sendJSON(["t": "ui.tree", "stream": stream, "seq": seq, "ok": true,
-                                 "displayId": 2, "size": [1080, 2340], "layers": [], "nodes": []])
+                                 "displayId": 2, "size": [1080, 2340], "layers": [], "nodes": treeNodes])
         default:
             break
         }

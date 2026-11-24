@@ -495,12 +495,14 @@ final class UITreeBroker {
     private var answered: [MCPClientID: [UInt32: [Int: String]]] = [:]
 
     /// A tree went to [client]: remember its labels for that client's presses.
-    func answered(_ tree: UITree, client: MCPClientID?) {
+    /// With [only], just those keys: a `find` answer showed the client only
+    /// its matches, and a key it was not shown keeps the label it was (MCP-75).
+    func answered(_ tree: UITree, client: MCPClientID?, only: Set<Int>? = nil) {
         guard let client, tree.ok else { return }
         let labels = tree.labels()
         var known = answered[client, default: [:]][tree.stream, default: [:]]
         for node in tree.nodes {
-            guard let k = node.k else { continue }
+            guard let k = node.k, only?.contains(k) ?? true else { continue }
             known[k] = labels[k]  // a row with no label now drops the old one: no `expect`
         }
         answered[client, default: [:]][tree.stream] = known
