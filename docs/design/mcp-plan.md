@@ -60,9 +60,8 @@ The two tasks of a round share no file (each task's **Files** list is the proof)
 | 8 | T12 an agent's window takes the phone's shape (#175) | B5 phone: `ui.type`, no clipboard (#173) | T12 changes `open_app`/`send_link`, so it follows T6; B5 needs B6's active layer. |
 | 9 | T13 Mac: `type_text` through `ui.type` (#173) | T14 phone: the person's typing never loses their clip (#173) | T13 needs B5 and T5's machine and shares `MCPCore` and `MCPTools+Input` with T2; T14 reuses B5's `TextEntry` and touches no Mac file. |
 | 10 | T2 descriptions and tool shapes (#172) | — | Its doc-match test sees the final tool set, `shape` and `type_text`'s answer included. |
-| 11 | T9 text view, find, `list_apps` query (#170) | — | The smallest cost; its `find` uses B6's `offscreen`. |
 
-Rounds 9–11 are serial because each touches `MCPCore.swift`; a free worker in
+Rounds 9–10 are serial because each touches `MCPCore.swift`; a free worker in
 those rounds takes the emulator and real-phone proofs of earlier tasks instead.
 
 ---
@@ -412,7 +411,7 @@ The task sections below are grouped by area; the schedule above is the order.
 
 ## B2 — Phone: keys that live as long as their node; heading; covered
 
-- **Closes** — (#170 heading with T9). **Rows** MCP-71 (phone half), MCP-72, MCP-73. **Wire** yes: `k`, `heading`, `covered` on a `ui.tree` row (PROTOCOL.md "UI tree" item 9). The phone still sends no `ref` (S1); the Mac keeps issuing `s<snapshot>e<row>` until T10. **Review** ⚠ protocol.
+- **Closes** — (#170's heading item; T9 closed #170). **Rows** MCP-71 (phone half), MCP-72, MCP-73. **Wire** yes: `k`, `heading`, `covered` on a `ui.tree` row (PROTOCOL.md "UI tree" item 9). The phone still sends no `ref` (S1); the Mac keeps issuing `s<snapshot>e<row>` until T10. **Review** ⚠ protocol.
 - **Files** `UiTree.kt` (shaping: `k`, heading, covered by drawing order and
   layer), new `UiTreeKeys.kt` (pure identity→key table, 4096 cap),
   `UiAutomationTree.kt` (pass `isHeading`, `drawingOrder`, window `layer`,
@@ -583,46 +582,6 @@ The task sections below are grouped by area; the schedule above is the order.
     client B's `list_windows` has it with `openedBy: "another_agent"`, and the
     fake phone's log has no `window.close`.
 - **Tier** K2, e2e. **Depends** T1 (client id).
-
-## T9 — Read less: text view, find, `list_apps` query
-
-- **Closes** #170. **Rows** MCP-34, MCP-74, MCP-75, MCP-104 (text view), MCP-106 (`find` over off-screen nodes, `in`, the text view's counts) (and MCP-72's tool half via T10's parse). **Wire** consumes B6's `offscreen` request. **Review** normal.
-- **Tools table.** T2 left `list_apps` and `ui_tree` in design/mcp.md's tools
-  table without T9's arguments, so `tools/list` never offers an argument the
-  server refuses. T9 adds `query`, `limit`, `format` and `find` back to those
-  two rows, both columns, with the descriptions that say what they do
-  (`testDescriptionsMatchTheDesignDoc` holds the two equal).
-- **Files** `MCPCore.swift` (`list_apps` `query`/`limit`, `ui_tree` `format`/`find`,
-  `observe: "text"` on input tools), new `UITreeText.swift` (text view and
-  find, pure; `in` from the nearest `scroll` ancestor by `p`),
-  `MCPTools+Phone.swift` (list_apps), `MCPTools+Tree.swift`, `Session.swift`
-  (`offscreen: true` on the `ui.tree` request for `find` only),
-  `MCPActMachine.swift` runner only for `observe: "text"`, new
-  `UITreeTextTests.swift`, new `macos/scripts/mcp/suite_read.py`.
-- **Tests**
-  - K2 `UITreeTextTests.testTheTextViewReadsInOrderWithRefs` `[MCP-74]`:
-    nodes [TextView "Ada Lovelace" heading; TextView "Born 1815"; Button
-    "Read more" click e9; EditText pwd edit e4] → text
-    `"# Ada Lovelace\nBorn 1815\nRead more [e9 Button]\n[e4 EditText edit pwd]"`.
-  - K2 `UITreeTextTests.testFindKeepsOnlyMatches` `[MCP-75]`: find `"lovel"`
-    over 87 nodes with one match → `nodes` = that row, `matched 1`, `total 87`;
-    `"ADA"` matches `Ada` (case); `"cafe"` matches `Café` (diacritics); no
-    match → `nodes: []`, `matched: 0`, not an error.
-  - K2 `UITreeTextTests.testFindReachesAnOffScreenNode` `[MCP-106]`: a reply
-    read with `offscreen: true` whose match is `off: true` under a list row e20
-    → the match has no `at` and `in: "e20"`; the request carried
-    `"offscreen":true`, and a plain `ui_tree` read does not.
-  - K2 `UITreeTextTests.testAHintReadsAsAHint` `[MCP-104]`: an EditText e7
-    `hint: true, hintText: "Search"` → line `Search (hint) [e7 EditText edit]`;
-    a list e20 `hidden: [0, 41]` → `[e20 RecyclerView scroll, 0 before, 41 after]`.
-  - K2 `MCPToolHostTests.testListAppsFiltersAndRanksPrefixesFirst` `[MCP-34]`:
-    apps Calculator, Calendar, "My Calc", com.example.calc → query `calc` →
-    `[Calculator, My Calc?]`… exactly: label-prefix matches (Calculator)
-    first, then the rest by label (My Calc, then the package-only match),
-    `total 3`; no query → all 4, `total 4`; `limit: 1` → 1 row, `total 3`.
-  - e2e `suite_read.py` `[MCP-34]`: `list_apps {query: "sett"}` → one row,
-    Settings; `[MCP-74]` `ui_tree {format: "text"}` contains `Continue [<the button's ref> Button]`.
-- **Tier** K2, e2e. **Depends** T2 (it edits the same schemas after them), T10, B6.
 
 ## B4 — Phone: which source said `locked`
 
