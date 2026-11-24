@@ -126,11 +126,11 @@ final class MCPCoreTests: XCTestCase {
                 // MCP-88 (T2).
                 "holdMs": ["type": "integer", "minimum": 1, "maximum": 3000,
                            "description": "Hold the press this many milliseconds (1 to 3000): a long press."],
-                // MCP-81, MCP-82 (T5).
+                // MCP-81, MCP-82 (T5; `text` T9).
                 "wait": ["type": "string", "enum": ["settle", "none"],
                          "description": "settle (the default for an action) waits until the window's accessibility tree has not changed for 300 ms and nothing on it is loading, at most 2 s; none answers at once."],
-                "observe": ["type": "string", "enum": ["tree", "none"],
-                            "description": "tree (the default) returns the ui_tree answer read after the settle; none returns no screen."],
+                "observe": ["type": "string", "enum": ["tree", "text", "none"],
+                            "description": "tree (the default) returns the ui_tree answer read after the settle; text returns that screen as ui_tree's text view; none returns no screen."],
             ],
         ]
         XCTAssertEqual(tap.schema as NSDictionary, expected as NSDictionary)

@@ -24,47 +24,84 @@ struct UITreeFind: Equatable {
 enum UITreeText {
     // MARK: The text view (MCP-74)
 
+    /// What a line is made of: a parsed node, or a row of an answer already
+    /// encoded (an observed read, MCP-82).
+    private struct Row {
+        var ref = "", role = "", text: String?, desc: String?, hintText: String?
+        var heading = false, hint = false, click = false, edit = false, scroll = false
+        var check: Bool?
+        var selected = false, focused = false, disabled = false, password = false, off = false
+        var hidden: [Int]?
+
+        init(_ node: UITree.Node) {
+            ref = node.ref; role = node.role; text = node.text; desc = node.desc
+            hintText = node.hintText; heading = node.heading; hint = node.hint
+            click = node.click; edit = node.edit; scroll = node.scroll; check = node.check
+            selected = node.selected; focused = node.focused; disabled = node.disabled
+            password = node.password; off = node.off; hidden = node.hidden
+        }
+
+        /// A row as `UITree.encoded()` writes it.
+        init(_ row: [String: Any]) {
+            func flag(_ key: String) -> Bool { row[key] as? Bool ?? false }
+            ref = row["ref"] as? String ?? ""; role = row["role"] as? String ?? ""
+            text = row["text"] as? String; desc = row["desc"] as? String
+            hintText = row["hintText"] as? String; heading = flag("heading"); hint = flag("hint")
+            click = flag("click"); edit = flag("edit"); scroll = flag("scroll"); check = row["check"] as? Bool
+            selected = flag("sel"); focused = flag("focus"); disabled = flag("disabled")
+            password = flag("pwd"); off = flag("off")
+            hidden = (row["hidden"] as? [Int]).flatMap { $0.count == 2 ? $0 : nil }
+        }
+    }
+
     /// One line per labelled or actionable node, in reading order.
     /// [within] adds `, in <ref>` to an off-screen match's bracket.
     static func text(_ nodes: [UITree.Node], within: [Int: String] = [:]) -> String {
-        nodes.compactMap { line($0, within: within[$0.index]) }.joined(separator: "\n")
+        nodes.compactMap { line(Row($0), within: within[$0.index]) }.joined(separator: "\n")
+    }
+
+    /// The text view of an encoded `ui_tree` answer (an observed read, MCP-82).
+    static func text(answer: [String: Any]) -> String {
+        (answer["nodes"] as? [[String: Any]] ?? []).compactMap { row in
+            line(Row(row), within: row["in"] as? String)
+        }.joined(separator: "\n")
     }
 
     /// `# ` for a heading, the label (a shown hint as `<hint> (hint)`, never a
     /// password's text), then `[<ref> <role> <states>]` for a node a client can
     /// act on; nil for a node with neither.
-    static func line(_ node: UITree.Node, within: String? = nil) -> String? {
+    private static func line(_ row: Row, within: String?) -> String? {
         var parts: [String] = []
-        if let label = label(node) {
-            parts.append(node.heading ? "# " + label : label)
+        if let label = label(row) {
+            parts.append(row.heading ? "# " + label : label)
         }
-        if let bracket = bracket(node, within: within) { parts.append(bracket) }
+        if let bracket = bracket(row, within: within) { parts.append(bracket) }
         return parts.isEmpty ? nil : parts.joined(separator: " ")
     }
 
-    private static func label(_ node: UITree.Node) -> String? {
-        if node.hint, let hint = node.hintText, !hint.isEmpty { return hint + " (hint)" }
-        if !node.password, let text = node.text, !text.isEmpty { return text }
-        if let desc = node.desc, !desc.isEmpty { return desc }
+    private static func label(_ row: Row) -> String? {
+        if row.hint, let hint = row.hintText, !hint.isEmpty { return hint + " (hint)" }
+        if !row.password, let text = row.text, !text.isEmpty { return text }
+        if let desc = row.desc, !desc.isEmpty { return desc }
         return nil
     }
 
     /// A node takes a tap, text, a swipe or a check; an off-screen match is
     /// bracketed too, so the reader sees it is off and where.
-    private static func bracket(_ node: UITree.Node, within: String?) -> String? {
-        let acts = node.click || node.edit || node.scroll || node.check != nil
-        guard acts || node.off else { return nil }
-        var words: [String] = node.ref.isEmpty ? [] : [node.ref]
-        words.append(node.role)
+    private static func bracket(_ row: Row, within: String?) -> String? {
+        let acts = row.click || row.edit || row.scroll || row.check != nil
+        guard acts || row.off else { return nil }
+        var words: [String] = row.ref.isEmpty ? [] : [row.ref]
+        words.append(row.role)
         // The row's own keys, in the row's order (WIN-79), true ones only.
         let states: [(Bool, String)] = [
-            (node.edit, "edit"), (node.scroll, "scroll"), (node.check == true, "check"),
-            (node.selected, "sel"), (node.focused, "focus"), (node.disabled, "disabled"),
-            (node.password, "pwd"), (node.off, "off"),
+            (row.edit, "edit"), (row.scroll, "scroll"), (row.check == true, "check"),
+            (row.selected, "sel"), (row.focused, "focus"), (row.disabled, "disabled"),
+            (row.password, "pwd"), (row.off, "off"),
         ]
         words += states.filter(\.0).map(\.1)
         var inside = words.joined(separator: " ")
-        if let hidden = node.hidden, hidden.count == 2 {
+        if let hidden = row.hidden, hidden.count == 2 {
             inside += ", \(hidden[0]) before, \(hidden[1]) after"
         }
         if let within { inside += ", in \(within)" }

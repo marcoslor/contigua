@@ -126,8 +126,8 @@ that names the next step. Extra fields depend on the code:
 | `off_screen` | the ref's node is off the display (F9, MCP-106) | <ref> is off screen: scroll it into view and read the tree again. | `window`, `ref`, `in` (its scrollable's ref) when known |
 | `covered` | the ref's element is under another one at the press (MCP-89) | <ref> is covered by <cover ref \| another window>, so nothing was pressed. Close or move what covers it, then call ui_tree. | `window`, `ref`, `snapshot`, `coveredBy` (a ref or `"window"`) |
 | `no_field` | `type_text` needs a focused field and none has input focus (MCP-109) | Window <id> has no focused text field. Tap the field first. | `window` |
-| `not_found` | no app matches | No app on the phone matches "<query>". Call list_apps and pass its package as app. (T9: "Call list_apps with a query to find it.") | — |
-| `ambiguous` | several apps match | Several apps match "<query>". Pass one of these packages as app. — or, where no list is at hand: Several apps match "<query>". Call list_apps and pass one package as app. (T9: "…with a query to see them.") | `matches: [{label, package}]` (empty in the second form) |
+| `not_found` | no app matches | No app on the phone matches "<query>". Call list_apps with a query to find it. | — |
+| `ambiguous` | several apps match | Several apps match "<query>". Pass one of these packages as app. — or, where no list is at hand: Several apps match "<query>". Call list_apps with a query to see them. | `matches: [{label, package}]` (empty in the second form) |
 | `too_many_windows` | the phone's window cap is reached | The phone allows <n> app windows at once. Close one with close_window, then try again. | `maxWindows` |
 | `bad_url` | LinkPolicy refused the URL | That link can't be opened: only http, https, geo, tel and mailto links up to 8 KiB are allowed. | — |
 | `bad_file` | the path is missing, unreadable, not a regular file or over the cap | That file can't be sent: it must be an absolute path to a readable regular file of at most <cap>. | — |
@@ -181,8 +181,8 @@ Two arguments recur on every tool that acts or opens:
   until the window's accessibility tree has not changed for 300 ms, at most 2 s
   (MCP-81).
 - `observe`: `"tree"` (the default), `"text"` or `"none"`: what screen to
-  return after the settle (MCP-82). `"text"` is taken once T9 ships the text
-  view (MCP-74); until then the argument is `"tree"` or `"none"`.
+  return after the settle (MCP-82). `"text"` returns that read as `ui_tree`'s
+  text view (MCP-74), a string in `text`, in place of `tree`.
 
 `open_app` and `send_link` also take `shape`: `"phone"` (the default for a new
 window) or `"window"` (MCP-100, "A window an agent opens" below).
@@ -238,7 +238,7 @@ closed token is listed in the spec row cited.
 - `state`: `opening`, `live`, `paused`, `stalled`, `offline`, `closed` (MCP-21).
 - `alsoActed?`: `person`, `another_agent` — other input that reached the window during this call (MCP-84).
 - `closed?`: when the window closed during the call, `{reason, closedBy}` (MCP-83); then `state: "closed"`, `settle.state: "window_closed"`, and no `tree`.
-- `tree?` (observe `tree`), `text?` (observe `text`), `treeError?` (a code, when that read failed after the action: MCP-82).
+- `tree?` (observe `tree`), `text?` (observe `text`: the text view of that read, a string), `treeError?` (a code, when that read failed after the action: MCP-82).
 
 A `press_key back` that ends the app:
 
@@ -347,7 +347,7 @@ Mac scales it by frame/`size` to cut the decoded frame. `crop` only with `ref`, 
 `until` is `met` or `timeout`, absent for a plain `ms` wait; `match` only when
 met on `text` (none with `gone: true`), the first node whose text or
 description contains it ignoring case and accents, with its own text; `reason` (`loading` or `changes`) only
-for a `settle: true` wait that timed out. `tree` is the `observe` read: after
+for a `settle: true` wait that timed out. `tree` (or `text`) is the `observe` read: after
 the clock or the settle, or the poll's last read for `text`; `treeError` when
 that read failed. The tree is read at most every 500 ms, each read in the
 phone's read queue (MCP-9) and bounded by the call (MCP-8): `ms` + 3 s, or

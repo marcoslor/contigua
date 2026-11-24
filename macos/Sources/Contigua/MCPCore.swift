@@ -230,7 +230,7 @@ enum MCPTools {
     /// MCP-82: `observe` on a tool that acts.
     static let observe: [String: Any] = [
         "type": "string", "enum": MCPObserve.allCases.map(\.rawValue),
-        "description": "tree (the default) returns the ui_tree answer read after the settle; none returns no screen.",
+        "description": "tree (the default) returns the ui_tree answer read after the settle; text returns that screen as ui_tree's text view; none returns no screen.",
     ]
 
     private static func duration(_ maximum: Int, default fallback: Int) -> [String: Any] {
@@ -435,6 +435,7 @@ enum MCPOutputSchemas {
         "alsoActed": array(["type": "string", "enum": ["person", "another_agent"]]),
         "closed": object(["reason": string, "closedBy": string], required: ["reason", "closedBy"]),
         "tree": ["type": "object"],
+        "text": string,
         "treeError": string,
     ], required: ["window", "did", "on", "settle", "state", "frame"])
 
@@ -444,7 +445,7 @@ enum MCPOutputSchemas {
         "package": nullable("string"), "label": nullable("string"),
         "opened": ["type": "string", "enum": ["new", "raised"]], "openedBy": string,
         "size": array(integer), "settle": settleObject, "state": stateToken, "frame": frameObject,
-        "tree": ["type": "object"], "treeError": string,
+        "tree": ["type": "object"], "text": string, "treeError": string,
     ], required: ["window", "kind", "package", "label", "opened", "openedBy", "size", "settle",
                   "state", "frame"])
 
@@ -515,7 +516,7 @@ enum MCPOutputSchemas {
                            "match": object(["ref": string, "text": string]),
                            "reason": ["type": "string", "enum": ["changes", "loading"]],
                            "state": stateToken, "frame": frameObject,
-                           "tree": ["type": "object"], "treeError": string],
+                           "tree": ["type": "object"], "text": string, "treeError": string],
                           required: ["window", "waitedMs", "state", "frame"])
         case .tap, .swipe, .pressKey:
             return actEnvelope

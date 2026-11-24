@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""MCP read-less e2e suite (docs/specs/mcp.md MCP-34, MCP-74, MCP-75, MCP-104,
-MCP-106; plan T9, #170).
+"""MCP read-less e2e suite (docs/specs/mcp.md MCP-34, MCP-74, MCP-75, MCP-82,
+MCP-104, MCP-106; plan T9, #170).
 
 `list_apps` with a query, `ui_tree`'s text view and `find` over the fake
 phone's fixed tree: a Continue button, a password field, a search field
@@ -88,6 +88,18 @@ def suite(args):
         answer = none.get("structuredContent") or {}
         report(not none.get("isError") and answer.get("nodes") == [] and answer.get("matched") == 0,
                "[MCP-75] MCP ui_tree {find} with no match answers nodes [] and matched 0, not an error")
+
+        # [MCP-82] observe: "text" answers the text view in place of the tree.
+        waited = client.text("wait", {"window": window, "ms": 50, "observe": "text"})
+        report("tree" not in waited
+               and ("Continue [%s Button]" % button.get("ref")) in (waited.get("text") or "").split("\n"),
+               "[MCP-82] MCP wait {observe: text} carries the text view, not the tree")
+
+        # [MCP-34] An unknown app points at list_apps' query.
+        missing = client.tool("open_app", {"app": "zz no such app"})
+        report(missing.get("isError")
+               and "Call list_apps with a query to find it." in (missing.get("content") or [{}])[0].get("text", ""),
+               "[MCP-34] MCP open_app on an unknown app says to call list_apps with a query")
     finally:
         mode(args)
         client.close()

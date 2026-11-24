@@ -105,7 +105,8 @@ extension MCPToolHost {
                     try? await Task.sleep(for: .milliseconds(100))
                 }
             }
-            return openAnswer(stream, kind: kind, opened: opened, result: result, lastFrame: env.lastFrame)
+            return openAnswer(stream, kind: kind, opened: opened, result: result, lastFrame: env.lastFrame,
+                              observe: observe)
         }
     }
 
@@ -114,14 +115,16 @@ extension MCPToolHost {
     /// its first frame; a raised one keeps the size its stream has (MCP-100,
     /// MCP-101).
     func openAnswer(_ stream: UInt32, kind: MCPOpenAnswer.Kind, opened: MCPOpenAnswer.Opened,
-                    result: MCPActMachine.Answer, lastFrame: [String: Any]?) -> [String: Any] {
+                    result: MCPActMachine.Answer, lastFrame: [String: Any]?,
+                    observe: MCPObserve = .tree) -> [String: Any] {
         let window = controller.windows.controller(for: stream)
         let made = opened == .new ? controller.windows.openedSize(stream).map { [$0.width, $0.height] } : nil
         let size = made ?? window.map { pixelSize(of: $0) }.map { [$0.0, $0.1] } ?? [0, 0]
         let named = names(of: stream)
         var answer = MCPOpenAnswer.answer(
             window: Int(stream), kind: kind, package: named.package, label: named.label, opened: opened,
-            openedBy: controller.windows.ledger.openedBy(stream, asker: client), size: size, result: result)
+            openedBy: controller.windows.ledger.openedBy(stream, asker: client), size: size, result: result,
+            observe: observe)
         if let window {
             if answer["state"] == nil { answer["state"] = stateToken(for: window) }
             answer["frame"] = frameObject(for: window)
@@ -146,7 +149,8 @@ enum MCPOpenAnswer {
     enum Opened: String { case new, raised }
 
     static func answer(window: Int, kind: Kind, package: String?, label: String?, opened: Opened,
-                       openedBy: String, size: [Int], result: MCPActMachine.Answer) -> [String: Any] {
+                       openedBy: String, size: [Int], result: MCPActMachine.Answer,
+                       observe: MCPObserve = .tree) -> [String: Any] {
         var answer: [String: Any] = [
             "window": window, "kind": kind.rawValue,
             "package": package.map { $0 as Any } ?? NSNull(),
@@ -155,10 +159,7 @@ enum MCPOpenAnswer {
             "settle": MCPActEnvelope.settle(result.settle),
         ]
         if let state = result.state { answer["state"] = state }
-        if let tree = result.tree,
-           let object = try? JSONSerialization.jsonObject(with: Data(tree.utf8)) as? [String: Any] {
-            answer["tree"] = object
-        }
+        MCPObserved.add(result.tree, observe: observe, to: &answer)
         if let treeError = result.treeError { answer["treeError"] = treeError }
         return answer
     }

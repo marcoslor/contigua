@@ -164,7 +164,8 @@ extension MCPToolHost {
         switch outcome {
         case .answer(let answer):
             var envelope = MCPActEnvelope.answer(window: id, did: env.didNow ?? did(),
-                                                 frameAtInput: env.frameAtInput, result: answer)
+                                                 frameAtInput: env.frameAtInput, result: answer,
+                                                 observe: observe)
             // MCP-20/21: state and frame as they are now; a window gone during
             // the call answers the frame it last had.
             if let window = controller.windows.controller(for: UInt32(id)) {
@@ -480,7 +481,7 @@ struct MCPActDid {
 /// made, unless the call itself knows the state (closed, offline).
 enum MCPActEnvelope {
     static func answer(window: Int, did: MCPActDid, frameAtInput: Int?,
-                       result: MCPActMachine.Answer) -> [String: Any] {
+                       result: MCPActMachine.Answer, observe: MCPObserve = .tree) -> [String: Any] {
         var didObject = did.object
         if let entry = result.entry { didObject["entry"] = entry }
         if let via = result.via { didObject["via"] = via }
@@ -496,10 +497,7 @@ enum MCPActEnvelope {
         if let closed = result.closed {
             answer["closed"] = ["reason": closed.reason, "closedBy": closed.by]
         }
-        if let tree = result.tree,
-           let object = try? JSONSerialization.jsonObject(with: Data(tree.utf8)) as? [String: Any] {
-            answer["tree"] = object
-        }
+        MCPObserved.add(result.tree, observe: observe, to: &answer)
         if let treeError = result.treeError { answer["treeError"] = treeError }
         return answer
     }
@@ -509,6 +507,24 @@ enum MCPActEnvelope {
         if let waitedMs = settle.waitedMs { object["waitedMs"] = waitedMs }
         if let reason = settle.reason { object["reason"] = reason }
         return object
+    }
+}
+
+/// The observed read as an answer shows it (MCP-82): the `ui_tree` answer as
+/// `tree`, or its text view (MCP-74) as `text`.
+enum MCPObserved {
+    static func add(_ tree: String?, observe: MCPObserve, to answer: inout [String: Any]) {
+        guard let tree, let object = try? JSONSerialization.jsonObject(with: Data(tree.utf8)) as? [String: Any]
+        else { return }
+        add(object, observe: observe, to: &answer)
+    }
+
+    static func add(_ tree: [String: Any], observe: MCPObserve, to answer: inout [String: Any]) {
+        switch observe {
+        case .tree: answer["tree"] = tree
+        case .text: answer["text"] = UITreeText.text(answer: tree)
+        case .none: break
+        }
     }
 }
 

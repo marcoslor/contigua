@@ -207,4 +207,79 @@ final class UITreeTextTests: XCTestCase {
         XCTAssertThrowsError(try MCPArguments.call("ui_tree", ["window": 3, "format": "xml"]))
         XCTAssertThrowsError(try MCPArguments.call("ui_tree", ["window": 3, "find": ""]))
     }
+
+    // MARK: observe: "text" (MCP-82)
+
+    // [MCP-82] Every tool that observes takes `text`.
+    func testObserveTakesText() throws {
+        XCTAssertEqual(try MCPArguments.call("tap", ["window": 3, "x": 0.5, "y": 0.5, "observe": "text"]),
+                       .tap(window: 3, x: 0.5, y: 0.5, observe: .text))
+        XCTAssertEqual(try MCPArguments.call("press_key", ["window": 3, "key": "back", "observe": "text"]),
+                       .pressKey(window: 3, key: .back, observe: .text))
+        XCTAssertEqual(try MCPArguments.call("wait", ["window": 3, "ms": 10, "observe": "text"]),
+                       .wait(window: 3, mode: .clock(ms: 10), timeoutMs: 10000, observe: .text))
+        XCTAssertEqual(try MCPArguments.call("open_app", ["app": "Shop", "observe": "text"]),
+                       .openApp("Shop", newWindow: false, observe: .text))
+    }
+
+    // [MCP-82] A text observe reads the tree after the settle, as a tree observe does.
+    func testObserveTextReadsAfterTheSettle() {
+        var machine = MCPActMachine(path: .input, wait: .none, observe: .text)
+        var actions: [MCPActMachine.Action]
+        (machine, actions) = MCPActMachine.step(machine, .turn(.live))
+        XCTAssertEqual(actions, [.sendInput])
+        (machine, actions) = MCPActMachine.step(machine, .inputSent)
+        XCTAssertEqual(actions, [.sendTree(req: 1)])
+        (machine, actions) = MCPActMachine.step(machine, .treeReply(req: 1, "{}"))
+        XCTAssertEqual(actions, [.answer(MCPActMachine.Answer(settle: MCPActMachine.Settle(state: "not_waited"),
+                                                              tree: "{}"))])
+    }
+
+    // [MCP-82] [MCP-74] The act, open and wait answers carry the text view
+    // as `text`, in place of `tree`.
+    func testObserveTextCarriesTheTextView() throws {
+        let read = try tree([
+            ["i": 0, "k": 2, "role": "Button", "text": "Continue", "click": true,
+             "box": box(1), "at": [0.5, 0.01]],
+        ])
+        let result = MCPActMachine.Answer(settle: MCPActMachine.Settle(state: "settled", waitedMs: 300),
+                                          tree: read.encoded())
+        let text = MCPActEnvelope.answer(window: 3, did: MCPActDid.key("back"), frameAtInput: 1,
+                                         result: result, observe: .text)
+        XCTAssertEqual(text["text"] as? String, "Continue [e2 Button]")
+        XCTAssertNil(text["tree"])
+        let nodes = MCPActEnvelope.answer(window: 3, did: MCPActDid.key("back"), frameAtInput: 1,
+                                          result: result, observe: .tree)
+        XCTAssertNotNil(nodes["tree"] as? [String: Any])
+        XCTAssertNil(nodes["text"])
+
+        let opened = MCPOpenAnswer.answer(window: 3, kind: .app, package: "com.example.shop", label: "Shop",
+                                          opened: .new, openedBy: "you", size: [1080, 2340], result: result,
+                                          observe: .text)
+        XCTAssertEqual(opened["text"] as? String, "Continue [e2 Button]")
+        XCTAssertNil(opened["tree"])
+
+        var waited = MCPWaitAnswer(waitedMs: 10)
+        waited.observed(try answer(read), .text)
+        XCTAssertEqual(waited.object(window: 3)["text"] as? String, "Continue [e2 Button]")
+        XCTAssertNil(waited.object(window: 3)["tree"])
+    }
+
+    // [MCP-82] Through the tool: a tap with `observe: "text"` answers the text view.
+    @MainActor
+    func testATapObservingTextAnswersTheTextView() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        let window = try await fixture.liveWindow()
+        fixture.treeNodes = [
+            ["i": 0, "k": 2, "role": "Button", "text": "Continue", "click": true,
+             "box": [100, 1400, 980, 1600], "at": [0.5, 0.64]],
+        ]
+        let (answer, _) = await fixture.call("tap", ["window": Int(window.stream), "x": 0.5, "y": 0.2,
+                                                     "observe": "text"])
+        XCTAssertEqual(answer["isError"] as? Bool, false, "tap failed: \(answer)")
+        let structured = try XCTUnwrap(answer["structuredContent"] as? [String: Any])
+        XCTAssertEqual(structured["text"] as? String, "Continue [e2 Button]")
+        XCTAssertNil(structured["tree"])
+    }
 }
