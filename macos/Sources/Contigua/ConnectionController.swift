@@ -716,7 +716,7 @@ final class ConnectionController {
         nowPlaying.onChange = { [weak self] in
             MainActor.assumeIsolated { self?.refreshMedia() }
         }
-        mcp.configure(profile: profile, forced: options.mcpEnable)
+        mcp.configure(profile: profile, forced: options.mcpEnable, devTools: options.mcpDevTools)
         mcp.hostProvider = { [weak self] in self.map { MCPToolHost(controller: $0) } }
         mcp.onClientClosed = { [weak self] client in self?.windowActs.clientGone(client) }
         // A phone-side change has to reach the Finder UI even when no extension

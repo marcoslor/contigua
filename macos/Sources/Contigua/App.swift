@@ -118,6 +118,10 @@ struct LaunchOptions {
     /// `--mcp-enable` (test builds only): turn the automation server's setting
     /// on for this profile at launch (e2e `mcp`).
     var mcpEnable = false
+    /// `--mcp-dev-tools` (every build): list and accept the automation
+    /// server's measurement tools, `input_probe` (MCP-99). The stream bench,
+    /// the e2e `mcp` check and the emulator bench scripts launch with it.
+    var mcpDevTools = false
     /// `--files-domain add|remove|list|disconnect|reconnect` — the File Provider
     /// domain (docs/design/files.md). Refused outside the e2e VM.
     var filesDomain: String?
@@ -330,6 +334,8 @@ struct LaunchOptions {
                 options.debugNoMarginSwitch = true
             case "--mcp-enable":
                 options.mcpEnable = true
+            case "--mcp-dev-tools":
+                options.mcpDevTools = true
             case "--files-domain":
                 options.filesDomain = next()
             case "--files-bridge-dir":

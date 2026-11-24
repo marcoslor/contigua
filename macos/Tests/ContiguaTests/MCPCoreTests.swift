@@ -96,8 +96,8 @@ final class MCPCoreTests: XCTestCase {
         let tools = try XCTUnwrap(result["tools"] as? [[String: Any]])
         XCTAssertEqual(tools.compactMap { $0["name"] as? String }, [
             "phone_status", "list_apps", "open_app", "list_windows", "screenshot", "ui_tree",
-            "wait", "tap", "long_press", "swipe", "type_text", "press_key",
-            "input_probe", "close_window", "send_link", "send_file",
+            "wait", "tap", "swipe", "type_text", "press_key",
+            "close_window", "send_link", "send_file",
         ])
         for tool in tools {
             XCTAssertFalse((tool["description"] as? String ?? "").isEmpty)
@@ -123,6 +123,9 @@ final class MCPCoreTests: XCTestCase {
                       "description": "Vertical position, 0 (top) to 1 (bottom), in the window's video rect."],
                 "ref": ["type": "string", "minLength": 1, "maxLength": 32, "pattern": "^e[0-9]+$",
                         "description": "Element ref from ui_tree, e.g. \"e5\". Takes precedence over x and y."],
+                // MCP-88 (T2).
+                "holdMs": ["type": "integer", "minimum": 1, "maximum": 3000,
+                           "description": "Hold the press this many milliseconds (1 to 3000): a long press."],
                 // MCP-81, MCP-82 (T5).
                 "wait": ["type": "string", "enum": ["settle", "none"],
                          "description": "settle (the default for an action) waits until the window's accessibility tree has not changed for 300 ms and nothing on it is loading, at most 2 s; none answers at once."],
@@ -161,10 +164,12 @@ final class MCPCoreTests: XCTestCase {
             ("wait", ["window": 3, "ms": 1000],
              .wait(window: 3, mode: .clock(ms: 1000), timeoutMs: 10000, observe: .tree)),
             ("tap", ["window": 3, "x": 0.25, "y": 1], .tap(window: 3, x: 0.25, y: 1)),
-            ("long_press", ["window": 3, "x": 0, "y": 0.5, "ms": 3000],
-             .longPress(window: 3, x: 0, y: 0.5, ms: 3000)),
+            ("tap", ["window": 3, "x": 0, "y": 0.5, "holdMs": 3000],
+             .tap(window: 3, x: 0, y: 0.5, holdMs: 3000)),
             ("swipe", ["window": 3, "x1": 0.1, "y1": 0.2, "x2": 0.9, "y2": 0.8, "ms": 2000],
              .swipe(window: 3, x1: 0.1, y1: 0.2, x2: 0.9, y2: 0.8, ms: 2000)),
+            ("swipe", ["window": 3, "direction": "down", "ref": "e2"],
+             .swipeDirection(window: 3, direction: .down, ref: "e2", ms: 300)),
             ("type_text", ["window": 3, "text": "hello"], .typeText(window: 3, text: "hello")),
             ("press_key", ["window": 3, "key": "enter"], .pressKey(window: 3, key: .enter)),
             ("input_probe", ["window": 3, "x": 0.5, "y": 0.5],
@@ -172,12 +177,13 @@ final class MCPCoreTests: XCTestCase {
             ("input_probe", ["window": 3, "x": 0.5, "y": 0.5, "w": 0.4, "h": 0.4],
              .inputProbe(window: 3, x: 0.5, y: 0.5, width: 0.4, height: 0.4)),
             ("close_window", ["window": 3], .closeWindow(window: 3)),
+            ("close_window", ["window": 3, "force": true], .closeWindow(window: 3, force: true)),
             ("send_link", ["url": "https://example.com"], .sendLink("https://example.com")),
             ("send_file", ["path": "/tmp/a.bin"], .sendFile("/tmp/a.bin")),
         ]
         XCTAssertEqual(Set(cases.map { $0.0 }), Set(toolNames()))
         for (name, args, expected) in cases {
-            XCTAssertEqual(try MCPArguments.call(name, args), expected, name)
+            XCTAssertEqual(try MCPArguments.call(name, args, devTools: true), expected, name)
         }
     }
 
@@ -185,7 +191,7 @@ final class MCPCoreTests: XCTestCase {
         for tool in MCPTools.all {
             let required = tool.schema["required"] as? [String] ?? []
             guard !required.isEmpty else { continue }
-            XCTAssertThrowsError(try MCPArguments.call(tool.name.rawValue, [:]), tool.name.rawValue) { error in
+            XCTAssertThrowsError(try MCPArguments.call(tool.name.rawValue, [:], devTools: true), tool.name.rawValue) { error in
                 XCTAssertTrue(error is MCPArgumentError)
             }
         }
@@ -199,9 +205,9 @@ final class MCPCoreTests: XCTestCase {
         XCTAssertThrowsError(try MCPArguments.call("swipe",
             ["window": 1, "x1": 0, "y1": 0, "x2": 2, "y2": 1]))
         XCTAssertThrowsError(try MCPArguments.call("input_probe",
-            ["window": 1, "x": 0.5, "y": 0.5, "w": 0.01]))
+            ["window": 1, "x": 0.5, "y": 0.5, "w": 0.01], devTools: true))
         XCTAssertThrowsError(try MCPArguments.call("input_probe",
-            ["window": 1, "x": 0.5, "y": 0.5, "h": 1.01]))
+            ["window": 1, "x": 0.5, "y": 0.5, "h": 1.01], devTools: true))
     }
 
     func testWindowMustBeAPositiveInteger() {
@@ -213,10 +219,10 @@ final class MCPCoreTests: XCTestCase {
     }
 
     func testGestureDurationsAreCapped() {
-        XCTAssertThrowsError(try MCPArguments.call("long_press",
-            ["window": 1, "x": 0.5, "y": 0.5, "ms": 3001]))
-        XCTAssertThrowsError(try MCPArguments.call("long_press",
-            ["window": 1, "x": 0.5, "y": 0.5, "ms": 0]))
+        XCTAssertThrowsError(try MCPArguments.call("tap",
+            ["window": 1, "x": 0.5, "y": 0.5, "holdMs": 3001]))
+        XCTAssertThrowsError(try MCPArguments.call("tap",
+            ["window": 1, "x": 0.5, "y": 0.5, "holdMs": 0]))
         XCTAssertThrowsError(try MCPArguments.call("swipe",
             ["window": 1, "x1": 0, "y1": 0, "x2": 1, "y2": 1, "ms": 2001]))
     }
@@ -337,7 +343,7 @@ final class MCPCoreTests: XCTestCase {
     // [MCP-5]
     func testToolListDeclaresAnOutputSchemaForEveryTool() async throws {
         let response = try decode(await MCPDispatcher.handle(
-            line: request(2, "tools/list"), client: MCPClientID(1),
+            line: request(2, "tools/list"), client: MCPClientID(1), devTools: true,
             perform: { _, _ in .answer([:]) }))
         let tools = try XCTUnwrap((response["result"] as? [String: Any])?["tools"] as? [[String: Any]])
         XCTAssertEqual(tools.count, MCPToolName.allCases.count)
@@ -362,7 +368,7 @@ final class MCPCoreTests: XCTestCase {
     // [MCP-20] [MCP-21] Every answer that reflects a window's screen declares
     // `state` and `frame` as required, and the stamp fills them in.
     func testScreenAnswersRequireStateAndFrame() throws {
-        for tool: MCPToolName in [.screenshot, .uiTree, .tap, .longPress, .swipe, .typeText,
+        for tool: MCPToolName in [.screenshot, .uiTree, .tap, .swipe, .typeText,
                                   .pressKey, .inputProbe] {
             let schema = MCPOutputSchemas.schema(for: tool)
             let required = schema["required"] as? [String] ?? []
@@ -501,6 +507,146 @@ final class MCPCoreTests: XCTestCase {
         }
     }
 
+    // MARK: descriptions and the tool set (plan T2, #172)
+
+    private func listedTools(devTools: Bool) async throws -> [[String: Any]] {
+        let response = try decode(await MCPDispatcher.handle(
+            line: request(2, "tools/list", [:]), client: MCPClientID(1), devTools: devTools,
+            perform: { _, _ in .answer([:]) }))
+        return try XCTUnwrap((response["result"] as? [String: Any])?["tools"] as? [[String: Any]])
+    }
+
+    /// A tool's own description and every argument's.
+    private func descriptions(_ tool: [String: Any]) -> [String] {
+        var texts = [tool["description"] as? String ?? ""]
+        let properties = (tool["inputSchema"] as? [String: Any])?["properties"] as? [String: Any] ?? [:]
+        for (_, property) in properties {
+            if let text = (property as? [String: Any])?["description"] as? String { texts.append(text) }
+        }
+        return texts
+    }
+
+    // [MCP-7] "window" for any window; "Phone Mirror" only where it means the
+    // phone's own screen: press_key's home and recents.
+    func testNoDescriptionCallsEveryWindowAPhoneMirror() async throws {
+        let allowed = "home and recents act only in the Phone Mirror"
+        let tools = try await listedTools(devTools: true)
+        for tool in tools {
+            let name = tool["name"] as? String ?? "?"
+            for text in descriptions(tool) {
+                let rest = name == "press_key" ? text.replacingOccurrences(of: allowed, with: "") : text
+                XCTAssertFalse(rest.contains("Phone Mirror"), "\(name): \(text)")
+            }
+        }
+        let press = try XCTUnwrap(tools.first { $0["name"] as? String == "press_key" })
+        XCTAssertTrue((press["description"] as? String ?? "").contains(allowed))
+    }
+
+    /// The tools table of docs/design/mcp.md: name → description cell.
+    private func designDocDescriptions() throws -> [String: String] {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let text = try String(contentsOf: root.appendingPathComponent("docs/design/mcp.md"), encoding: .utf8)
+        var rows: [String: String] = [:]
+        var inTools = false
+        for line in text.components(separatedBy: "\n") {
+            if line.hasPrefix("## ") { inTools = line == "## Tools"; continue }
+            guard inTools, line.hasPrefix("| `"), line.hasSuffix(" |") else { continue }
+            let body = line.dropFirst(2).dropLast(2)
+            guard let nameEnd = body.range(of: " | "),
+                  let descriptionStart = body.range(of: " | ", options: .backwards) else { continue }
+            let name = body[..<nameEnd.lowerBound].trimmingCharacters(in: CharacterSet(charactersIn: "`"))
+            rows[name] = String(body[descriptionStart.upperBound...])
+        }
+        return rows
+    }
+
+    // [MCP-7] tools/list's descriptions are design/mcp.md's, byte for byte,
+    // and the two name the same tools.
+    func testDescriptionsMatchTheDesignDoc() async throws {
+        let doc = try designDocDescriptions()
+        XCTAssertFalse(doc.isEmpty, "no tools table in docs/design/mcp.md")
+        var listed: [String: String] = [:]
+        for tool in try await listedTools(devTools: true) {
+            listed[tool["name"] as? String ?? "?"] = tool["description"] as? String ?? ""
+        }
+        XCTAssertEqual(Set(listed.keys), Set(doc.keys))
+        for (name, description) in doc {
+            XCTAssertEqual(listed[name], description, name)
+        }
+    }
+
+    // [MCP-88] holdMs on tap is the long press; long_press is gone.
+    func testTapHoldReplacesLongPress() async throws {
+        let names = try await listedTools(devTools: true).compactMap { $0["name"] as? String }
+        XCTAssertFalse(names.contains("long_press"))
+        let gone = await MCPDispatcher.handle(
+            line: callRequest("long_press", ["window": 3, "x": 0.5, "y": 0.5, "ms": 800]),
+            client: MCPClientID(1), perform: { _, _ in .answer([:]) })
+        XCTAssertEqual(try errorCode(gone), -32602)
+
+        XCTAssertEqual(try MCPArguments.call("tap", ["window": 3, "x": 0.5, "y": 0.5, "holdMs": 800]),
+                       .tap(window: 3, x: 0.5, y: 0.5, holdMs: 800))
+        XCTAssertEqual(try MCPArguments.call("tap", ["window": 3, "ref": "e4", "holdMs": 800]),
+                       .tapRef(window: 3, ref: "e4", holdMs: 800))
+        XCTAssertEqual(try MCPArguments.call("tap", ["window": 3, "x": 0.5, "y": 0.5]),
+                       .tap(window: 3, x: 0.5, y: 0.5, holdMs: nil))
+        for bad: Any in [3001, 0, 1.5, "800"] {
+            let data = await MCPDispatcher.handle(
+                line: callRequest("tap", ["window": 3, "x": 0.5, "y": 0.5, "holdMs": bad]),
+                client: MCPClientID(1), perform: { _, _ in .answer([:]) })
+            XCTAssertEqual(try errorCode(data), -32602, "holdMs \(bad)")
+        }
+    }
+
+    // [MCP-90] The points form and the direction form are exclusive.
+    func testSwipeTakesPointsOrADirectionNotBoth() async throws {
+        let refused: [[String: Any]] = [
+            ["window": 3, "direction": "up", "x1": 0.1],
+            ["window": 3, "direction": "up", "x1": 0.1, "y1": 0.1, "x2": 0.9, "y2": 0.9],
+            ["window": 3, "ref": "e1"],
+            ["window": 3, "ref": "e1", "x1": 0.1, "y1": 0.1, "x2": 0.9, "y2": 0.9],
+            ["window": 3],
+            ["window": 3, "direction": "sideways"],
+            ["window": 3, "x1": 0.1, "y1": 0.1, "x2": 0.9],
+        ]
+        for args in refused {
+            let data = await MCPDispatcher.handle(line: callRequest("swipe", args), client: MCPClientID(1),
+                                                  perform: { _, _ in .answer([:]) })
+            XCTAssertEqual(try errorCode(data), -32602, "\(args)")
+        }
+        XCTAssertEqual(try MCPArguments.call("swipe", ["window": 3, "direction": "up"]),
+                       .swipeDirection(window: 3, direction: .up, ref: nil, ms: 300))
+        XCTAssertEqual(try MCPArguments.call("swipe", ["window": 3, "direction": "left", "ref": "e1", "ms": 500]),
+                       .swipeDirection(window: 3, direction: .left, ref: "e1", ms: 500))
+        XCTAssertEqual(try MCPArguments.call("swipe", ["window": 3, "x1": 0.1, "y1": 0.2, "x2": 0.9, "y2": 0.8]),
+                       .swipe(window: 3, x1: 0.1, y1: 0.2, x2: 0.9, y2: 0.8, ms: 300))
+    }
+
+    // [MCP-99] input_probe exists only while the app runs with --mcp-dev-tools.
+    func testInputProbeIsListedOnlyWithDevTools() async throws {
+        let without = try await listedTools(devTools: false).compactMap { $0["name"] as? String }
+        XCTAssertEqual(without.count, 14, "\(without)")
+        XCTAssertFalse(without.contains("input_probe"))
+        let probe = ["window": 3, "x": 0.5, "y": 0.5] as [String: Any]
+        let refused = await MCPDispatcher.handle(line: callRequest("input_probe", probe), client: MCPClientID(1),
+                                                 perform: { _, _ in .answer([:]) })
+        XCTAssertEqual(try errorCode(refused), -32602)
+        let message = (try decode(refused)["error"] as? [String: Any])?["message"] as? String
+        XCTAssertEqual(message, "Unknown tool: input_probe")
+
+        let with = try await listedTools(devTools: true).compactMap { $0["name"] as? String }
+        XCTAssertEqual(with.count, 15, "\(with)")
+        XCTAssertTrue(with.contains("input_probe"))
+        let recorder = Recorder()
+        let accepted = try decode(await MCPDispatcher.handle(
+            line: callRequest("input_probe", probe), client: MCPClientID(1), devTools: true,
+            perform: { call, _ in recorder.add(call); return .answer(["ok": true]) }))
+        XCTAssertNil(accepted["error"])
+        XCTAssertEqual(recorder.calls, [.inputProbe(window: 3, x: 0.5, y: 0.5, width: nil, height: nil)])
+    }
+
     // MARK: wait (plan T11)
 
     // [MCP-96]
@@ -568,8 +714,10 @@ final class MCPActArgumentTests: XCTestCase {
         func with(_ args: [String: Any]) -> [String: Any] { args.merging(act) { a, _ in a } }
         XCTAssertEqual(try MCPArguments.call("tap", with(["window": 3, "ref": "e2"])),
                        .tapRef(window: 3, ref: "e2", wait: .none, observe: .none))
-        XCTAssertEqual(try MCPArguments.call("long_press", with(["window": 3, "x": 0, "y": 1, "ms": 10])),
-                       .longPress(window: 3, x: 0, y: 1, ms: 10, wait: .none, observe: .none))
+        XCTAssertEqual(try MCPArguments.call("tap", with(["window": 3, "x": 0, "y": 1, "holdMs": 10])),
+                       .tap(window: 3, x: 0, y: 1, holdMs: 10, wait: .none, observe: .none))
+        XCTAssertEqual(try MCPArguments.call("swipe", with(["window": 3, "direction": "up"])),
+                       .swipeDirection(window: 3, direction: .up, ref: nil, ms: 300, wait: .none, observe: .none))
         XCTAssertEqual(try MCPArguments.call("swipe", with(["window": 3, "x1": 0, "y1": 0, "x2": 1, "y2": 1, "ms": 10])),
                        .swipe(window: 3, x1: 0, y1: 0, x2: 1, y2: 1, ms: 10, wait: .none, observe: .none))
         XCTAssertEqual(try MCPArguments.call("type_text", with(["window": 3, "text": "a"])),
@@ -584,7 +732,7 @@ final class MCPActArgumentTests: XCTestCase {
     }
 
     func testInputAnswersDeclareTheEnvelopeAndNoOk_MCP80() {
-        for tool: MCPToolName in [.tap, .longPress, .swipe, .typeText, .pressKey] {
+        for tool: MCPToolName in [.tap, .swipe, .typeText, .pressKey] {
             let schema = MCPOutputSchemas.schema(for: tool)
             let properties = schema["properties"] as? [String: Any] ?? [:]
             XCTAssertNil(properties["ok"], "\(tool)")

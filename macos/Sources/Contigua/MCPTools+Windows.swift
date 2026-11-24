@@ -25,8 +25,14 @@ extension MCPToolHost {
     }
 
     /// MCP-54: closes as the close button does; the answer names the close.
-    func closeWindow(_ id: Int) throws -> [String: Any] {
+    /// A window the person opened closes only with `force`, so an agent never
+    /// takes away a window it did not ask for by mistake.
+    func closeWindow(_ id: Int, force: Bool) throws -> [String: Any] {
         let window = try requireWindow(id)
+        if !force, controller.windows.ledger.openedBy(UInt32(id), asker: client) == "person" {
+            throw MCPToolError.failed("Window \(id) was opened by the person. Pass force: true to close it anyway.",
+                                      window: id)
+        }
         window.closedBy = client
         window.window?.close()
         return ["window": id, "closed": ["reason": "closed", "closedBy": "you"]]

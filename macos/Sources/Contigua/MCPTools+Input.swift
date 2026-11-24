@@ -1,4 +1,4 @@
-// tap, long_press, swipe, type_text and press_key (docs/design/mcp.md "The act
+// tap, swipe, type_text and press_key (docs/design/mcp.md "The act
 // envelope", MCP-80…94). Each call is one `MCPActMachine` run by
 // `MCPActRunner`: its turn on the window (WindowActQueue), the input, the
 // phone's settle and the tree read after it (PhoneReadQueue), and one answer
@@ -15,13 +15,16 @@ extension MCPToolHost {
 
     // MARK: Input
 
-    func tap(window id: Int, x: Double, y: Double, wait: MCPWait, observe: MCPObserve) async throws -> [String: Any] {
+    /// A point tap; `holdMs` holds the press that long (the long press, MCP-88).
+    func tap(window id: Int, x: Double, y: Double, holdMs: Int?,
+             wait: MCPWait, observe: MCPObserve) async throws -> [String: Any] {
         let stream = UInt32(id)
-        return try await act(id, wait: wait, observe: observe,
-                             did: { MCPActDid.tap(x: x, y: y, holdMs: nil,
+        return try await act(id, wait: wait, observe: observe, gestureMs: holdMs ?? 0,
+                             did: { MCPActDid.tap(x: x, y: y, holdMs: holdMs,
                                                   latest: controller.uiTreeLatest(stream: stream)) },
                              input: { window in
                                  send(.touch(TouchEvent(action: .down, nx: Float(x), ny: Float(y))), to: window)
+                                 if let holdMs { try? await Task.sleep(for: .milliseconds(holdMs)) }
                                  send(.touch(TouchEvent(action: .up, nx: Float(x), ny: Float(y))), to: window)
                              })
     }
@@ -30,31 +33,23 @@ extension MCPToolHost {
     /// it and the label this client was last answered for it, and the phone
     /// presses the node where it is now or refuses and presses nothing.
     /// `did.node` is the node as the phone read it at the press (MCP-108).
-    func tap(window id: Int, ref: String, wait: MCPWait, observe: MCPObserve) async throws -> [String: Any] {
-        try await act(id, wait: wait, observe: observe, ref: ref, path: .press,
+    /// `holdMs` goes in the `ui.press` (MCP-88): the phone holds the node.
+    func tap(window id: Int, ref: String, holdMs: Int?,
+             wait: MCPWait, observe: MCPObserve) async throws -> [String: Any] {
+        try await act(id, wait: wait, observe: observe, ref: ref, path: .press, holdMs: holdMs,
+                      gestureMs: holdMs ?? 0,
                       did: { MCPActDid(object: ["action": "tap", "ref": ref], snapshot: nil) },
                       input: { _ in })
-    }
-
-    func longPress(window id: Int, x: Double, y: Double, ms: Int,
-                   wait: MCPWait, observe: MCPObserve) async throws -> [String: Any] {
-        let stream = UInt32(id)
-        return try await act(id, wait: wait, observe: observe, gestureMs: ms,
-                             did: { MCPActDid.tap(x: x, y: y, holdMs: ms,
-                                                  latest: controller.uiTreeLatest(stream: stream)) },
-                             input: { window in
-                                 send(.touch(TouchEvent(action: .down, nx: Float(x), ny: Float(y))), to: window)
-                                 try? await Task.sleep(for: .milliseconds(ms))
-                                 send(.touch(TouchEvent(action: .up, nx: Float(x), ny: Float(y))), to: window)
-                             })
     }
 
     /// Down, ~60 Hz interpolated moves for `ms`, up. The endpoints are exact;
     /// intermediate steps never overshoot either end.
     func swipe(window id: Int, x1: Double, y1: Double, x2: Double, y2: Double, ms: Int,
-               wait: MCPWait, observe: MCPObserve) async throws -> [String: Any] {
+               wait: MCPWait, observe: MCPObserve,
+               named: (MCPSwipeDirection, String?)? = nil) async throws -> [String: Any] {
         try await act(id, wait: wait, observe: observe, gestureMs: ms,
-                      did: { MCPActDid.swipe(from: [x1, y1], to: [x2, y2], ms: ms) },
+                      did: { MCPActDid.swipe(from: [x1, y1], to: [x2, y2], ms: ms,
+                                             direction: named?.0, ref: named?.1) },
                       input: { window in
                           let steps = max(1, Int((Double(ms) / 1000 * 60).rounded()))
                           let interval = ms / steps
@@ -71,6 +66,31 @@ extension MCPToolHost {
                       })
     }
 
+    /// MCP-90: a direction through the centre of the ref's box (the window's
+    /// latest tree; refused as a tap by ref would be) or of the window.
+    func swipe(window id: Int, direction: MCPSwipeDirection, ref: String?, ms: Int,
+               wait: MCPWait, observe: MCPObserve) async throws -> [String: Any] {
+        let window = try requireWindow(id)
+        var box: [Int]?
+        if let ref {
+            box = try Self.swipeBox(controller.uiTreeResolved(ref: ref, stream: window.stream), ref: ref, window: id)
+        }
+        let size = pixelSize(of: window)
+        let line = SwipePath.line(direction: direction, box: box, size: [size.0, size.1])
+        return try await swipe(window: id, x1: line.from[0], y1: line.from[1], x2: line.to[0], y2: line.to[1],
+                               ms: ms, wait: wait, observe: observe, named: (direction, ref))
+    }
+
+    /// The ref's box in the display's pixels, refused as a tap by ref or a
+    /// screenshot's crop is: gone (`stale_ref`) or off screen (`off_screen`).
+    nonisolated static func swipeBox(_ resolution: UITreeResolution, ref: String, window: Int) throws -> [Int] {
+        if let refusal = MCPToolError.tapRefusal(resolution, ref: ref, window: window) { throw refusal }
+        guard case .placed(_, let placed) = resolution, let box = placed.box, box.count == 4 else {
+            throw MCPToolError(.offScreen, UITreeRefusal.offScreen(ref), ["window": window, "ref": ref])
+        }
+        return box
+    }
+
     /// T13 (MCP-92, MCP-109): the text goes to the phone as `ui.type`, never
     /// as the `text` message, and neither clipboard is touched (MCP-110).
     /// `did` never carries the text: its length, `clear`, `submit`, and the
@@ -83,8 +103,17 @@ extension MCPToolHost {
                       input: { _ in })
     }
 
+    /// MCP-94: home and recents act only in the Phone Mirror (WIN-47); in
+    /// an app window they send nothing and `did` says `ignored`.
     func pressKey(window id: Int, key: MCPKey, wait: MCPWait, observe: MCPObserve) async throws -> [String: Any] {
-        try await act(id, wait: wait, observe: observe,
+        let ignored = (key == .home || key == .recents)
+            && !(controller.windows.controller(for: UInt32(id)) is PhoneWindowController)
+        if ignored {
+            return try await act(id, wait: wait, observe: observe, sendsInput: false,
+                                 did: { MCPActDid.key(key.rawValue, ignored: true) },
+                                 input: { _ in })
+        }
+        return try await act(id, wait: wait, observe: observe,
                       did: { MCPActDid.key(key.rawValue) },
                       input: { window in
                           let session = controller.windows.session
@@ -113,15 +142,19 @@ extension MCPToolHost {
     /// Run one input call through its machine and build the envelope. `did`
     /// is computed when the call's turn comes (from the window's latest tree
     /// then), `input` sends it.
+    /// `sendsInput: false` is a call that reaches nothing on the window (an
+    /// ignored key): no other client is told this one acted (MCP-84).
     private func act(_ id: Int, wait: MCPWait, observe: MCPObserve, ref: String? = nil,
-                     path: MCPActMachine.Path = .input, typing: MCPTyping? = nil, gestureMs: Int = 0,
+                     path: MCPActMachine.Path = .input, typing: MCPTyping? = nil, holdMs: Int? = nil,
+                     gestureMs: Int = 0, sendsInput: Bool = true,
                      did: @escaping @MainActor () -> MCPActDid,
                      input: @escaping @MainActor (StreamWindowController) async -> Void) async throws -> [String: Any] {
         let client = self.client
         let acts = controller.windowActs
-        let env = MCPHostActEnvironment(host: self, id: id, ref: ref, typing: typing, client: client, did: did,
-                                        input: { window in
-            acts.agentInput(window: UInt32(id), client: client)  // MCP-84: another_agent for any other holder
+        let env = MCPHostActEnvironment(host: self, id: id, ref: ref, holdMs: holdMs, typing: typing, client: client,
+                                        did: did, input: { window in
+            // MCP-84: another_agent for any other holder.
+            if sendsInput { acts.agentInput(window: UInt32(id), client: client) }
             await input(window)
         })
         let outcome = await MCPActRunner.run(MCPActMachine(path: path, wait: wait, observe: observe),
@@ -199,6 +232,7 @@ final class MCPHostActEnvironment: MCPActEnvironment {
     private let host: MCPToolHost
     private let id: Int
     private let ref: String?
+    private let holdMs: Int?
     private let typing: MCPTyping?
     private let did: () -> MCPActDid
     private let input: (StreamWindowController) async -> Void
@@ -218,11 +252,13 @@ final class MCPHostActEnvironment: MCPActEnvironment {
 
     private let client: MCPClientID?
 
-    init(host: MCPToolHost, id: Int, ref: String?, typing: MCPTyping? = nil, client: MCPClientID? = nil,
+    init(host: MCPToolHost, id: Int, ref: String?, holdMs: Int? = nil, typing: MCPTyping? = nil,
+         client: MCPClientID? = nil,
          did: @escaping () -> MCPActDid, input: @escaping (StreamWindowController) async -> Void) {
         self.host = host
         self.id = id
         self.ref = ref
+        self.holdMs = holdMs
         self.typing = typing
         self.client = client
         self.did = did
@@ -269,8 +305,8 @@ final class MCPHostActEnvironment: MCPActEnvironment {
         let snapshot = host.controller.uiTreeLatestSnapshot(stream: stream)
         let result: UIPressResult
         do {
-            result = .reply(try await host.controller.uiPress(stream: stream, k: k, holdMs: nil, client: client,
-                                                              until: .now + MCPToolHost.actDeadline()))
+            result = .reply(try await host.controller.uiPress(stream: stream, k: k, holdMs: holdMs, client: client,
+                                                              until: .now + MCPToolHost.actDeadline(gestureMs: holdMs ?? 0)))
         } catch UITreeError.timedOut {
             result = .failed("timeout")
         } catch UITreeError.notConnected {
@@ -294,7 +330,7 @@ final class MCPHostActEnvironment: MCPActEnvironment {
                                                      expect: expect, now: reply.now, coveredBy: reply.coveredBy)
             return .pressFailed(code)
         case .reply(let reply):
-            didNow = MCPActDid.press(ref: ref, reply: reply, snapshot: snapshot)
+            didNow = MCPActDid.press(ref: ref, holdMs: holdMs, reply: reply, snapshot: snapshot)
             return .pressOK
         }
     }
@@ -401,18 +437,23 @@ struct MCPActDid {
 
     /// A press by key names what the phone pressed, as it read the node at
     /// the press (MCP-108); `on.snapshot` is the window's latest read.
-    static func press(ref: String, reply: UIPressReply, snapshot: Int?) -> MCPActDid {
+    static func press(ref: String, holdMs: Int? = nil, reply: UIPressReply, snapshot: Int?) -> MCPActDid {
         var named: [String: String] = ["role": reply.role ?? ""]
         if let text = reply.text { named["text"] = text }
         if let desc = reply.desc { named["desc"] = desc }
         var object: [String: Any] = ["action": "tap", "ref": ref, "node": named]
+        if let holdMs { object["holdMs"] = holdMs }
         if let at = reply.at { object["at"] = at }
         if let box = reply.box { object["box"] = box }
         return MCPActDid(object: object, snapshot: snapshot)
     }
 
-    static func swipe(from: [Double], to: [Double], ms: Int) -> MCPActDid {
-        MCPActDid(object: ["action": "swipe", "from": from, "to": to, "ms": ms], snapshot: nil)
+    static func swipe(from: [Double], to: [Double], ms: Int,
+                      direction: MCPSwipeDirection? = nil, ref: String? = nil) -> MCPActDid {
+        var object: [String: Any] = ["action": "swipe", "from": from, "to": to, "ms": ms]
+        if let direction { object["direction"] = direction.rawValue }
+        if let ref { object["ref"] = ref }
+        return MCPActDid(object: object, snapshot: nil)
     }
 
     /// Never the text: only how many characters, in code points (MCP-14, MCP-92).
@@ -421,8 +462,11 @@ struct MCPActDid {
                            "submit": submit], snapshot: nil)
     }
 
-    static func key(_ key: String) -> MCPActDid {
-        MCPActDid(object: ["action": "key", "key": key], snapshot: nil)
+    /// `ignored`: home or recents in an app window, which sent nothing (MCP-94).
+    static func key(_ key: String, ignored: Bool = false) -> MCPActDid {
+        var object: [String: Any] = ["action": "key", "key": key]
+        if ignored { object["ignored"] = true }
+        return MCPActDid(object: object, snapshot: nil)
     }
 
     private static func area(_ box: [Int]) -> Int {

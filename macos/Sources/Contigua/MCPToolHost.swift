@@ -41,7 +41,7 @@ struct MCPToolHost {
         case .phoneStatus, .listApps, .openApp, .listWindows, .screenshot, .closeWindow,
              .sendLink, .sendFile, .wait:
             return result
-        case .tap, .tapRef, .longPress, .swipe, .typeText, .pressKey:
+        case .tap, .tapRef, .swipe, .swipeDirection, .typeText, .pressKey:
             // The envelope stamps itself: a window that closed during the call
             // keeps `state: closed` and the frame it last had (MCP-83).
             return result
@@ -67,15 +67,17 @@ struct MCPToolHost {
             case .wait(let window, let mode, let timeoutMs, let observe):
                 return .answer(try await wait(window: window, mode: mode, timeoutMs: timeoutMs,
                                               observe: observe))
-            case .tap(let window, let x, let y, let wait, let observe):
-                return .answer(try await tap(window: window, x: x, y: y, wait: wait, observe: observe))
-            case .tapRef(let window, let ref, let wait, let observe):
-                return .answer(try await tap(window: window, ref: ref, wait: wait, observe: observe))
-            case .longPress(let window, let x, let y, let ms, let wait, let observe):
-                return .answer(try await longPress(window: window, x: x, y: y, ms: ms,
-                                                   wait: wait, observe: observe))
+            case .tap(let window, let x, let y, let holdMs, let wait, let observe):
+                return .answer(try await tap(window: window, x: x, y: y, holdMs: holdMs,
+                                             wait: wait, observe: observe))
+            case .tapRef(let window, let ref, let holdMs, let wait, let observe):
+                return .answer(try await tap(window: window, ref: ref, holdMs: holdMs,
+                                             wait: wait, observe: observe))
             case .swipe(let window, let x1, let y1, let x2, let y2, let ms, let wait, let observe):
                 return .answer(try await swipe(window: window, x1: x1, y1: y1, x2: x2, y2: y2, ms: ms,
+                                               wait: wait, observe: observe))
+            case .swipeDirection(let window, let direction, let ref, let ms, let wait, let observe):
+                return .answer(try await swipe(window: window, direction: direction, ref: ref, ms: ms,
                                                wait: wait, observe: observe))
             case .typeText(let window, let text, let clear, let submit, let wait, let observe):
                 return .answer(try await typeText(window: window, text: text, clear: clear, submit: submit,
@@ -85,8 +87,8 @@ struct MCPToolHost {
             case .inputProbe(let window, let x, let y, let width, let height):
                 return .answer(try await inputProbe(window: window, x: x, y: y,
                                                     width: width, height: height))
-            case .closeWindow(let window):
-                return .answer(try closeWindow(window))
+            case .closeWindow(let window, let force):
+                return .answer(try closeWindow(window, force: force))
             case .sendLink(let url, let shape, let wait, let observe):
                 return .answer(try await sendLink(url, shape: shape, wait: wait, observe: observe))
             case .sendFile(let path):
