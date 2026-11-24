@@ -141,7 +141,7 @@ extension SessionPongTests {
         var screenOffEvent = false
         let eventLock = NSLock()
         session.onEvent = { event in
-            if case .phoneState(_, _, _, _, _, _, _, let screen, _, _) = event,
+            if case .phoneState(_, _, _, _, _, _, _, let screen, _, _, _) = event,
                screen == .off {
                 eventLock.lock(); screenOffEvent = true; eventLock.unlock()
             }

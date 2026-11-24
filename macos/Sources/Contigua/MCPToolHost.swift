@@ -52,7 +52,7 @@ struct MCPToolHost {
         do {
             switch call {
             case .phoneStatus:
-                return .answer(phoneStatus())
+                return .answer(await phoneStatus())
             case .listApps:
                 return .answer(try listApps())
             case .openApp(let query, let newWindow):

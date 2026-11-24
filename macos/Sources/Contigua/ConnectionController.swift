@@ -59,6 +59,8 @@ struct PhoneStatus: Equatable {
     var volumeMax: Int? = nil
     /// Display 0's power state; nil reads as on (nothing to overlay).
     var screen: PhoneScreen? = nil
+    /// `state.lockSource` (MCP-31): which phone source gave `locked`.
+    var lockSource: PhoneLockSource? = nil
 }
 
 struct QRPairingState: Equatable {
@@ -210,7 +212,17 @@ final class ConnectionController {
     /// two-second freshness rule reads.
     private(set) var frontApp = FrontAppMachine()
     private(set) var frontAppRepliedAt: Date?
-    @ObservationIgnored private var frontSeq = 0
+    /// MCP-32: the panel's card and every MCP `phone_status` share one
+    /// `task.front` budget (PROTOCOL.md "Foreground app" §3).
+    @ObservationIgnored private(set) lazy var frontReads: FrontReadGate = {
+        let gate = FrontReadGate()
+        gate.send = { [weak self] seq in
+            guard let self, let session = self.session else { return }
+            self.frontApp.ask(seq: seq)
+            session.requestFront(seq: seq)
+        }
+        return gate
+    }()
     @ObservationIgnored private var frontWatchCount = 0
     @ObservationIgnored private var frontTimer: Timer?
     /// `ui.tree` (WIN-79): each MCP read waits for the reply carrying its seq.
@@ -359,6 +371,8 @@ final class ConnectionController {
     /// Phones whose Spotlight list needs one re-index when their builds finish.
     private var spotlightRefreshPending: Set<String> = []
     private(set) var status: PhoneStatus?
+    /// MCP-31: when the Mac last saw `locked` change, or the phone's `welcome`.
+    @ObservationIgnored private(set) var lockChangedAt: ContinuousClock.Instant?
     /// `ring.state` from the phone: a ring this Mac started is still playing.
     private(set) var ringing = false
     /// The stored Focus filter values (docs/design/focus.md).
@@ -1275,13 +1289,12 @@ final class ConnectionController {
     }
 
     private func askFront() {
-        guard link.isOnline, let session else { return }
-        frontSeq += 1
-        frontApp.ask(seq: frontSeq)
-        session.requestFront(seq: frontSeq)
+        guard link.isOnline, session != nil else { return }
+        frontReads.ask()
     }
 
     private func frontReplied(seq: Int, pkg: String?) {
+        frontReads.reply(seq: seq, pkg: pkg)
         guard frontApp.reply(seq: seq, pkg: pkg) else { return }
         frontAppRepliedAt = Date()
         let presence = pkg == nil ? "none" : "present"
@@ -1292,6 +1305,7 @@ final class ConnectionController {
     /// fallback keeps its old one-shot behaviour (the window reports the
     /// phone's own refusal).
     private func frontUnavailable() {
+        frontReads.unavailable()
         guard case .asking = frontApp.state else { return }
         frontApp.reset()
         frontAppRepliedAt = Date()
@@ -1303,7 +1317,7 @@ final class ConnectionController {
     private func resetFrontApp() {
         frontApp.reset()
         frontAppRepliedAt = nil
-        frontSeq += 1
+        frontReads.reset()
     }
 
     // MARK: The accessibility tree (WIN-79)
@@ -3303,8 +3317,10 @@ final class ConnectionController {
         case .uiSettle(let reply):
             uiSettleBroker.reply(reply)
         case .phoneState(let locked, let battery, let charging, let dnd, let ringer, let volume,
-                         let volumeMax, let screen, let secure, let panel):            status = PhoneStatus(locked: locked, battery: battery, charging: charging, dnd: dnd, ringer: ringer,
-                                 volume: volume, volumeMax: volumeMax, screen: screen)
+                         let volumeMax, let screen, let secure, let panel, let lockSource):
+            if status?.locked != locked { lockChangedAt = .now }
+            status = PhoneStatus(locked: locked, battery: battery, charging: charging, dnd: dnd, ringer: ringer,
+                                 volume: volume, volumeMax: volumeMax, screen: screen, lockSource: lockSource)
             windows.setPhoneScreen(screen)
             if let secure { windows.setPhoneSecure(secure) }
             windows.setPhonePanel(panel)
@@ -3670,6 +3686,7 @@ final class ConnectionController {
         status = PhoneStatus(locked: info.locked, battery: info.battery, charging: info.charging ?? false,
                              ringer: status?.ringer, volume: status?.volume, volumeMax: status?.volumeMax,
                              screen: status?.screen)
+        lockChangedAt = .now
         // A new connection: its first `state` reconciles the Focus once.
         focusReconciled = false
         if let battery = info.battery {
