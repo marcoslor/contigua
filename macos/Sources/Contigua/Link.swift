@@ -418,6 +418,40 @@ enum LinkAction: Equatable {
     case startPairing(PhoneRef)
 }
 
+/// PAIR-36: the `--connect` launch's first pairing, its own pure machine
+/// beside the link. It opens at a launch with a remembered phone and settles
+/// at that launch's first pairing outcome: the link first reaching online,
+/// pairing or needs-pairing, or another activation, a person's pairing (begun
+/// or cancelled), a forget, or a launch into trust lost. It has no actions:
+/// `ConnectionController.runAttempt` reads it to choose the dial's policy.
+enum LaunchPairing: Equatable {
+    /// The launch's first pairing is unresolved: its retries may pair.
+    case open
+    /// Resolved, or never opened: retries are pin-only.
+    case settled
+
+    /// The state after `event`, given the link the event left. Every event
+    /// and every link case is listed: a new one must say what it does here.
+    func handle(_ event: LinkEvent, reaching link: Link) -> LaunchPairing {
+        let afterEvent: LaunchPairing
+        switch event {
+        case .launch(let phone):
+            afterEvent = phone == nil ? .settled : .open
+        case .activate, .beginPairing, .cancelPairing, .forget, .restoreTrustLost:
+            afterEvent = .settled
+        case .welcome, .attemptFailed, .reachabilityHint, .reachability, .tryNow,
+             .codeShown, .pairApproved, .localNetworkDenied, .tick:
+            afterEvent = self
+        }
+        switch link {
+        case .online, .pairing, .needsPairing:
+            return .settled
+        case .idle, .connecting, .reconnecting, .offline:
+            return afterEvent
+        }
+    }
+}
+
 struct LinkMachine {
     static let offlineAfter: TimeInterval = 15
     /// The inferred trust loss's quiet re-check (PAIR-31).
@@ -471,8 +505,23 @@ struct LinkMachine {
 
     var consecutiveFailures: Int { failures }
 
+    /// PAIR-36: whether the `--connect` launch's first pairing is still
+    /// unresolved (`LaunchPairing`), moved with every event in `handle`.
+    private(set) var launchPairingState: LaunchPairing = .settled
+
+    /// While true the test entry point's retries may pair (a first dial that
+    /// met `busy`, a phone not yet listening); after it only the person's
+    /// Pair Again pairs, so a cancelled sheet never leaves a quiet pairing dial.
+    var launchPairing: Bool { launchPairingState == .open }
+
     @discardableResult
     mutating func handle(_ event: LinkEvent, at now: Date) -> [LinkAction] {
+        let actions = step(event, at: now)
+        launchPairingState = launchPairingState.handle(event, reaching: link)
+        return actions
+    }
+
+    private mutating func step(_ event: LinkEvent, at now: Date) -> [LinkAction] {
         switch event {
         case .launch(let phone):
             guard let phone else { link = .idle; return [] }
