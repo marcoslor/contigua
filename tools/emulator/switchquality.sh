@@ -487,7 +487,7 @@ run_arm() { # run_arm <tag> <on|off>
     : > "$WORK/phases-$tag.txt"
     start_proxy "$tag" || return 1
 
-    "$APP" --profile "$PROFILE" --background --mcp-enable \
+    "$APP" --profile "$PROFILE" --background --mcp-enable --mcp-dev-tools \
         --connect "127.0.0.1:$PROXY_PORT" --quit-after 900 \
         --audio-stats "$WORK/audio-$tag.json" > "$WORK/app-$tag.log" 2>&1 &
     APP_PID=$!

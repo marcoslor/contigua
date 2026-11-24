@@ -587,6 +587,11 @@ The task sections below are grouped by area; the schedule above is the order.
 ## T9 — Read less: text view, find, `list_apps` query
 
 - **Closes** #170. **Rows** MCP-34, MCP-74, MCP-75, MCP-104 (text view), MCP-106 (`find` over off-screen nodes, `in`, the text view's counts) (and MCP-72's tool half via T10's parse). **Wire** consumes B6's `offscreen` request. **Review** normal.
+- **Tools table.** T2 left `list_apps` and `ui_tree` in design/mcp.md's tools
+  table without T9's arguments, so `tools/list` never offers an argument the
+  server refuses. T9 adds `query`, `limit`, `format` and `find` back to those
+  two rows, both columns, with the descriptions that say what they do
+  (`testDescriptionsMatchTheDesignDoc` holds the two equal).
 - **Files** `MCPCore.swift` (`list_apps` `query`/`limit`, `ui_tree` `format`/`find`,
   `observe: "text"` on input tools), new `UITreeText.swift` (text view and
   find, pure; `in` from the nearest `scroll` ancestor by `p`),
@@ -634,63 +639,6 @@ The task sections below are grouped by area; the schedule above is the order.
   - K1 `SessionTest.testStateCarriesLockSource` `[MCP-31]`: the serialised
     `state` has `"lockSource":"keyguard_listener"`.
 - **Tier** K1, fake-phone selfcheck. **Depends** —.
-
-## T2 — Descriptions that say what happens; the tool set reshaped
-
-- **Closes** #172. **Rows** MCP-7, MCP-54 (`force`), MCP-88, MCP-90, MCP-94, MCP-99. (MCP-92's `clear`/`submit` moved to T13, which sends them in `ui.type`.) **Wire** no. **Review** normal.
-- **Files** `MCPCore.swift` (every description to design/mcp.md's text —
-  #172 named six that say "Phone Mirror" for any window: `list_windows`,
-  `long_press` (removed), `swipe`, `type_text`, `press_key`, `close_window`;
-  #162 already fixed `ui_tree`'s pixels; `long_press` removed; `tap`
-  `holdMs`; `swipe` `direction`/`ref`; `close_window` `force`; `input_probe`
-  listed and accepted only with `--mcp-dev-tools`), new `SwipePath.swift`
-  (pure), `MCPTools+Input.swift`, `MCPTools+Windows.swift` (refuse closing a
-  `person` window without `force`, MCP-54), `App.swift` (`LaunchOptions`:
-  `--mcp-dev-tools`), `MCPCoreTests.swift`, `MCPToolHostTests.swift`, new
-  `SwipePathTests.swift`, `macos/scripts/mcp/suite_core.py` (long_press → tap
-  holdMs; the tool list with `input_probe`), `macos/scripts/check-e2e.sh`
-  (`check_mcp`'s launch adds `--mcp-dev-tools`), `tools/emulator/idrcheck.sh`,
-  `overrun.sh`, `stats.sh`, `strat.sh`, `switchquality.sh` (each `--mcp-enable`
-  launch adds `--mcp-dev-tools`), `tools/stream-bench/bench.py` (the
-  missing-tool failure names the flag), `tools/stream-bench/test_bench.py`,
-  `tools/stream-bench/README.md` (the `tap` script needs the app launched
-  with `--mcp-dev-tools`; for the person's installed app,
-  `open -a Contigua --args --mcp-dev-tools`), new
-  `macos/scripts/mcp/suite_input.py`.
-- **Tests**
-  - K2 `MCPCoreTests.testNoDescriptionCallsEveryWindowAPhoneMirror` `[MCP-7]`:
-    no description contains "Phone Mirror" except `press_key`'s "home and
-    recents act only in the Phone Mirror".
-  - K2 `MCPCoreTests.testDescriptionsMatchTheDesignDoc` `[MCP-7]`: parse the
-    tools table in `docs/design/mcp.md` (path from `#filePath`), compare each
-    row's description to `tools/list`'s, byte for byte; the tool sets are equal.
-  - K2 `MCPToolHostTests.testHomeInAnAppWindowIsIgnored` `[MCP-94]`: `press_key home`
-    on an app window → no `nav` sent, `did == {action: key, key: home, ignored: true}`.
-  - K2 `MCPCoreTests.testTapHoldReplacesLongPress` `[MCP-88]`: `tools/list`
-    has no `long_press`; `tap {window:3, x:.5, y:.5, holdMs: 800}` →
-    `.tap(window: 3, point, holdMs: 800)`; `holdMs: 3001` → `-32602`.
-  - K2 `MCPCoreTests.testSwipeTakesPointsOrADirectionNotBoth` `[MCP-90]`:
-    `{direction:"up", x1:…}` → `-32602`; `{ref:"e1"}` without direction → `-32602`.
-  - K2 `SwipePathTests.testADirectionSwipesSixtyPercentThroughTheCentre` `[MCP-90]`:
-    window 1000×2000, no ref, `up` → from (0.5, 0.8) to (0.5, 0.2); ref box
-    `[0,1000,1000,1500]` on that window, `left` → from (0.8, 0.625) to (0.2, 0.625).
-  - K2 `MCPToolHostTests.testClosingThePersonsWindowNeedsForce` `[MCP-54]`:
-    a window `openedBy: person`, no `force` → `failed`, message `Window 4 was opened by the person. Pass force: true to close it anyway.`,
-    no `window.close`; with `force: true` → closed; a window `openedBy: you`
-    or `another_agent` → closed without it.
-  - K2 `MCPCoreTests.testInputProbeIsListedOnlyWithDevTools` `[MCP-99]`:
-    without the flag `tools/list` has 14 tools and `input_probe` is `-32602`
-    unknown tool; with it, 15 and the call is accepted.
-  - `tools/stream-bench/test_bench.py` `test_the_missing_probe_names_the_flag`
-    `[MCP-99]`: a fake MCP that answers unknown tool → the run is `failed`
-    and its reason contains `--mcp-dev-tools`.
-  - e2e `suite_input.py` `[MCP-88]`: `tap {holdMs: 600}` → fake log down/up
-    0.5–1.5 s apart; `[MCP-90]` `swipe {direction: "up"}` → down at y≈0.8,
-    up at y≈0.2; `suite_core.py` `[MCP-99]`: launched with the flag, the tool
-    list has `input_probe`.
-- **Tier** K2, e2e. **Depends** T5, T6 (`open_app`/`send_link` arguments), T7
-  (`force` uses the ledger), T12 (`shape`), T13 (`type_text`'s description and
-  answer).
 
 ## T8 — `phone_status` says what locked means and what is in front
 

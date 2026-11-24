@@ -46,7 +46,6 @@ enum MCPToolName: String, CaseIterable {
     case uiTree = "ui_tree"
     case wait
     case tap
-    case longPress = "long_press"
     case swipe
     case typeText = "type_text"
     case pressKey = "press_key"
@@ -85,6 +84,11 @@ enum MCPKey: String, CaseIterable {
     }
 }
 
+/// The way the finger moves in a `swipe {direction}` (MCP-90).
+enum MCPSwipeDirection: String, CaseIterable {
+    case up, down, left, right
+}
+
 /// A validated tool call: exactly what the tools layer may execute.
 enum MCPCall: Equatable {
     case phoneStatus
@@ -100,19 +104,24 @@ enum MCPCall: Equatable {
     case wait(window: Int, mode: MCPWaitMode, timeoutMs: Int, observe: MCPObserve)
     // Every input tool settles and observes (MCP-81, MCP-82): `wait` defaults
     // to settle and `observe` to tree.
-    case tap(window: Int, x: Double, y: Double, wait: MCPWait = .settle, observe: MCPObserve = .tree)
+    /// `holdMs` holds the press: the long press (MCP-88).
+    case tap(window: Int, x: Double, y: Double, holdMs: Int? = nil,
+             wait: MCPWait = .settle, observe: MCPObserve = .tree)
     /// WIN-79: tap the element a `ui_tree` ref named.
-    case tapRef(window: Int, ref: String, wait: MCPWait = .settle, observe: MCPObserve = .tree)
-    case longPress(window: Int, x: Double, y: Double, ms: Int,
-                   wait: MCPWait = .settle, observe: MCPObserve = .tree)
+    case tapRef(window: Int, ref: String, holdMs: Int? = nil,
+                wait: MCPWait = .settle, observe: MCPObserve = .tree)
     case swipe(window: Int, x1: Double, y1: Double, x2: Double, y2: Double, ms: Int,
                wait: MCPWait = .settle, observe: MCPObserve = .tree)
+    /// MCP-90: through the centre of the ref's box, else the window's.
+    case swipeDirection(window: Int, direction: MCPSwipeDirection, ref: String?, ms: Int,
+                        wait: MCPWait = .settle, observe: MCPObserve = .tree)
     case typeText(window: Int, text: String, clear: Bool = false, submit: Bool = false,
                   wait: MCPWait = .settle, observe: MCPObserve = .tree)
     case pressKey(window: Int, key: MCPKey, wait: MCPWait = .settle, observe: MCPObserve = .tree)
     /// P0 (pmaxx): tap, then time the first displayed frame that changed.
     case inputProbe(window: Int, x: Double, y: Double, width: Double?, height: Double?)
-    case closeWindow(window: Int)
+    /// MCP-54: a window the person opened closes only with `force`.
+    case closeWindow(window: Int, force: Bool = false)
     case sendLink(String, shape: MCPWindowShape = .phone, wait: MCPWait = .settle, observe: MCPObserve = .tree)
     case sendFile(String)
 }
@@ -123,10 +132,10 @@ extension MCPCall {
         switch self {
         case .phoneStatus, .listApps, .openApp, .listWindows, .sendLink, .sendFile:
             return nil
-        case .screenshot(let window, _, _), .uiTree(let window, _), .closeWindow(let window),
+        case .screenshot(let window, _, _), .uiTree(let window, _), .closeWindow(let window, _),
              .wait(let window, _, _, _),
-             .tap(let window, _, _, _, _), .tapRef(let window, _, _, _),
-             .longPress(let window, _, _, _, _, _), .swipe(let window, _, _, _, _, _, _, _),
+             .tap(let window, _, _, _, _, _), .tapRef(let window, _, _, _, _),
+             .swipe(let window, _, _, _, _, _, _, _), .swipeDirection(let window, _, _, _, _, _),
              .typeText(let window, _, _, _, _, _), .pressKey(let window, _, _, _),
              .inputProbe(let window, _, _, _, _):
             return window
@@ -217,21 +226,26 @@ enum MCPTools {
         "description": "tree (the default) returns the ui_tree answer read after the settle; none returns no screen.",
     ]
 
-    private static func duration(_ maximum: Int) -> [String: Any] {
+    private static func duration(_ maximum: Int, default fallback: Int) -> [String: Any] {
         ["type": "integer", "minimum": 1, "maximum": maximum,
-         "description": "How long the gesture lasts, in milliseconds (at most \(maximum))."]
+         "description": "How long the gesture lasts, in milliseconds (at most \(maximum), default \(fallback))."]
     }
+
+    /// MCP-88: the longest `holdMs`.
+    static let maxHoldMs = 3000
+    /// MCP-90: a swipe's `ms` when the call gives none.
+    static let defaultSwipeMs = 300
 
     /// The list `tools/list` returns, in a fixed order.
     static let all: [MCPTool] = [
         MCPTool(name: .phoneStatus,
-                description: "The connected phone: name, battery, charging, lock state and open windows.",
+                description: "The phone in use: connected or not, its name, battery, screen and lock state, the app in front on the phone's own screen, and how many windows are open. App windows take input whether or not the phone is locked.",
                 schema: object([:], required: [])),
         MCPTool(name: .listApps,
-                description: "Every app the phone reports, with its label and package name.",
+                description: "Apps on the phone that can be opened, as label and package.",
                 schema: object([:], required: [])),
         MCPTool(name: .openApp,
-                description: "Open a phone app in a Contigua window, or raise the app's window when it has one (unless newWindow). The answer names the window, whether it is new or raised, who opened it and its size; by default the call waits for the window's first frame (at most 10 s), then for the screen to settle, and returns the tree. A window still without a picture at 10 s answers state opening and settle not_ready.",
+                description: "Open a phone app in a window on this Mac, or bring its window to the front if it has one, and return that window and the screen it shows. The app opens on whatever screen it last showed. A new window has the phone's shape unless shape is \"window\"; a window brought to the front keeps its shape, and size says what it is. newWindow: true opens a second window of an app that allows it.",
                 schema: object([
                     "app": ["type": "string", "minLength": 1, "maxLength": 200,
                             "description": "Package name or app label (or a unique prefix)."],
@@ -240,10 +254,10 @@ enum MCPTools {
                     "shape": shape, "wait": wait, "observe": observe,
                 ], required: ["app"])),
         MCPTool(name: .listWindows,
-                description: "The open stream windows: id, package, size ([w, h] in the display pixels ui_tree's box uses), state (opening, live, paused, stalled, offline) and frame (seq, ageMs: how fresh its picture is).",
+                description: "Every open window: its id, what it shows, who opened it (you, another agent, the person or the app itself), its state and how fresh its picture is, and the windows that closed in the last 10 minutes with the reason. A window id is a handle, never reused for another window while Contigua runs.",
                 schema: object([:], required: [])),
         MCPTool(name: .screenshot,
-                description: "PNG of a frame from after the call: the phone's next keyframe for the window, scaled to a longest side of at most 1280 px. frame.seq counts the window's frames and grows with every new picture; frame.ageMs is how old this one is; state says whether the window is live. image is the PNG's pixels, size the window's display pixels (the space ui_tree's box uses). blank: true marks a black or one-colour frame. An offline phone fails phone_offline at once; no keyframe within 2 s fails no_frame. Pass ref to crop to a ui_tree element's box plus 8 px; crop names the box in size's pixels.",
+                description: "A PNG of the window, from a frame the phone sends after this call (never an older one), longest side at most 1280 px. ui_tree's box values are in the window's pixels (size), not the image's. Pass ref to get only that element.",
                 schema: object([
                     "window": window,
                     "ref": ["type": "string", "minLength": 1, "maxLength": 32, "pattern": "^e[0-9]+$",
@@ -251,7 +265,7 @@ enum MCPTools {
                     "wait": wait,
                 ], required: ["window"])),
         MCPTool(name: .uiTree,
-                description: "The accessibility tree of the window's display: one entry per label or control, with its text, view id, bounds in the display's pixels, a tap point in 0..1 and a ref. displayId names the phone display it was read from; size names the pixel space box is in; snapshot counts this window's reads. Off-screen nodes are left out: a list's hidden counts its rows before and after the screen and omitted counts every node left out, so scroll the list to reach them. A field showing its hint has hint:true and hintText, never text; only the layer with input focus is active, and only its focused node has focus. Cheaper and more exact than a screenshot for finding what to press. A ref names one element for as long as it is on screen, across reads; a ref whose element is gone is refused. Read it again after an action to see what changed.",
+                description: "What the window shows, as accessibility nodes in reading order: text, role, view id, states, a tap point (at, 0..1) and a ref for tap; box is in the display's pixels (size). A ref names one element for as long as it is on screen, across reads; a ref whose element is gone is refused. Only what is on screen is listed: a list says how many items it hides before and after; swipe the list to reach them. A field showing its hint has hint: true and no text. loading: true means the screen is still loading. Exact, and cheaper than a screenshot for finding what to press.",
                 schema: object(["window": window, "wait": wait], required: ["window"])),
         MCPTool(name: .wait,
                 description: "Wait on a window: for ms milliseconds, until text appears on it (with gone: true, until it disappears), or with settle: true until it stops changing and nothing on it is loading, at most timeoutMs; if timeoutMs ends first, reason says whether it was still loading. Use this instead of sleeping or re-reading the tree as a clock.",
@@ -270,24 +284,26 @@ enum MCPTools {
                     "observe": observe,
                 ], required: ["window"])),
         MCPTool(name: .tap,
-                description: "Tap a point in the window, or an element by the ref ui_tree gave. A ref wins over x and y. A ref names one element for as long as it is on screen, across reads; a ref whose element is gone is refused. The phone presses the element where it is now; it is refused, with a sentence saying what to do and nothing pressed, when the element is gone, off screen, covered (coveredBy names what is over it) or now reads differently from the tree you were given, or when the window has had no tree read since it opened or since the phone reconnected. The answer names what was pressed, as the phone read it at the press. By default the call waits for the screen to settle and returns the new tree.",
+                description: "Tap an element by its ref from ui_tree (preferred), or a point x, y (0..1 of the window); holdMs makes it a long press. A ref names one element for as long as it is on screen, across reads; a ref whose element is gone is refused. A ref whose element is off screen or covered is refused too, and nothing is pressed. The answer names what was pressed (its role and label). By default the call waits for the screen to settle and returns the new tree.",
                 schema: object([
                     "window": window, "x": pointX, "y": pointY,
                     "ref": ["type": "string", "minLength": 1, "maxLength": 32, "pattern": "^e[0-9]+$",
                             "description": "Element ref from ui_tree, e.g. \"e5\". Takes precedence over x and y."],
+                    "holdMs": ["type": "integer", "minimum": 1, "maximum": MCPTools.maxHoldMs,
+                               "description": "Hold the press this many milliseconds (1 to 3000): a long press."],
                     "wait": wait, "observe": observe,
                 ], required: ["window"])),
-        MCPTool(name: .longPress,
-                description: "Press and hold a point in the Phone Mirror.",
-                schema: object(["window": window, "x": pointX, "y": pointY,
-                                "ms": duration(3000), "wait": wait, "observe": observe],
-                               required: ["window", "x", "y"])),
         MCPTool(name: .swipe,
-                description: "Swipe from one point to another in the Phone Mirror.",
+                description: "Swipe in a window. direction is the way the finger moves (swipe up to see what is further down), through the centre of ref's element or of the window; or give the points x1,y1 to x2,y2. By default the call waits for the screen to settle and returns the new tree.",
                 schema: object([
-                    "window": window, "x1": pointX, "y1": pointY, "x2": pointX, "y2": pointY,
-                    "ms": duration(2000), "wait": wait, "observe": observe,
-                ], required: ["window", "x1", "y1", "x2", "y2"])),
+                    "window": window,
+                    "direction": ["type": "string", "enum": MCPSwipeDirection.allCases.map(\.rawValue),
+                                  "description": "The way the finger moves, through the centre of ref's element or of the window, over 60 % of it. Not with x1, y1, x2, y2."],
+                    "ref": ["type": "string", "minLength": 1, "maxLength": 32, "pattern": "^e[0-9]+$",
+                            "description": "With direction: element ref from ui_tree, e.g. \"e5\", to swipe through (a list)."],
+                    "x1": pointX, "y1": pointY, "x2": pointX, "y2": pointY,
+                    "ms": duration(2000, default: MCPTools.defaultSwipeMs), "wait": wait, "observe": observe,
+                ], required: ["window"])),
         MCPTool(name: .typeText,
                 description: "Type text into the window's focused field at the cursor: what is there stays, and entry in the answer says inserted. clear: true replaces the field's text instead (entry: replaced); submit: true presses Enter after. The phone's clipboard is never used. Tap the field first if nothing is focused.",
                 schema: object([
@@ -300,7 +316,7 @@ enum MCPTools {
                     "wait": wait, "observe": observe,
                 ], required: ["window", "text"])),
         MCPTool(name: .pressKey,
-                description: "Press one key in the Phone Mirror.",
+                description: "Press one key in a window. back, home and recents are the phone's navigation; home and recents act only in the Phone Mirror. back on an app's last screen closes the window, and the answer says so. The rest (enter, delete, tab, escape, up, down, left, right) are keys.",
                 schema: object([
                     "window": window,
                     "key": ["type": "string",
@@ -309,7 +325,7 @@ enum MCPTools {
                     "wait": wait, "observe": observe,
                 ], required: ["window", "key"])),
         MCPTool(name: .inputProbe,
-                description: "Tap a point and return how long until the displayed picture changed: input-to-photon, in milliseconds.",
+                description: "Measurement: tap a point and return the milliseconds until the window's picture changed (input-to-photon), or null after 2 s. Not for driving an app. (Listed only when Contigua runs with --mcp-dev-tools.)",
                 schema: object([
                     "window": window, "x": pointX, "y": pointY,
                     "w": ["type": "number", "minimum": 0.05, "maximum": 1,
@@ -318,25 +334,35 @@ enum MCPTools {
                           "description": "Watched height, 0.05 to 1 of the picture (default: the whole picture)."],
                 ], required: ["window", "x", "y"])),
         MCPTool(name: .closeWindow,
-                description: "Close the Phone Mirror the way its close button does.",
-                schema: object(["window": window], required: ["window"])),
+                description: "Close a window. On the phone this ends the app's screen on that window's own display; the app is not uninstalled and its data (a browser's tabs, a document) stays. A window the person opened needs force: true.",
+                schema: object([
+                    "window": window,
+                    "force": ["type": "boolean",
+                              "description": "true closes a window the person opened, too."],
+                ], required: ["window"])),
         MCPTool(name: .sendLink,
-                description: "Open a link on the phone (http, https, geo, tel or mailto) in a new Contigua window. The answer is that window, as open_app answers it: kind link, with package and label once the phone names the app.",
+                description: "Open a link (http, https, geo, tel or mailto) on the phone in a new window, in the app the phone picks, and return that window and the screen it shows. The window has the phone's shape unless shape is \"window\".",
                 schema: object([
                     "url": ["type": "string", "minLength": 1, "maxLength": 8192,
                             "description": "The link to open on the phone."],
                     "shape": shape, "wait": wait, "observe": observe,
                 ], required: ["url"])),
         MCPTool(name: .sendFile,
-                description: "Send one local file to the phone's Download/Contigua folder. Waits up to 30 s for the phone to confirm it: state delivered, or sending while it is still on its way.",
+                description: "Copy one file from this Mac to the phone's Download/Contigua folder and wait until the phone has it. Nothing on the phone is replaced or removed.",
                 schema: object([
                     "path": ["type": "string", "minLength": 1, "maxLength": 4096,
                              "description": "Absolute path of a regular, readable file."],
                 ], required: ["path"])),
     ]
 
-    static func tool(_ name: String) -> MCPTool? {
-        all.first { $0.name.rawValue == name }
+    /// MCP-99: the tools a client sees and may call. `input_probe` is
+    /// measurement, there only while the app runs with `--mcp-dev-tools`.
+    static func listed(devTools: Bool) -> [MCPTool] {
+        devTools ? all : all.filter { $0.name != .inputProbe }
+    }
+
+    static func tool(_ name: String, devTools: Bool = true) -> MCPTool? {
+        listed(devTools: devTools).first { $0.name.rawValue == name }
     }
 }
 
@@ -465,7 +491,7 @@ enum MCPOutputSchemas {
                            "state": stateToken, "frame": frameObject,
                            "tree": ["type": "object"], "treeError": string],
                           required: ["window", "waitedMs", "state", "frame"])
-        case .tap, .longPress, .swipe, .pressKey:
+        case .tap, .swipe, .pressKey:
             return actEnvelope
         case .typeText:
             return typeEnvelope
@@ -625,10 +651,40 @@ enum MCPArguments {
         return .wait(window: window, mode: mode, timeoutMs: timeoutMs, observe: try observe(args))
     }
 
-    /// Validate `arguments` for a known tool. Throws `MCPArgumentError`; the
-    /// dispatcher turns that into `-32602`.
-    static func call(_ name: String, _ args: [String: Any]) throws -> MCPCall {
-        guard let tool = MCPTools.tool(name) else {
+    /// MCP-88: `holdMs`, absent for a plain tap.
+    private static func holdMs(_ args: [String: Any]) throws -> Int? {
+        guard args["holdMs"] != nil else { return nil }
+        return try integer(args, "holdMs", minimum: 1, maximum: MCPTools.maxHoldMs)
+    }
+
+    /// MCP-90: the points form (`x1`,`y1`,`x2`,`y2`) or the direction form
+    /// (`direction`, `ref`?), never both.
+    private static func swipeCall(_ args: [String: Any]) throws -> MCPCall {
+        let window = try integer(args, "window", minimum: 1, maximum: 1_000_000)
+        let ms = args["ms"] != nil ? try integer(args, "ms", minimum: 1, maximum: 2000) : MCPTools.defaultSwipeMs
+        let points = ["x1", "y1", "x2", "y2"].filter { args[$0] != nil }
+        if args["direction"] != nil {
+            guard points.isEmpty else {
+                throw MCPArgumentError(message: "swipe takes direction or x1, y1, x2, y2, not both")
+            }
+            let direction: MCPSwipeDirection = try token(args, "direction", default: .up)
+            let ref = args["ref"] != nil ? try key(args, "ref") : nil
+            return .swipeDirection(window: window, direction: direction, ref: ref, ms: ms,
+                                   wait: try wait(args), observe: try observe(args))
+        }
+        if args["ref"] != nil { throw MCPArgumentError(message: "ref needs direction") }
+        guard !points.isEmpty else { throw MCPArgumentError(message: "swipe needs direction or x1, y1, x2, y2") }
+        return .swipe(window: window,
+                      x1: try coordinate(args, "x1"), y1: try coordinate(args, "y1"),
+                      x2: try coordinate(args, "x2"), y2: try coordinate(args, "y2"),
+                      ms: ms, wait: try wait(args), observe: try observe(args))
+    }
+
+    /// Validate `arguments` for a tool the client may call (`devTools`:
+    /// whether the app runs with `--mcp-dev-tools`, MCP-99). Throws
+    /// `MCPArgumentError`; the dispatcher turns that into `-32602`.
+    static func call(_ name: String, _ args: [String: Any], devTools: Bool = false) throws -> MCPCall {
+        guard let tool = MCPTools.tool(name, devTools: devTools) else {
             throw MCPArgumentError(message: "Unknown tool: \(name)")
         }
         try rejectUnknown(args, tool)
@@ -655,23 +711,14 @@ enum MCPArguments {
         case .tap:
             let window = try integer(args, "window", minimum: 1, maximum: 1_000_000)
             if args["ref"] != nil {
-                return .tapRef(window: window, ref: try key(args, "ref"),
+                return .tapRef(window: window, ref: try key(args, "ref"), holdMs: try holdMs(args),
                                wait: try wait(args), observe: try observe(args))
             }
             return .tap(window: window,
-                        x: try coordinate(args, "x"), y: try coordinate(args, "y"),
+                        x: try coordinate(args, "x"), y: try coordinate(args, "y"), holdMs: try holdMs(args),
                         wait: try wait(args), observe: try observe(args))
-        case .longPress:
-            return .longPress(window: try integer(args, "window", minimum: 1, maximum: 1_000_000),
-                              x: try coordinate(args, "x"), y: try coordinate(args, "y"),
-                              ms: try integer(args, "ms", minimum: 1, maximum: 3000),
-                              wait: try wait(args), observe: try observe(args))
         case .swipe:
-            return .swipe(window: try integer(args, "window", minimum: 1, maximum: 1_000_000),
-                          x1: try coordinate(args, "x1"), y1: try coordinate(args, "y1"),
-                          x2: try coordinate(args, "x2"), y2: try coordinate(args, "y2"),
-                          ms: try integer(args, "ms", minimum: 1, maximum: 2000),
-                          wait: try wait(args), observe: try observe(args))
+            return try swipeCall(args)
         case .typeText:
             return .typeText(window: try integer(args, "window", minimum: 1, maximum: 1_000_000),
                              text: try string(args, "text", minimum: 0, maximum: 2000),
@@ -691,7 +738,8 @@ enum MCPArguments {
                                width: try optionalDimension(args, "w"),
                                height: try optionalDimension(args, "h"))
         case .closeWindow:
-            return .closeWindow(window: try integer(args, "window", minimum: 1, maximum: 1_000_000))
+            return .closeWindow(window: try integer(args, "window", minimum: 1, maximum: 1_000_000),
+                                force: try boolean(args, "force", default: false))
         case .sendLink:
             return .sendLink(try string(args, "url", maximum: 8192), shape: try shape(args),
                              wait: try wait(args), observe: try observe(args))
@@ -729,8 +777,10 @@ enum MCPDispatcher {
     /// The log hook: tool, duration, outcome code (nil on success), window.
     typealias Log = (MCPToolName, TimeInterval, MCPErrorCode?, Int?) -> Void
 
+    /// `devTools`: the app runs with `--mcp-dev-tools` (MCP-99).
     static func handle(line: Data,
                        client: MCPClientID,
+                       devTools: Bool = false,
                        perform: (MCPCall, MCPClientID) async -> MCPToolResult,
                        log: Log? = nil) async -> Data? {
         guard line.count <= MCPProtocol.maxLineBytes else {
@@ -761,16 +811,16 @@ enum MCPDispatcher {
         case "ping":
             return resultLine(id: id, result: [:])
         case "tools/list":
-            return resultLine(id: id, result: ["tools": MCPTools.all.map(\.object)])
+            return resultLine(id: id, result: ["tools": MCPTools.listed(devTools: devTools).map(\.object)])
         case "tools/call":
-            return await toolCall(id: id, params: request.params, client: client,
+            return await toolCall(id: id, params: request.params, client: client, devTools: devTools,
                                   perform: perform, log: log)
         default:
             return errorLine(id: id, code: -32601, message: "Method not found: \(request.method)")
         }
     }
 
-    private static func toolCall(id: MCPID, params: [String: Any], client: MCPClientID,
+    private static func toolCall(id: MCPID, params: [String: Any], client: MCPClientID, devTools: Bool,
                                  perform: (MCPCall, MCPClientID) async -> MCPToolResult,
                                  log: Log?) async -> Data {
         guard let name = params["name"] as? String, !name.isEmpty else {
@@ -782,7 +832,7 @@ enum MCPDispatcher {
         }
         let call: MCPCall
         do {
-            call = try MCPArguments.call(name, args)
+            call = try MCPArguments.call(name, args, devTools: devTools)
         } catch let argumentError as MCPArgumentError {
             return errorLine(id: id, code: mcpInvalidParams, message: argumentError.message)
         } catch {

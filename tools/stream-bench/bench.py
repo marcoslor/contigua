@@ -763,17 +763,18 @@ def drive_video(mcp, window, phases, sleep=time.sleep, point=None, seconds=VIDEO
 def drive_tap(mcp, window, phases, point=None):
     """One tap through the Mac's `input_probe`; returns its photon number.
 
-    The probe is the lead's new Mac tool. A build without it raises here and
-    the run is marked `failed`; the table and the CSV still get written.
+    The probe is listed only while the app runs with `--mcp-dev-tools`
+    (MCP-99). An app without it raises here and the run is marked `failed`,
+    its reason naming the flag; the table and the CSV still get written.
     """
     point = point or TAP_POINT
     phases.append(("tap", time.time()))
     try:
         reply = mcp.text("input_probe", {"window": window, **point})
     except Exception as error:  # a missing tool must mark the run, not crash it
-        raise BenchFailure("no input_probe tool (%s)" % error)
+        raise BenchFailure("no input_probe tool: launch Contigua with --mcp-dev-tools (%s)" % error)
     if not isinstance(reply, dict) or not reply.get("ok"):
-        raise BenchFailure("no input_probe tool (bad reply %r)" % (reply,))
+        raise BenchFailure("no input_probe tool: launch Contigua with --mcp-dev-tools (bad reply %r)" % (reply,))
     return {
         "input_photon_ms": number(reply, "changed_ms"),
         "input_frames": number(reply, "frames"),

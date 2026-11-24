@@ -39,6 +39,8 @@ def suite(args):
         names = [tool.get("name") for tool in listing.get("tools") or []]
         report(sorted(names) == sorted(TOOLS),
                "MCP tools/list has all %d tools" % len(TOOLS))
+        report("input_probe" in names and "long_press" not in names,
+               "[MCP-99] MCP launched with --mcp-dev-tools, tools/list has input_probe (and no long_press)")
         report(all(isinstance(t.get("inputSchema"), dict) and
                    t["inputSchema"].get("type") == "object" for t in listing.get("tools") or []),
                "MCP every tool carries an object input schema")
@@ -232,7 +234,7 @@ def suite(args):
         # Input. Coordinates are the stream's normalized video coordinates; the
         # event log is checked below against the pixel size.
         client.text("tap", {"window": window, "x": 0.25, "y": 0.4})
-        client.text("long_press", {"window": window, "x": 0.55, "y": 0.55, "ms": 250})
+        client.text("tap", {"window": window, "x": 0.55, "y": 0.55, "holdMs": 250})
         swipe_ms = 400
         client.text("swipe", {"window": window, "x1": 0.2, "y1": 0.7,
                               "x2": 0.8, "y2": 0.3, "ms": swipe_ms})
@@ -276,14 +278,14 @@ def suite(args):
         report(any(within_px(e.get("nx", -1), 0.25, width) and within_px(e.get("ny", -1), 0.4, height)
                    for e in ups), "MCP tap lifts at the same point")
 
-        # Long press: down then up 250 ms later (some scheduling slack).
+        # [MCP-88] A held tap: down then up 250 ms later (some scheduling slack).
         long_down = [e for e in downs if within_px(e.get("nx", -1), 0.55, width)
                      and within_px(e.get("ny", -1), 0.55, height)]
         long_up = [e for e in ups if within_px(e.get("nx", -1), 0.55, width)
                    and within_px(e.get("ny", -1), 0.55, height)]
         held = (long_up[0]["ts"] - long_down[0]["ts"]) if long_down and long_up else 0
         report(bool(long_down and long_up and 0.15 <= held <= 1.5),
-               "MCP long_press holds for %.0f ms" % (held * 1000))
+               "[MCP-88] MCP tap holdMs holds for %.0f ms" % (held * 1000))
 
         # Swipe: exactly one down at the start, interpolated moves, one up at the end.
         swipe_down = [e for e in downs if within_px(e.get("nx", -1), 0.2, width)

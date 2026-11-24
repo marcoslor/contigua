@@ -362,6 +362,64 @@ final class MCPToolHostTests: XCTestCase {
         XCTAssertTrue(fixture.sent("clip.set").isEmpty, "type_text sent a clip.set")
         XCTAssertTrue(fixture.sent("text").isEmpty, "type_text sent a text message")
     }
+
+    // MARK: press_key and close_window (plan T2)
+
+    /// [MCP-94] home and recents act only in the Phone Mirror (WIN-47): in an
+    /// app window they send nothing and `did` says so.
+    @MainActor
+    func testHomeInAnAppWindowIsIgnored() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        let window = try await fixture.liveWindow()
+        XCTAssertFalse(window is PhoneWindowController)
+        for key in ["home", "recents"] {
+            let (answer, _) = await fixture.call("press_key", ["window": Int(window.stream), "key": key])
+            XCTAssertEqual(answer["isError"] as? Bool, false, "press_key \(key) failed: \(answer)")
+            XCTAssertTrue(fixture.sent("nav").isEmpty, "press_key \(key) sent a nav: \(fixture.sentTypes())")
+            let did = try XCTUnwrap((answer["structuredContent"] as? [String: Any])?["did"] as? [String: Any])
+            XCTAssertEqual(did as NSDictionary,
+                           ["action": "key", "key": key, "ignored": true] as NSDictionary)
+        }
+        // back is the app's own navigation: it goes.
+        let (back, _) = await fixture.call("press_key", ["window": Int(window.stream), "key": "back"])
+        XCTAssertEqual(back["isError"] as? Bool, false, "press_key back failed: \(back)")
+        XCTAssertEqual(fixture.sent("nav").first?.string("action"), "back")
+    }
+
+    /// [MCP-54] A window the person opened closes only with `force: true`; an
+    /// agent's window closes without it.
+    @MainActor
+    func testClosingThePersonsWindowNeedsForce() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        let person = try await fixture.liveWindow()
+        let windows = fixture.controller.windows
+        let mine = windows.opening(by: .client(MCPClientID(1))) { windows.openOrRaise(pkg: "com.android.chrome") }
+        let theirs = windows.opening(by: .client(MCPClientID(2))) { windows.openOrRaise(pkg: "com.android.vending") }
+        let id = Int(person.stream)
+
+        let (refused, _) = await fixture.call("close_window", ["window": id])
+        XCTAssertEqual(refused["isError"] as? Bool, true, "closed the person's window: \(refused)")
+        let text = ((refused["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
+        let error = (try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])?["error"]
+            as? [String: Any]
+        XCTAssertEqual(error?["code"] as? String, "failed")
+        XCTAssertEqual(error?["message"] as? String,
+                       "Window \(id) was opened by the person. Pass force: true to close it anyway.")
+        XCTAssertTrue(fixture.sent("window.close").isEmpty, "a refused close sent window.close")
+        XCTAssertNotNil(windows.controller(for: person.stream), "a refused close closed the window")
+
+        let (forced, _) = await fixture.call("close_window", ["window": id, "force": true])
+        XCTAssertEqual(forced["isError"] as? Bool, false, "force did not close: \(forced)")
+        XCTAssertNil(windows.controller(for: person.stream), "force: true left the window open")
+
+        for window in [mine, theirs] {
+            let (closed, _) = await fixture.call("close_window", ["window": Int(window.stream)])
+            XCTAssertEqual(closed["isError"] as? Bool, false, "an agent's window needed force: \(closed)")
+            XCTAssertNil(windows.controller(for: window.stream), "an agent's window stayed open")
+        }
+    }
 }
 
 /// A real controller online with the fake phone server, which answers

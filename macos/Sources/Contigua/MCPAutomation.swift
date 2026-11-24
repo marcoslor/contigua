@@ -20,14 +20,17 @@ final class MCPAutomation {
     @ObservationIgnored private var profile: Profile = .active
     @ObservationIgnored private var defaults: UserDefaults = .standard
     @ObservationIgnored private var server: MCPSocketServer?
+    /// `--mcp-dev-tools`: `input_probe` is listed and accepted (MCP-99).
+    @ObservationIgnored private var devTools = false
     /// The app side of a tool call; nil while shutting down.
     @ObservationIgnored var hostProvider: (@MainActor () -> MCPToolHost?)?
     @ObservationIgnored var onClientClosed: (@MainActor (MCPClientID) -> Void)?
 
     /// `forced` is the e2e hook (`--mcp-enable`, test builds only): it turns
     /// the setting on in this profile without asking, then the normal path runs.
-    func configure(profile: Profile, forced: Bool) {
+    func configure(profile: Profile, forced: Bool, devTools: Bool = false) {
         self.profile = profile
+        self.devTools = devTools
         defaults = profile.defaults
         if forced { defaults.set(true, forKey: Self.enabledKey) }
         enabled = defaults.bool(forKey: Self.enabledKey)
@@ -109,7 +112,7 @@ final class MCPAutomation {
     // MARK: Dispatch
 
     private func handle(_ line: Data, client: MCPClientID) async -> Data? {
-        await MCPDispatcher.handle(line: line, client: client, perform: { [weak self] call, client in
+        await MCPDispatcher.handle(line: line, client: client, devTools: devTools, perform: { [weak self] call, client in
             guard let self else { return .failure(Self.shuttingDown) }
             return await self.perform(call, client: client)
         }, log: { tool, seconds, code, window in
