@@ -2761,6 +2761,9 @@ class Session(object):
         self.sock = conn
         self.addr = addr
         self._on_end = on_end
+        # One ui.* request at a time (PROTOCOL.md "UI tree" item 6): a settle
+        # holds it until it answers.
+        self._ui_busy = False
         self.sender = None
         self.client_id = None
         self.client_name = None
@@ -3513,6 +3516,7 @@ class Session(object):
             "task.continue": self._on_task_continue,
             "task.front": self._on_task_front,
             "ui.tree": self._on_ui_tree,
+            "ui.settle": self._on_ui_settle,
             "nav": self._on_nav,
             "text": self._on_noop,
             "clip.set": self._on_clip_set,
@@ -5311,6 +5315,13 @@ class Session(object):
             return
         stream = msg.get("stream")
         seq = msg.get("seq")
+        if self._ui_busy:
+            reply = {"t": "ui.tree", "stream": stream, "ok": False, "code": "busy",
+                     "message": "The last accessibility request is still running."}
+            if seq is not None:
+                reply["seq"] = seq
+            self._send(reply)
+            return
         window = self.windows.get(stream)
         w = window.w if window is not None else SCREEN_W
         h = window.h if window is not None else SCREEN_H
@@ -5346,8 +5357,76 @@ class Session(object):
                         "type": "app", "focused": True, "active": True}],
             "nodes": nodes,
         }
+        # --settle-loading models a skeleton screen: a spinner row marked loading,
+        # and the reply says the tree is still loading (MCP-103).
+        if self.phone.args.settle_loading:
+            box_spinner = [int(w * 0.45), int(h * 0.32), int(w * 0.55), int(h * 0.38)]
+            nodes.append({"i": 4, "p": 0, "l": 0, "role": "ProgressBar",
+                          "box": box_spinner, "at": at(box_spinner), "loading": True})
+            reply["loading"] = True
         if seq is not None:
             reply["seq"] = seq
+        self._send(reply)
+
+    # -- ui.settle (docs/PROTOCOL.md "UI tree" §7): the display's quiet watch.
+    def _on_ui_settle(self, msg):
+        """Answer settled after `--settle-ms`, or still-changing per the settle
+        flags. `--ignore-ui-settle` models a phone that cannot watch a display."""
+        if self.phone.args.ignore_ui_settle:
+            return
+        seq = msg.get("seq")
+        stream = msg.get("stream")
+        if stream is None:
+            # As the phone: a settle with no stream answers stream 0, no_window.
+            self._send_ui_settle(0, seq, {"ok": False, "code": "no_window",
+                                          "message": "There is no window to settle."})
+            return
+        window = self.windows.get(stream)
+        if window is None:
+            self._send_ui_settle(stream, seq, {"ok": False, "code": "no_window",
+                                               "message": "There is no window %r." % (stream,)})
+            return
+        if self._ui_busy:
+            self._send_ui_settle(stream, seq, {"ok": False, "code": "busy",
+                                               "message": "The last accessibility request is still running."})
+            return
+        # Item 7's clamps: timeoutMs 200-10000, quietMs 100-2000 and then at
+        # most timeoutMs (MCP-81). The answer time is --settle-ms; a display
+        # that would settle only after the timeout answers changes at it.
+        timeout = min(10000, max(200, int(msg.get("timeoutMs") or 2000)))
+        quiet = min(timeout, min(2000, max(100, int(msg.get("quietMs") or 300))))
+        print("fakephone: ui.settle stream=%s quiet_ms=%d timeout_ms=%d" % (stream, quiet, timeout),
+              file=sys.stderr)
+        if self.phone.args.never_settle or int(self.phone.args.settle_ms) > timeout:
+            delay, settled, events, reason = timeout, False, 1, "changes"
+        elif self.phone.args.settle_loading:
+            delay, settled, events, reason = timeout, False, 0, "loading"
+        else:
+            delay, settled, events, reason = int(self.phone.args.settle_ms), True, 0, None
+
+        start = time.monotonic()
+        self._ui_busy = True
+
+        def send():
+            self._ui_busy = False
+            waited = int((time.monotonic() - start) * 1000)
+            body = {"ok": True, "settled": settled, "waitedMs": waited, "events": events}
+            if reason is not None:
+                body["reason"] = reason
+            self._send_ui_settle(stream, seq, body)
+
+        if delay > 0:
+            timer = threading.Timer(delay / 1000.0, send)
+            timer.daemon = True
+            timer.start()
+        else:
+            send()
+
+    def _send_ui_settle(self, stream, seq, body):
+        reply = {"t": "ui.settle", "stream": stream}
+        if seq is not None:
+            reply["seq"] = seq
+        reply.update(body)
         self._send(reply)
 
     def _on_window_resize(self, msg):
@@ -5525,6 +5604,19 @@ class Session(object):
             return
         self.phone.events.key(msg.get("stream", 0), proto.KEY_DOWN, keycode, 0)
         self.phone.events.key(msg.get("stream", 0), proto.KEY_UP, keycode, 0)
+        # --close-on-back: a back on an app's last screen ends it, so the window
+        # closes with app_exited (MCP-83's wire).
+        if action == "back" and self.phone.args.close_on_back:
+            stream_id = window.stream_id
+            if window._resize_timer is not None:
+                window._resize_timer.cancel()
+                window._resize_timer = None
+            window.stop()
+            del self.windows[stream_id]
+            self.sender.forget_stream(stream_id)
+            self._send({"t": "window.closed", "stream": stream_id, "reason": "app_exited"})
+            if not self.windows:
+                self.audio.stop()
 
     def _on_noop(self, _msg):
         return
@@ -6465,6 +6557,17 @@ def build_parser():
                         "('none' means nothing continuable)")
     p.add_argument("--ignore-ui-tree", action="store_true",
                    help="never answer ui.tree (the MCP tool must say so, not hang)")
+    p.add_argument("--ignore-ui-settle", action="store_true",
+                   help="never answer ui.settle (a phone that cannot watch a display)")
+    p.add_argument("--settle-ms", type=int, default=120, metavar="MS",
+                   help="ui.settle answers settled after this many ms (default 120)")
+    p.add_argument("--never-settle", action="store_true",
+                   help="ui.settle answers still_changing (reason changes) at timeoutMs")
+    p.add_argument("--settle-loading", action="store_true",
+                   help="ui.settle answers still_changing (reason loading) at timeoutMs, "
+                        "and ui.tree marks a spinner row loading")
+    p.add_argument("--close-on-back", action="store_true",
+                   help="a nav back closes the stream with window.closed reason app_exited")
     p.add_argument("--ignore-task-front", action="store_true",
                    help="never answer task.front (the panel must keep its row hidden)")
     p.add_argument("--fs-root", default=os.environ.get("PD_FAKE_FS_ROOT"),

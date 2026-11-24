@@ -1588,11 +1588,13 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
    time (for `ui.settle`, its `timeoutMs`).
 7. **`ui.settle` (B1).** Mac → `{"t":"ui.settle","stream":N,"seq":S,"quietMs":Q,"timeoutMs":T}`,
    `Q` 100–2000 and `T` 200–10000 (the MCP tools send 300 and 2000); a value outside its
-   range is clamped. The phone listens to `UiAutomation`'s accessibility events and counts
+   range is clamped, and then `Q` is clamped to at most `T`. The phone listens to `UiAutomation`'s accessibility events and counts
    the content changes — `TYPE_WINDOW_CONTENT_CHANGED`, `TYPE_WINDOW_STATE_CHANGED`,
    `TYPE_WINDOWS_CHANGED`, `TYPE_VIEW_TEXT_CHANGED`, `TYPE_VIEW_SCROLLED` — whose window is on
    the stream's display (by window id, from the latest `windowsOnAllDisplays` read, refreshed
-   when the watch starts); every other event type is ignored. When no counted event came for
+   when the watch starts, on every `TYPE_WINDOWS_CHANGED`, and once for each window id it does
+   not know); every other event type is ignored. The connection asks for no event type at all
+   while no watch runs, and for only these five while one does. A display listed with no window, or not listed yet, is still opening: it counts as loading at the start and at every check, and its first window is a counted change. When no counted event came for
    `Q` ms it checks the display for a loading signal (item 9's `loading`) and answers only
    when there is none, else watches on and checks again after every later quiet period; at
    `T` ms it answers whatever the state. The reply is
@@ -1600,12 +1602,14 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
    — `settled` true for a quiet display with nothing loading, false at the timeout; `reason`
    only when `settled` is false: `"loading"` (the last check found a loading signal and no
    change came after it) or `"changes"`; `waitedMs` from the request's arrival; `events` the
-   counted events. The watch starts when the phone reads the request: input frames sent
+   counted events. The whole request answers by its arrival + `T` + 2.5 s, under the Mac's
+   `T` + 5 s. A session that ends during its watch stops it, and nothing is sent. The watch starts when the phone reads the request: input frames sent
    before it on the session's ordered reliable lane have been injected by then. A watch that
    cannot happen answers
    `{"t":"ui.settle","stream":N,"seq":S,"ok":false,"code":C,"message":"…"}` with `no_window`,
-   `no_display` (the display went away during the watch), `not_available` (this phone cannot
-   listen to accessibility events), `busy` (item 6) or `failed`. The watch is a pure state
+   `no_display` (the display had a window and went away during the watch; a stream with no display at the start answers `no_window`), `not_available` (this phone cannot
+   listen to accessibility events, or its connection could not be made: never `ui.tree`'s
+   `no_a11y`), `busy` (item 6) or `failed`. The watch is a pure state
    machine (docs/specs/mcp.md "Settling a display"); it reads event types, window ids and the
    loading check's yes or no, and logs the stream, the outcome, `waitedMs` and `events`.
 8. **`ui.press` (B3).** Mac → `{"t":"ui.press","stream":N,"seq":S,"k":K,"holdMs":H}`, `k` a

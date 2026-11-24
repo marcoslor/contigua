@@ -23,7 +23,7 @@ abstract class SessionFixture {
     private lateinit var client: Socket
     private lateinit var reader: FrameReader
     protected var session: Session? = null
-    private var clock = 1_000L
+    @Volatile protected var clock = 1_000L
 
     protected fun connect(
         taskPresence: TaskPresence = TaskPresence { null },
