@@ -176,6 +176,170 @@ final class PathSessionTests: XCTestCase {
         XCTAssertEqual(machine.state, .ended(reason: "graceExpired"))
     }
 
+    /// #248 (rig, 2026-11-23): E-9 orphaned a session whose two paths were
+    /// still open, because a busy phone answered one pong late on each, and
+    /// nothing brought it back before the 30 s grace. Nothing carries an
+    /// orphaned session, so the first attached path that answers a ping takes
+    /// it at once, with a join's unplanned-switch semantics (PATH-6/9).
+    func testAnOrphanedSessionGoesLiveOnTheFirstStandbyThatAnswers_PATH54() {
+        var machine = PathSessionMachine(state: .orphaned(since: 10), live: ["a", "b"],
+                                         standby: ["a", "b"], scores: ["a": 300, "b": 700])
+        let actions = machine.handle(.standbyAnswered(id: "a"), now: 11)
+        XCTAssertEqual(machine.state, .live(current: "a"))
+        XCTAssertEqual(Set(["a", "b"]), machine.live)
+        XCTAssertEqual(Set(["b"]), machine.standby)
+        XCTAssertEqual(actions, [.switchTo(path: "a"), .replayFromLastAck,
+                                 .requestKeyframes, .ranking(.externalSwitch("a"))])
+    }
+
+    /// The path whose late pong orphaned the session is a standby too: its
+    /// answer brings the session back on it.
+    func testTheFailingPathsLateAnswerBringsTheSessionBack_PATH54() {
+        var machine = PathSessionMachine(state: .live(current: "b"), live: ["a", "b"],
+                                         standby: ["a"], scores: ["a": 300, "b": 700])
+        _ = machine.handle(.pongLost(id: "b"), now: 10)
+        XCTAssertEqual(machine.state, .orphaned(since: 10))
+        let actions = machine.handle(.standbyAnswered(id: "b"), now: 10.4)
+        XCTAssertEqual(machine.state, .live(current: "b"))
+        XCTAssertEqual(Set(["a"]), machine.standby)
+        XCTAssertEqual(actions, [.switchTo(path: "b"), .replayFromLastAck,
+                                 .requestKeyframes, .ranking(.externalSwitch("b"))])
+    }
+
+    func testAnAnswerOnAPathThatIsNotAttachedIsIgnored_PATH54() {
+        var machine = PathSessionMachine(state: .orphaned(since: 10), live: ["a"], standby: ["a"])
+        XCTAssertEqual(machine.handle(.standbyAnswered(id: "z"), now: 11), [])
+        XCTAssertEqual(machine.state, .orphaned(since: 10))
+    }
+
+    /// While a path carries the session only the margin rule brings a standby
+    /// back (D-2): an answer changes nothing outside the orphan.
+    func testAStandbysAnswerOutsideTheOrphanChangesNothing_PATH54() {
+        var live = PathSessionMachine(state: .live(current: "b"), live: ["a", "b"], standby: ["a"])
+        XCTAssertEqual(live.handle(.standbyAnswered(id: "a"), now: 1), [])
+        XCTAssertEqual(live.state, .live(current: "b"))
+        XCTAssertEqual(Set(["a"]), live.standby)
+        var migrating = PathSessionMachine(state: .migrating(from: "a", to: "b", since: 1),
+                                           live: ["a", "b"], standby: ["a"])
+        XCTAssertEqual(migrating.handle(.standbyAnswered(id: "a"), now: 2), [])
+        XCTAssertEqual(migrating.state, .migrating(from: "a", to: "b", since: 1))
+        var unfounded = PathSessionMachine()
+        XCTAssertEqual(unfounded.handle(.standbyAnswered(id: "a"), now: 2), [])
+        XCTAssertEqual(unfounded.state, .unfounded)
+        var ended = PathSessionMachine(state: .ended(reason: "close"), live: [])
+        XCTAssertEqual(ended.handle(.standbyAnswered(id: "a"), now: 2), [.ignore])
+    }
+
+    /// #251 review: after E-9 the failing path is still the one the session
+    /// pings, so its lost pongs keep coming while orphaned. A lost pong
+    /// demotes, never detaches (D-2): the path stays open and pinged, so its
+    /// later answer must still bring the session back.
+    func testTwoLostPongsWhileOrphanedStillLetThePathsAnswerReviveIt_PATH54() {
+        var machine = PathSessionMachine(state: .live(current: "b"), live: ["a", "b"],
+                                         standby: ["a"], scores: ["a": 300, "b": 700])
+        _ = machine.handle(.pongLost(id: "b"), now: 10)
+        XCTAssertEqual(machine.state, .orphaned(since: 10))
+        XCTAssertEqual(machine.handle(.pongLost(id: "b"), now: 12), [])
+        XCTAssertEqual(machine.handle(.pongLost(id: "b"), now: 14), [])
+        XCTAssertEqual(machine.state, .orphaned(since: 10))
+        XCTAssertEqual(Set(["a", "b"]), machine.live, "a lost pong detached a path it never closed")
+        XCTAssertEqual(Set(["a", "b"]), machine.standby)
+        let actions = machine.handle(.standbyAnswered(id: "b"), now: 15)
+        XCTAssertEqual(machine.state, .live(current: "b"))
+        XCTAssertEqual(Set(["a"]), machine.standby)
+        XCTAssertEqual(actions, [.switchTo(path: "b"), .replayFromLastAck,
+                                 .requestKeyframes, .ranking(.externalSwitch("b"))])
+    }
+
+    func testALostPongWhileOrphanedOnAPathThatIsNotAttachedChangesNothing_PATH54() {
+        var machine = PathSessionMachine(state: .orphaned(since: 10), live: ["a"], standby: ["a"])
+        XCTAssertEqual(machine.handle(.pongLost(id: "z"), now: 11), [])
+        XCTAssertEqual(machine.state, .orphaned(since: 10))
+        XCTAssertEqual(Set(["a"]), machine.live)
+        XCTAssertEqual(Set(["a"]), machine.standby)
+    }
+
+    // MARK: PATH-54: a path whose answers are always late
+
+    /// One E-9 orphan on `b` and its late answer; returns the revive's actions.
+    @discardableResult
+    private func cycle(_ machine: inout PathSessionMachine, orphanAt t: TimeInterval) -> [PathSessionAction] {
+        _ = machine.handle(.pongLost(id: "b"), now: t)
+        XCTAssertEqual(machine.state, .orphaned(since: t), "no orphan at \(t)")
+        return machine.handle(.standbyAnswered(id: "b"), now: t + 0.5)
+    }
+
+    private func lateAnswerer() -> PathSessionMachine {
+        PathSessionMachine(state: .live(current: "b"), live: ["a", "b"],
+                           standby: ["a"], scores: ["a": 300, "b": 700])
+    }
+
+    /// Up to three revives by one path's answers within 30 s: each brings the
+    /// session back (the path does carry frames).
+    func testALatePathRevivesTheSessionThreeTimesWithinTheGrace_PATH54() {
+        var machine = lateAnswerer()
+        for t in [10.0, 14, 18] {
+            XCTAssertEqual(cycle(&machine, orphanAt: t),
+                           [.switchTo(path: "b"), .replayFromLastAck,
+                            .requestKeyframes, .ranking(.externalSwitch("b"))], "revive after \(t)")
+            XCTAssertEqual(machine.state, .live(current: "b"))
+        }
+    }
+
+    /// The fourth orphan within 30 s of those revives is not revived by that
+    /// path's answer, so its own grace runs out and the session ends instead
+    /// of cycling (and restarting the grace) for ever.
+    func testAFourthOrphanWithinTheGraceIsNotRevivedByTheSamePath_PATH54() {
+        var machine = lateAnswerer()
+        for t in [10.0, 14, 18] { cycle(&machine, orphanAt: t) }
+        XCTAssertEqual(cycle(&machine, orphanAt: 22), [])
+        XCTAssertEqual(machine.state, .orphaned(since: 22))
+        // The refusal holds for the whole orphan, even once the revives age out.
+        XCTAssertEqual(machine.handle(.standbyAnswered(id: "b"), now: 45), [])
+        XCTAssertEqual(machine.state, .orphaned(since: 22))
+        XCTAssertEqual(Set(["a", "b"]), machine.live, "refused, never detached")
+        XCTAssertEqual(machine.handle(.graceExpired, now: 52), [.end(reason: "graceExpired")])
+        XCTAssertEqual(machine.state, .ended(reason: "graceExpired"))
+    }
+
+    /// Only revives in the 30 s before the orphan began count: the window
+    /// slides, so a path that is late now and then keeps reviving.
+    func testOnlyRevivesWithinTheGraceBeforeTheOrphanCount_PATH54() {
+        var machine = lateAnswerer()
+        for t in [10.0, 14, 18] { cycle(&machine, orphanAt: t) }
+        // 10.5 is 30.5 s before 41: two revives in the window.
+        XCTAssertFalse(cycle(&machine, orphanAt: 41).isEmpty, "two revives in the window")
+        // 14.5 is 30.5 s before 45: 18.5 and 41.5 remain.
+        XCTAssertFalse(cycle(&machine, orphanAt: 45).isEmpty, "two revives in the window")
+        // 18.5, 41.5 and 45.5 are all within 30 s of 47.
+        XCTAssertEqual(cycle(&machine, orphanAt: 47), [], "three revives in the window")
+        XCTAssertEqual(machine.state, .orphaned(since: 47))
+    }
+
+    /// The count is the path's own: another attached path's answer still
+    /// revives an orphan the late path may no longer revive.
+    func testAnotherPathsAnswerStillRevivesTheSession_PATH54() {
+        var machine = lateAnswerer()
+        for t in [10.0, 14, 18] { cycle(&machine, orphanAt: t) }
+        XCTAssertEqual(cycle(&machine, orphanAt: 22), [])
+        XCTAssertEqual(machine.handle(.standbyAnswered(id: "a"), now: 23),
+                       [.switchTo(path: "a"), .replayFromLastAck,
+                        .requestKeyframes, .ranking(.externalSwitch("a"))])
+        XCTAssertEqual(machine.state, .live(current: "a"))
+    }
+
+    /// A new path that reuses a closed one's id starts with no revives.
+    func testANewPathWithAReusedIdStartsWithNoRevives_PATH54() {
+        var machine = lateAnswerer()
+        for t in [10.0, 14, 18] { cycle(&machine, orphanAt: t) }
+        _ = machine.handle(.pathDown(id: "b"), now: 19)
+        XCTAssertEqual(machine.state, .orphaned(since: 19))
+        _ = machine.handle(.pathUp(id: "b", joined: true), now: 20)
+        XCTAssertEqual(machine.state, .live(current: "b"))
+        XCTAssertFalse(cycle(&machine, orphanAt: 22).isEmpty, "the new b has no history")
+        XCTAssertEqual(machine.state, .live(current: "b"))
+    }
+
     func testAPathDownForAnotherPathKeepsTheSessionLive() {
         var machine = machine(live: ["a", "b"])
         XCTAssertEqual(machine.handle(.pathDown(id: "b"), now: 1),

@@ -40,6 +40,7 @@ extension PathSessionEvent {
         case .pongLost: return "pong-lost"
         case .peerSwitch: return "switch"
         case .probeWelcomed: return "probe"
+        case .standbyAnswered: return "answered"
         case .close: return "close"
         case .graceExpired: return "grace"
         case .drainExpired: return "drain"
@@ -61,6 +62,9 @@ enum PathSessionEvent: Equatable {
     /// A single-path silence probe (PATH-24) welcomed as a second path;
     /// `oldSilent` says whether the current path had still delivered nothing.
     case probeWelcomed(id: String, oldSilent: Bool)
+    /// A `path.pong` arrived on attached path `id` (PATH-54): it proves that
+    /// path carries frames again; only an orphaned session acts on it.
+    case standbyAnswered(id: String)
     case close(reason: String)
     /// The 30 s orphan grace passed (the caller's clock says so).
     case graceExpired
@@ -92,6 +96,10 @@ enum PathTimers {
     static let pongTimeout: TimeInterval = 1.5
     static let joinedPingDrop: TimeInterval = 5
     static let maxPaths = 3
+    /// PATH-54: how many times one path's answer may revive an orphaned
+    /// session in the grace before that orphan began; past it the orphan's
+    /// grace runs out, so a path that is always late cannot cycle for ever.
+    static let maxAnswerRevives = 3
 }
 
 struct PathSessionMachine {
@@ -105,6 +113,9 @@ struct PathSessionMachine {
     var scores: [String: Int]
     /// The class each live path was ranked with.
     var kinds: [String: PathKind]
+    /// PATH-54: when each attached path's answer last revived an orphaned
+    /// session, the grace's worth only. A path attached anew starts empty.
+    private(set) var answerRevives: [String: [TimeInterval]] = [:]
 
     init(state: PathSessionState = .unfounded,
          live: Set<String> = [],
@@ -129,6 +140,7 @@ struct PathSessionMachine {
         live = [path]
         standby = []
         scores[path] = -1
+        answerRevives = [:]
     }
 
     /// The best path a failover may take: a standby is only reachable by margin.
@@ -151,6 +163,7 @@ struct PathSessionMachine {
                 // replay (PATH-3).
                 state = .live(current: id)
                 live.insert(id)
+                answerRevives[id] = nil
                 scores[id] = scores[id] ?? -1
                 return [.startPing(path: id), .ranking(.pathUp(id))]
             case .close(let reason):
@@ -160,7 +173,7 @@ struct PathSessionMachine {
                 live.remove(id)
                 standby.remove(id)
                 return []
-            case .peerSwitch, .graceExpired, .drainExpired, .probeWelcomed:
+            case .peerSwitch, .graceExpired, .drainExpired, .probeWelcomed, .standbyAnswered:
                 return []
             }
 
@@ -169,6 +182,7 @@ struct PathSessionMachine {
             case .pathUp(let id, _):
                 if live.contains(id) { return [.closePath(path: id)] }
                 live.insert(id)
+                answerRevives[id] = nil
                 scores[id] = scores[id] ?? -1
                 return [.startPing(path: id), .ranking(.pathUp(id))]
 
@@ -252,6 +266,11 @@ struct PathSessionMachine {
                 return [.end(reason: reason)]
 
             case .graceExpired, .drainExpired:
+                return []
+
+            case .standbyAnswered:
+                // A path carries the session: only the margin rule brings a
+                // standby back (D-2).
                 return []
             }
 
@@ -337,9 +356,10 @@ struct PathSessionMachine {
                 if live.contains(id) { return [.closePath(path: id)] }
                 live.insert(id)
                 standby.remove(id)
+                answerRevives[id] = nil
                 scores[id] = scores[id] ?? -1
                 return [.startPing(path: id), .ranking(.pathUp(id))]
-            case .graceExpired, .probeWelcomed:
+            case .graceExpired, .probeWelcomed, .standbyAnswered:
                 return []
             }
 
@@ -349,6 +369,7 @@ struct PathSessionMachine {
                 if live.contains(id) { return [.closePath(path: id)] }
                 live.insert(id)
                 standby.remove(id)
+                answerRevives[id] = nil
                 scores[id] = scores[id] ?? -1
                 state = .live(current: id)
                 return [.switchTo(path: id), .replayFromLastAck,
@@ -368,13 +389,32 @@ struct PathSessionMachine {
                 return [.ranking(.currentFailed(id: id))]
             case .pongLost(let id):
                 // No path is carrying the session: nothing to fail over from.
-                live.remove(id)
-                standby.remove(id)
+                // D-2: a lost pong demotes, never detaches. The path stays
+                // open and pinged, so its later answer still revives the
+                // session (PATH-54); only its socket error or the end closes it.
+                guard live.contains(id) else { return [] }
+                standby.insert(id)
                 return []
             case .peerSwitch:
                 return [.ignore]
             case .probeWelcomed:
                 return [.ignore]
+            case .standbyAnswered(let id):
+                // PATH-54 (#248): nothing carries the session, so the first
+                // attached path that answers a ping takes it, with a join's
+                // unplanned-switch semantics (PATH-6/9); it is already pinged.
+                guard live.contains(id) else { return [] }
+                // A path whose answers are always late would cycle orphaned ->
+                // live -> orphaned, each orphan restarting the grace. Counted
+                // against this orphan's start, so the refusal holds until it
+                // ends: its grace runs out unless another path takes it.
+                let recent = (answerRevives[id] ?? []).filter { since - $0 < PathTimers.grace }
+                guard recent.count < PathTimers.maxAnswerRevives else { return [] }
+                answerRevives[id] = recent + [now]
+                standby.remove(id)
+                state = .live(current: id)
+                return [.switchTo(path: id), .replayFromLastAck,
+                        .requestKeyframes, .ranking(.externalSwitch(id))]
             case .close(let reason):
                 state = .ended(reason: reason)
                 return [.end(reason: reason)]
