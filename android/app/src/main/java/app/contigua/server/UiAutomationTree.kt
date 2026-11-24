@@ -28,7 +28,7 @@ import java.util.concurrent.TimeUnit
  * `UiAutomationConnection` is the platform's own. Nothing here reads a node's
  * text into a log; only counts and codes leave.
  */
-internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSource {
+internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSource, UiPressSource {
 
     private val lock = Any()
     private val startLock = Any()
@@ -68,6 +68,54 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
                 UiTree.Answer.Failure(UiCodes.NO_A11Y, "This phone cannot read an accessibility tree right now.")
             }
         }
+    }
+
+    // MARK: the press (docs/PROTOCOL.md "UI tree" item 8, MCP-86/MCP-89)
+
+    /**
+     * Resolves [k] in [displayId]'s latest read, refreshes that node and
+     * decides the press ([UiPress.decide]). `covered` is computed as a read
+     * computes it (item 9) over a fresh walk of the display, keyed through the
+     * display's own table, so `coveredBy` is a key the Mac already knows or a
+     * new one, never a reused one. Never reads a node's text into a log.
+     */
+    override fun press(displayId: Int, size: IntSize, k: Int, expect: String?): UiPress.Decision =
+        synchronized(readLock) {
+            val failed = UiPress.Decision.Refuse(
+                UiCodes.FAILED, UiTree.failure(UiCodes.FAILED, "This phone cannot read an accessibility tree right now."),
+            )
+            if (disconnected) return@synchronized failed
+            val automation = ensureAutomation() ?: return@synchronized failed
+            val keys = tables.table(displayId) { true }
+            val latestNode = keys.identity(k)?.let { latestNode(displayId, it) }
+            val target = latestNode?.let { found ->
+                object : UiPress.Target {
+                    override fun refresh(): Boolean = runCatching { found.refresh() }.getOrDefault(false)
+                    override fun read(): UiTree.Node = this@UiAutomationTree.node(found, 0, HashMap())
+                }
+            }
+            UiPress.decide(target, size, expect) { coverNow(automation, displayId, size, keys, k) }
+        }
+
+    /** What covers [k]'s centre on a fresh walk of [displayId]: a key, `"window"`, or null. */
+    private fun coverNow(automation: UiAutomation, displayId: Int, size: IntSize, keys: UiTreeKeys, k: Int): Any? {
+        freshNodes(automation)
+        val windows = automation.windowsOnAllDisplays.get(displayId) ?: return null
+        val layers = windows.map { window ->
+            val bounds = Rect().also { window.getBoundsInScreen(it) }
+            UiTree.Layer(
+                title = null,
+                type = typeName(window.type),
+                focused = window.isFocused,
+                active = window.isActive,
+                nodes = window.root?.let { children(it, 0, HashMap()) } ?: emptyList(),
+                windowLayer = window.layer,
+                bounds = UiTree.Box(bounds.left, bounds.top, bounds.right, bounds.bottom),
+            )
+        }
+        @Suppress("UNCHECKED_CAST")
+        val rows = UiTree.reply(displayId, size, layers, keys)["nodes"] as List<Map<String, Any?>>
+        return rows.firstOrNull { it["k"] == k }?.get("covered")
     }
 
     // MARK: the settle watch (docs/PROTOCOL.md "UI tree" item 7, MCP-81/MCP-107)

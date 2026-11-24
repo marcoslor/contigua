@@ -56,7 +56,8 @@ class SessionTest {
                         secureProbe: SecureProbe? = null,
                         strays: Int = 0,
                         waitForPrevious: Boolean = true,
-                        tlsView: Session.TlsView = TlsV2Fixture.view) {
+                        tlsView: Session.TlsView = TlsV2Fixture.view,
+                        uiTree: UiTreeSource? = null) {
         // A test of the fast re-adopt (ISS-13) connects while the old teardown
         // still runs; every other test keeps PAIR-21's one-at-a-time rule.
         if (waitForPrevious) awaitPreviousSessionEnded()
@@ -106,6 +107,7 @@ class SessionTest {
                 tlsView = tlsView,
                 gateProvider = gates,
                 secureProbe = secureProbe,
+                uiTree = uiTree,
             )
             session = sess
             sess.run()
@@ -893,6 +895,51 @@ class SessionTest {
         val closed = readUntil("window.closed")
         assertEquals("requested", closed["reason"])
         await { platform.closes.contains(7) }
+    }
+
+    /** A source whose every press lands at (540, 1170), the 1080×2340 mirror's centre of the display. */
+    private class PressAt : UiTreeSource, UiPressSource {
+        @Volatile var asked: Triple<Int, Int, String?>? = null
+        override fun dump(displayId: Int, size: IntSize): UiTree.Answer = UiTree.Answer.Tree(emptyList())
+        override fun press(displayId: Int, size: IntSize, k: Int, expect: String?): UiPress.Decision {
+            asked = Triple(displayId, k, expect)
+            return UiPress.decide(object : UiPress.Target {
+                override fun refresh() = true
+                override fun read() = UiTree.Node(role = "android.widget.Button", text = "Add to cart",
+                    box = UiTree.Box(440, 1_070, 640, 1_270), clickable = true)
+            }, size, expect) { null }
+        }
+    }
+
+    @Test
+    fun testUiPressHoldsForHoldMs() { // [MCP-86]
+        val source = PressAt()
+        closeCurrent()
+        connect(pairDecisionTimeoutMs = 30_000, uiTree = source)
+        addAndAuthenticate()
+        send(mapOf("t" to "window.open", "stream" to 3, "w" to 400, "h" to 800, "dpi" to 160, "mode" to "phone"))
+        readUntil("window.opened")
+        send(mapOf("t" to "ui.press", "stream" to 3, "seq" to 4, "k" to 5, "holdMs" to 800, "expect" to "Add to cart"))
+        val reply = readUntil("ui.press")
+        assertEquals(true, reply["ok"])
+        assertEquals(4L, (reply["seq"] as Number).toLong())
+        assertEquals(Triple(0, 5, "Add to cart"), source.asked)
+        assertEquals(listOf(440L, 1_070L, 640L, 1_270L), (reply["box"] as List<*>).map { (it as Number).toLong() })
+        // The up is injected before the reply: both touches are there now.
+        val touches = platform.touches.toList()
+        assertEquals(listOf(Frames.TOUCH_DOWN, Frames.TOUCH_UP), touches.map { it.action })
+        val (down, up) = touches
+        assertEquals(down.eventTime, down.downTime)
+        assertEquals(down.downTime, up.downTime)
+        assertEquals(down.eventTime + 800, up.eventTime)
+        assertEquals(0.5f, down.nx, 0.001f)
+        assertEquals(0.5f, down.ny, 0.001f)
+        // Without holdMs it is a tap: the up follows at once.
+        platform.touches.clear()
+        send(mapOf("t" to "ui.press", "stream" to 3, "seq" to 5, "k" to 5))
+        assertEquals(true, readUntil("ui.press")["ok"])
+        val (tapDown, tapUp) = platform.touches.toList()
+        assertTrue(tapUp.eventTime - tapDown.eventTime in 1..50)
     }
 
     @Test

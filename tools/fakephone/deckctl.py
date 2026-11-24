@@ -1571,6 +1571,28 @@ def cmd_ui_tree(client, args):
     return 0
 
 
+def cmd_ui_press(client, args):
+    """`ui.press` on the phone (docs/PROTOCOL.md "UI tree" item 8): open a phone
+    mirror, read its tree once, then press each `--k` with the tree's label as
+    `expect` (or `--expect`), printing each reply as one JSON line."""
+    stream = 1
+    client.send_json({"t": "window.open", "stream": stream, "w": args.w, "h": args.h,
+                      "dpi": args.dpi, "mode": "phone"})
+    _await_json(client, "window.opened", args.wait)
+    client.send_json({"t": "ui.tree", "stream": stream, "seq": 1})
+    tree = _await_json(client, "ui.tree", args.wait)
+    rows = {n.get("k"): n for n in tree.get("nodes", [])}
+    for seq, k in enumerate(args.k, start=2):
+        row = rows.get(k, {})
+        msg = {"t": "ui.press", "stream": stream, "seq": seq, "k": k,
+               "expect": args.expect if args.expect is not None else (row.get("text") or row.get("desc") or "")}
+        if args.hold_ms:
+            msg["holdMs"] = args.hold_ms
+        client.send_json(msg)
+        print(json.dumps(_await_json(client, "ui.press", args.wait), sort_keys=True))
+    return 0
+
+
 def _await_json(client, kind, wait):
     """The next JSON message of type `kind`; an `error` or a silence fails."""
     deadline = time.time() + wait
@@ -3185,6 +3207,15 @@ def build_parser():
     sp.add_argument("--reads", type=int, default=2)
     sp.add_argument("--wait", type=float, default=5.0, help="seconds to wait for each reply")
 
+    sp = sub.add_parser("ui-press", help="open a phone mirror, read ui.tree and ui.press keys", **spp)
+    sp.add_argument("--w", type=int, default=400)
+    sp.add_argument("--h", type=int, default=800)
+    sp.add_argument("--dpi", type=int, default=160)
+    sp.add_argument("--k", type=int, action="append", required=True, help="a key to press (repeat)")
+    sp.add_argument("--expect", default=None, help="send this expect instead of the tree's label")
+    sp.add_argument("--hold-ms", type=int, default=0, dest="hold_ms")
+    sp.add_argument("--wait", type=float, default=5.0, help="seconds to wait for each reply")
+
     sp = sub.add_parser("ui-settle", help="open a phone mirror and read ui.settle", **spp)
     sp.add_argument("--w", type=int, default=400)
     sp.add_argument("--h", type=int, default=800)
@@ -3825,6 +3856,7 @@ COMMANDS = {
     "input-test": cmd_input_test,
     "pause-test": cmd_pause_test,
     "ui-tree": cmd_ui_tree,
+    "ui-press": cmd_ui_press,
     "ui-settle": cmd_ui_settle,
     "latency": cmd_latency,
     "quality-test": cmd_quality_test,

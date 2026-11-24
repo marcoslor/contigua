@@ -2766,6 +2766,8 @@ class Session(object):
         self._ui_busy = False
         # ui.tree reads this session made (--tree-variant's second read differs).
         self._tree_reads = 0
+        # The latest ui.tree reply's rows by `k`, for ui.press (item 8).
+        self._tree_latest = {}
         self.sender = None
         self.client_id = None
         self.client_name = None
@@ -3519,6 +3521,7 @@ class Session(object):
             "task.front": self._on_task_front,
             "ui.tree": self._on_ui_tree,
             "ui.settle": self._on_ui_settle,
+            "ui.press": self._on_ui_press,
             "nav": self._on_nav,
             "text": self._on_noop,
             "clip.set": self._on_clip_set,
@@ -5371,6 +5374,7 @@ class Session(object):
             for index, node in enumerate(nodes):
                 node["i"] = index
         self.phone.events.ui_tree(stream, len(nodes))
+        self._tree_latest = {n["k"]: dict(n) for n in nodes}
         reply = {
             "t": "ui.tree",
             "stream": stream,
@@ -5392,6 +5396,69 @@ class Session(object):
         if seq is not None:
             reply["seq"] = seq
         self._send(reply)
+
+    # -- ui.press (docs/PROTOCOL.md "UI tree" item 8): press a row by its key.
+    def _on_ui_press(self, msg):
+        """Press the latest tree's row `k` at its `at`: a touch down/up event,
+        then the row's box, point, role and text. `gone` for a key the latest
+        tree lacks, `off_screen` for an `off` row, `covered` for a covered row
+        (--tree-variant's offer button), and with `--relabel` the Continue
+        button reads "Continue later" now, so the tree's `expect` is `changed`."""
+        seq = msg.get("seq")
+        stream = msg.get("stream")
+
+        def answer(body):
+            reply = {"t": "ui.press", "stream": 0 if stream is None else stream}
+            if seq is not None:
+                reply["seq"] = seq
+            reply.update(body)
+            print("fakephone: ui.press stream=%s %s" % (
+                reply["stream"], "pressed" if body.get("ok") else "failed=%s" % body.get("code")),
+                file=sys.stderr)
+            self._send(reply)
+
+        def refuse(code, message, **extra):
+            body = {"ok": False, "code": code, "message": message}
+            body.update(extra)
+            answer(body)
+
+        if stream is None or self.windows.get(stream) is None:
+            refuse("no_window", "There is no window %r." % (stream,))
+            return
+        if self._ui_busy:
+            refuse("busy", "The last accessibility request is still running.")
+            return
+        node = self._tree_latest.get(msg.get("k"))
+        if node is None:
+            refuse("gone", "That element is no longer on the screen.")
+            return
+        if node.get("off") or "at" not in node:
+            refuse("off_screen", "That element is off screen.")
+            return
+        text = node.get("text")
+        if self.phone.args.relabel and node.get("text") == "Continue":
+            text = "Continue later"
+        now = text or node.get("desc") or ""
+        expect = msg.get("expect")
+        if expect is not None and expect != now:
+            refuse("changed", "That element now reads differently.", now=now)
+            return
+        if "covered" in node:
+            refuse("covered", "Something is drawn over that element.", coveredBy=node["covered"])
+            return
+        hold = min(3000, max(0, int(msg.get("holdMs") or 0)))
+        nx, ny = node["at"]
+        self.phone.events.input("touch")
+        self.phone.events.touch(stream, 0, 0, nx, ny)
+        if hold:
+            time.sleep(hold / 1000.0)
+        self.phone.events.touch(stream, 1, 0, nx, ny)
+        body = {"ok": True, "box": node["box"], "at": node["at"], "role": node["role"]}
+        if text is not None:
+            body["text"] = text
+        if node.get("desc") is not None:
+            body["desc"] = node["desc"]
+        answer(body)
 
     # -- ui.settle (docs/PROTOCOL.md "UI tree" §7): the display's quiet watch.
     def _on_ui_settle(self, msg):
@@ -6582,6 +6649,9 @@ def build_parser():
                         "('none' means nothing continuable)")
     p.add_argument("--ignore-ui-tree", action="store_true",
                    help="never answer ui.tree (the MCP tool must say so, not hang)")
+    p.add_argument("--relabel", action="store_true",
+                   help="ui.press finds the Continue button relabelled \"Continue later\", so a "
+                        "press with the tree's expect answers changed (#188)")
     p.add_argument("--tree-variant", action="store_true",
                    help="ui.tree adds a heading row and a covered button, and from the "
                         "second read drops the row with k 2 (MCP-71/72/73)")
