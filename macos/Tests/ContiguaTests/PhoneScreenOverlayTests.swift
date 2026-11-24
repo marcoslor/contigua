@@ -186,10 +186,11 @@ final class PhoneScreenOverlayTests: XCTestCase {
     /// the bar and become a tap on the phone. Frozen (the screen-off cover) and
     /// disabled outside a frozen mode (a kind the phone cannot use) both count;
     /// the input mapper is the witness.
-    func testAClickOnADisabledBarButtonNeverReachesThePhone() {
+    func testAClickOnADisabledBarButtonNeverReachesThePhone() throws {
         let manager = makeManager()
         let phone = manager.openPhoneWindow()
         defer { phone.window?.close() }
+        let window = try XCTUnwrap(phone.window)
         var commands: [InputMapper.Command] = []
         phone.noteFirstFrame()
         phone.videoView.inputMapper?.send = { commands.append($0) }
@@ -197,10 +198,12 @@ final class PhoneScreenOverlayTests: XCTestCase {
             return XCTFail("the phone window has no Back button")
         }
         let centre = phone.chrome.convert(NSPoint(x: back.bounds.midX, y: back.bounds.midY), from: back)
+        // AppKit's own dispatch (#245): the window routes the click as it
+        // routes a person's, whichever view its hit test names on this OS.
         func deliverClick(at point: NSPoint) {
-            guard let hit = phone.chrome.hitTest(point) else { return }
-            hit.mouseDown(with: click())
-            hit.mouseUp(with: click())
+            let inWindow = phone.chrome.convert(point, to: nil)
+            window.sendEvent(windowClick(.leftMouseDown, at: inWindow, in: window))
+            window.sendEvent(windowClick(.leftMouseUp, at: inWindow, in: window))
         }
         // The witness works: a click on the video itself is a touch.
         let videoCentre = phone.chrome.convert(NSPoint(x: phone.videoView.bounds.midX,
@@ -220,6 +223,15 @@ final class PhoneScreenOverlayTests: XCTestCase {
         back.isEnabled = false
         deliverClick(at: centre)
         XCTAssertTrue(commands.isEmpty, "\(commands.count) touch(es) reached the phone through a disabled Back")
+    }
+
+    /// A left click at a point in the window's base coordinates, for
+    /// `NSWindow.sendEvent`.
+    private func windowClick(_ type: NSEvent.EventType, at point: NSPoint, in window: NSWindow) -> NSEvent {
+        NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                           timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                           context: nil, eventNumber: 0, clickCount: 1,
+                           pressure: type == .leftMouseDown ? 1 : 0)!
     }
 
     private func buttons(in view: NSView) -> [HeaderActionButton] {
