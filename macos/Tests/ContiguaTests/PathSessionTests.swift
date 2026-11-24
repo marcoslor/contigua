@@ -230,6 +230,35 @@ final class PathSessionTests: XCTestCase {
         XCTAssertEqual(ended.handle(.standbyAnswered(id: "a"), now: 2), [.ignore])
     }
 
+    /// #251 review: after E-9 the failing path is still the one the session
+    /// pings, so its lost pongs keep coming while orphaned. A lost pong
+    /// demotes, never detaches (D-2): the path stays open and pinged, so its
+    /// later answer must still bring the session back.
+    func testTwoLostPongsWhileOrphanedStillLetThePathsAnswerReviveIt_PATH54() {
+        var machine = PathSessionMachine(state: .live(current: "b"), live: ["a", "b"],
+                                         standby: ["a"], scores: ["a": 300, "b": 700])
+        _ = machine.handle(.pongLost(id: "b"), now: 10)
+        XCTAssertEqual(machine.state, .orphaned(since: 10))
+        XCTAssertEqual(machine.handle(.pongLost(id: "b"), now: 12), [])
+        XCTAssertEqual(machine.handle(.pongLost(id: "b"), now: 14), [])
+        XCTAssertEqual(machine.state, .orphaned(since: 10))
+        XCTAssertEqual(Set(["a", "b"]), machine.live, "a lost pong detached a path it never closed")
+        XCTAssertEqual(Set(["a", "b"]), machine.standby)
+        let actions = machine.handle(.standbyAnswered(id: "b"), now: 15)
+        XCTAssertEqual(machine.state, .live(current: "b"))
+        XCTAssertEqual(Set(["a"]), machine.standby)
+        XCTAssertEqual(actions, [.switchTo(path: "b"), .replayFromLastAck,
+                                 .requestKeyframes, .ranking(.externalSwitch("b"))])
+    }
+
+    func testALostPongWhileOrphanedOnAPathThatIsNotAttachedChangesNothing_PATH54() {
+        var machine = PathSessionMachine(state: .orphaned(since: 10), live: ["a"], standby: ["a"])
+        XCTAssertEqual(machine.handle(.pongLost(id: "z"), now: 11), [])
+        XCTAssertEqual(machine.state, .orphaned(since: 10))
+        XCTAssertEqual(Set(["a"]), machine.live)
+        XCTAssertEqual(Set(["a"]), machine.standby)
+    }
+
     func testAPathDownForAnotherPathKeepsTheSessionLive() {
         var machine = machine(live: ["a", "b"])
         XCTAssertEqual(machine.handle(.pathDown(id: "b"), now: 1),
