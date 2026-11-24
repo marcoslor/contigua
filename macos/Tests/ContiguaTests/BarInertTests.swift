@@ -8,6 +8,12 @@ import AppKit
 import XCTest
 @testable import Contigua
 
+/// A window kept at the size it is given: a small screen (the runner's
+/// 1024x768) must not clamp the band out of it.
+private final class UnclampedWindow: NSWindow {
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
+}
+
 @MainActor
 final class BarInertTests: XCTestCase {
     private func makeChrome(_ style: WindowStyle) -> StreamChromeView {
@@ -19,25 +25,60 @@ final class BarInertTests: XCTestCase {
         return chrome
     }
 
-    func testCompactsBandIsNeverThePhonesWhereverThePictureEndsUp() {
+    func testCompactsBandIsNeverThePhonesWhereverThePictureEndsUp() throws {
         let chrome = makeChrome(.compact)
         XCTAssertEqual(chrome.contentRect, NSRect(x: 0, y: 0, width: 360, height: 780), "the stream is under the band")
         XCTAssertGreaterThan(chrome.barHeight, 0)
+        // The chrome in a container wholly below a titled window's own title
+        // bar: no AppKit title bar is over the band, so the window's dispatch
+        // (#245: NSWindow.sendEvent, the route a person's click takes, not
+        // which view hitTest names) reaches the chrome's own decision.
+        let window = UnclampedWindow(contentRect: NSRect(origin: .zero, size: chrome.frame.size),
+                                     styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let container = NSView(frame: NSRect(origin: .zero, size: chrome.frame.size))
+        window.contentView = container
+        container.addSubview(chrome)
+        chrome.frame = container.bounds
+        chrome.layoutSubtreeIfNeeded()
+        // A window that was never ordered in drops the clicks it is sent.
+        window.orderFront(nil)
+        XCTAssertEqual(container.frame.size, chrome.frame.size, "the whole chrome is in the window")
+        XCTAssertGreaterThan(window.frame.height, window.contentLayoutRect.height, "a title bar above the container")
+        var downs = 0
+        chrome.video.onPointerDown = { downs += 1 }
+        func click(_ point: NSPoint) {
+            let inWindow = chrome.convert(point, to: nil)
+            window.sendEvent(windowClick(.leftMouseDown, at: inWindow, in: window))
+            window.sendEvent(windowClick(.leftMouseUp, at: inWindow, in: window))
+        }
         let band = chrome.bounds.height - chrome.barHeight / 2
         for stretched in [false, true] {
             // The mirror may stretch its content view over itself, as the
             // system does in a real window: the band still decides.
             if stretched { chrome.video.frame = chrome.bandMirror.bounds }
             for x in stride(from: 8.0, through: chrome.bounds.width - 8, by: 40) {
-                XCTAssertFalse(chrome.hitTest(NSPoint(x: x, y: band)) === chrome.video,
-                               "the band at x=\(x) reached the picture: a click there is a touch on the phone")
+                click(NSPoint(x: x, y: band))
+                XCTAssertEqual(downs, 0, "the band at x=\(x) reached the picture (stretched \(stretched)): "
+                                   + "a click there is a touch on the phone")
                 XCTAssertTrue(chrome.ownsPoint(NSPoint(x: x, y: band)), "hover in the band is the window's too")
             }
         }
         chrome.layoutChrome()
         let topRow = NSPoint(x: 180, y: chrome.contentRect.maxY - 1)
-        XCTAssertTrue(chrome.hitTest(topRow) === chrome.video, "the stream's own top row is the phone's")
+        click(topRow)
+        XCTAssertEqual(downs, 1, "the stream's own top row is the phone's")
         XCTAssertFalse(chrome.ownsPoint(topRow))
+    }
+
+    /// A left click at a point in the window's base coordinates, for
+    /// `NSWindow.sendEvent`.
+    private func windowClick(_ type: NSEvent.EventType, at point: NSPoint, in window: NSWindow) -> NSEvent {
+        NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                           timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                           context: nil, eventNumber: 0, clickCount: 1,
+                           pressure: type == .leftMouseDown ? 1 : 0)!
     }
 
     /// A real click in the band lands in AppKit's transparent title bar,
