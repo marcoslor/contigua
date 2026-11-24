@@ -161,6 +161,15 @@ protocol MCPActEnvironment: AnyObject {
     /// `until`: the call's own deadline; a read queued past it fails `timeout` (MCP-9).
     func settle(quietMs: Int, timeoutMs: Int, until: ContinuousClock.Instant) async -> MCPSettleResult
     func readTree(until: ContinuousClock.Instant) async -> MCPTreeResult
+    /// Opening (MCP-41): feed the open's `windowOpened`, `firstFrame`,
+    /// `openFailed` and `windowClosed` as they happen.
+    func watchOpen(_ feed: @escaping @MainActor (MCPActMachine.Event) -> Void)
+    func stopWatchingOpen()
+}
+
+extension MCPActEnvironment {
+    func watchOpen(_ feed: @escaping @MainActor (MCPActMachine.Event) -> Void) {}
+    func stopWatchingOpen() {}
 }
 
 @MainActor
@@ -176,6 +185,9 @@ final class MCPActRunner {
     private var deadlineAt = ContinuousClock.now
     /// When `sendSettle` went out: the deadline's `waitedMs` counts from it (MCP-8).
     private var settleSentAt: ContinuousClock.Instant?
+    /// Opening: `drive` waits here until the machine leaves Opening.
+    private var openWait: CheckedContinuation<[MCPActMachine.Action], Never>?
+    private var openBoundTask: Task<Void, Never>?
 
     private init(_ machine: MCPActMachine, env: MCPActEnvironment, window: UInt32, queue: WindowActQueue?,
                  client: MCPClientID?) {
@@ -239,6 +251,16 @@ final class MCPActRunner {
             }
         case .sent:
             pending = feed(.entry)
+        case .opening:
+            pending = await withCheckedContinuation { (cont: CheckedContinuation<[MCPActMachine.Action], Never>) in
+                openWait = cont
+                openBoundTask = Task { [weak self] in
+                    try? await Task.sleep(for: .milliseconds(MCPActMachine.openBoundMs))
+                    guard !Task.isCancelled else { return }
+                    _ = self?.feed(.openBound)
+                }
+                env.watchOpen { [weak self] event in _ = self?.feed(event) }
+            }
         default:
             pending = []
         }
@@ -283,7 +305,11 @@ final class MCPActRunner {
     /// sends are returned for `drive` to run in order.
     func feed(_ event: MCPActMachine.Event) -> [MCPActMachine.Action] {
         let (next, actions) = MCPActMachine.step(machine, event)
+        let wasOpening = machine.state == .opening
         machine = next
+        if wasOpening, machine.state != .opening {
+            return leftOpening(actions, after: event)
+        }
         // The turn is released only when Done: a draining call still has
         // its input going out (MCP-84).
         if machine.state == .done { releaseTurn() }
@@ -310,8 +336,28 @@ final class MCPActRunner {
         return []
     }
 
+    /// The open is over: its sends go to `drive`, an answer completes now.
+    private func leftOpening(_ actions: [MCPActMachine.Action], after event: MCPActMachine.Event) -> [MCPActMachine.Action] {
+        openBoundTask?.cancel()
+        var sends: [MCPActMachine.Action] = []
+        for action in actions {
+            switch action {
+            case .answer(let answer) where sends.isEmpty: complete(.answer(answer))
+            case .fail(let code) where sends.isEmpty: complete(.fail(code))
+            default: sends.append(action)
+            }
+        }
+        if event == .clientGone, continuation != nil { complete(.fail("cancelled")) }
+        let wait = openWait
+        openWait = nil
+        wait?.resume(returning: sends)
+        return []
+    }
+
     private func complete(_ outcome: MCPActOutcome) {
         deadlineTask?.cancel()
+        openBoundTask?.cancel()
+        env.stopWatchingOpen()
         if machine.state == .done { releaseTurn() }
         guard let continuation else { return }
         self.continuation = nil

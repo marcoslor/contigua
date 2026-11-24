@@ -28,6 +28,8 @@ struct MCPActMachine: Equatable {
     /// How long a settle that found the display gone waits for the phone's
     /// `window.closed` reason (MCP-83).
     static let closeWaitMs = 500
+    /// How long an open waits for its window's first frame (MCP-41).
+    static let openBoundMs = 10_000
 
     /// How the input reaches the phone: as input frames (a point, a key, a
     /// swipe, and S1's ref tap), as `ui.press` (T10) or as `ui.type` (T13).
@@ -117,8 +119,10 @@ struct MCPActMachine: Equatable {
         case pressFailed(String)
         case typeOK(entry: String, via: String)
         case typeFailed(String)
-        /// An open's window and first frame both arrived (T6).
-        case opened
+        /// The phone's `window.opened` for the call's window (MCP-41).
+        case windowOpened
+        /// The window's first frame was shown (MCP-41).
+        case firstFrame
         case openBound
         case openFailed(String)
         /// The input finished going out (`sendInput` returned).
@@ -161,6 +165,9 @@ struct MCPActMachine: Equatable {
     var settle: Settle?
     var entry: String?
     var via: String?
+    /// Opening: what has arrived of the window's open (MCP-41).
+    var sawWindowOpened = false
+    var sawFirstFrame = false
 
     init(path: Path, wait: MCPWait, observe: MCPObserve) {
         self.state = .queued
@@ -275,8 +282,13 @@ struct MCPActMachine: Equatable {
             state = .sent
             return []
 
-        case (.opening, .opened):
-            state = .sent
+        case (.opening, .windowOpened):
+            sawWindowOpened = true
+            if sawFirstFrame { state = .sent }
+            return []
+        case (.opening, .firstFrame):
+            sawFirstFrame = true
+            if sawWindowOpened { state = .sent }
             return []
         case (.opening, .openBound):
             return finish(answer(settle: Settle(state: "not_ready"), state: "opening"))

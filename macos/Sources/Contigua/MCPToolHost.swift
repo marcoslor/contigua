@@ -55,8 +55,8 @@ struct MCPToolHost {
                 return .answer(await phoneStatus())
             case .listApps:
                 return .answer(try listApps())
-            case .openApp(let query, let newWindow):
-                return .answer(try openApp(query, newWindow: newWindow))
+            case .openApp(let query, let newWindow, let wait, let observe):
+                return .answer(try await openApp(query, newWindow: newWindow, wait: wait, observe: observe))
             case .listWindows:
                 return .answer(listWindows())
             case .screenshot(let window, let ref, let wait):
@@ -82,10 +82,10 @@ struct MCPToolHost {
                                                     width: width, height: height))
             case .closeWindow(let window):
                 return .answer(try closeWindow(window))
-            case .sendLink(let url):
-                return .answer(try sendLink(url))
+            case .sendLink(let url, let wait, let observe):
+                return .answer(try await sendLink(url, wait: wait, observe: observe))
             case .sendFile(let path):
-                return .answer(try sendFile(path))
+                return .answer(try await sendFile(path))
             }
         } catch {
             return .failure(MCPToolError.mapping(error, phone: phoneName))
@@ -123,7 +123,7 @@ struct MCPToolHost {
 
     /// The phone's name for a sentence's blank; never logged (MCP-14).
     var phoneName: String? {
-        (try? IntentsBridge.resolve(nil))?.name
+        (try? IntentsBridge.resolve(nil, in: controller))?.name
     }
 
     func requireWindow(_ id: Int) throws -> StreamWindowController {
