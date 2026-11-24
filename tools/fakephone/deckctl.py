@@ -1556,6 +1556,40 @@ def cmd_volume(client, args):
     raise DeckError("no state with volume within %ss (an old phone omits it)" % args.wait)
 
 
+def cmd_ui_tree(client, args):
+    """`ui.tree` on the phone (docs/PROTOCOL.md "UI tree"): open a phone mirror,
+    read its tree `--reads` times and print each reply as one JSON line, so a
+    check can compare the keys (`k`) across reads (MCP-71)."""
+    stream = 1
+    client.send_json({"t": "window.open", "stream": stream, "w": args.w, "h": args.h,
+                      "dpi": args.dpi, "mode": "phone"})
+    _await_json(client, "window.opened", args.wait)
+    for seq in range(1, args.reads + 1):
+        client.send_json({"t": "ui.tree", "stream": stream, "seq": seq})
+        msg = _await_json(client, "ui.tree", args.wait)
+        print(json.dumps(msg, sort_keys=True))
+    return 0
+
+
+def _await_json(client, kind, wait):
+    """The next JSON message of type `kind`; an `error` or a silence fails."""
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        frame = client.recv(0.25)
+        if frame is TIMEOUT:
+            continue
+        if frame is None:
+            raise DeckError("phone closed before %s" % kind)
+        if frame.type != proto.TYPE_JSON:
+            continue
+        msg = proto.unpack_json(frame)
+        if msg.get("t") == "error":
+            raise DeckError("phone error %s: %s" % (msg.get("code"), msg.get("message", "")))
+        if msg.get("t") == kind:
+            return msg
+    raise DeckError("no %s within %ss" % (kind, wait))
+
+
 def cmd_ui_settle(client, args):
     """`ui.settle` on the phone (docs/PROTOCOL.md "UI tree" §7): open a phone
     mirror, ask the phone to settle it and print the reply (MCP-81's wire)."""
@@ -3144,6 +3178,13 @@ def build_parser():
     sp.add_argument("--h", type=int, default=2340)
     sp.add_argument("--dpi", type=int, default=450)
 
+    sp = sub.add_parser("ui-tree", help="open a phone mirror and read ui.tree N times", **spp)
+    sp.add_argument("--w", type=int, default=400)
+    sp.add_argument("--h", type=int, default=800)
+    sp.add_argument("--dpi", type=int, default=160)
+    sp.add_argument("--reads", type=int, default=2)
+    sp.add_argument("--wait", type=float, default=5.0, help="seconds to wait for each reply")
+
     sp = sub.add_parser("ui-settle", help="open a phone mirror and read ui.settle", **spp)
     sp.add_argument("--w", type=int, default=400)
     sp.add_argument("--h", type=int, default=800)
@@ -3783,6 +3824,7 @@ COMMANDS = {
     "resize-test": cmd_resize_test,
     "input-test": cmd_input_test,
     "pause-test": cmd_pause_test,
+    "ui-tree": cmd_ui_tree,
     "ui-settle": cmd_ui_settle,
     "latency": cmd_latency,
     "quality-test": cmd_quality_test,
