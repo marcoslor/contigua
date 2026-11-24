@@ -16,6 +16,7 @@ final class StreamWindow: NSWindow {
     var customZoom: (() -> Bool)?
 
     override func zoom(_ sender: Any?) {
+        (windowController as? StreamWindowController)?.agentShapeEvent(.zoom)
         if customZoom?() == true { return }
         super.zoom(sender)
     }
@@ -863,6 +864,42 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    // MARK: The agent's phone shape (MCP-100, MCP-101)
+
+    /// The phone shape an agent's open gave this window; nil for a person's
+    /// window and from the hand-back on.
+    private(set) var agentShape: AgentWindowShape?
+    private(set) var agentShapeHold = AgentShapeHold.ordinary
+    /// The app's own resize to the shape: not the person's.
+    private var applyingAgentShape = false
+
+    /// MCP-100: open at the phone's shape. Called before `present()`, so the
+    /// window neither reads nor writes the package's remembered frame.
+    func takeAgentShape(_ shape: AgentWindowShape) {
+        agentShape = shape
+        agentShapeHold = .phone
+        guard let window else { return }
+        applyingAgentShape = true
+        defer { applyingAgentShape = false }
+        let size = style.windowSize(stream: shape.points)
+        let top = window.frame.maxY
+        window.setFrame(NSRect(x: window.frame.minX, y: top - size.height,
+                               width: size.width, height: size.height), display: false)
+    }
+
+    /// MCP-101: one event into the hand-back machine.
+    func agentShapeEvent(_ event: AgentShapeHold.Event) {
+        let (next, actions) = AgentShapeHold.step(agentShapeHold, event)
+        agentShapeHold = next
+        for action in actions {
+            switch action {
+            case .handBack:
+                agentShape = nil
+                Log.video.info("stream \(self.stream, privacy: .public): phone shape handed back")  // log-ok: an id
+            }
+        }
+    }
+
     // MARK: Sizing
 
     var session: Session { manager.session }
@@ -878,6 +915,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// pixels inside the phone's encoder limits (ISS-39), or at most the panel's
     /// pixels on a scaled display when `stream.pixels=panel` (M2).
     func displayPixels() -> CGSize {
+        // MCP-100: a phone-shape window asks for the phone's shape.
+        if let agentShape { return agentShape.pixels }
         guard let window else { return .zero }
         let cap = strategy.pixels == .panel ? panelFactor(for: window.screen) : 1
         return VideoSize.displayPixels(bounds: videoBounds(), backingScale: Double(window.backingScaleFactor),
@@ -900,6 +939,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func dpi() -> Double {
+        if let agentShape { return Double(agentShape.dpi) }
         guard window != nil else { return 160 * density }
         return VideoSize.dpi(pixels: displayPixels(), bounds: videoBounds(), density: density)
     }
@@ -1071,7 +1111,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// Whether this window's frame is remembered for its subject. Only an
     /// app's first window is: an added window cascades from it and forgets its
     /// own place (WIN-13).
-    var remembersFrame: Bool { true }
+    var remembersFrame: Bool { agentShape == nil }
 
     /// Where this window opens when a caller placed it relative to another (an
     /// added window of an app): read by `present()` (WIN-13).
@@ -1167,6 +1207,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         let standard = zoomStandardFrame(on: screen)
         let (state, target) = WindowZoom.onZoom(zoom, frame: window.frame, standard: standard)
         zoom = state
+        agentShapeEvent(.zoom)
         // The state is a closed set; no person data.
         Log.app.notice("window zoom: \(state.name, privacy: .public)")  // log-ok: closed state set
         guard !sameFrame(window.frame, target) else { return true }
@@ -1270,6 +1311,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// The shape change is over: the phone is asked once, now, and the settled
     /// frame is the one to come back to.
     private func endLiveResize() {
+        // MCP-101: the person's drag (or Zoom's animation) hands the shape
+        // back before the resize below asks at WIN-5's size.
+        agentShapeEvent(.personResize)
         isLiveResizing = false
         videoView.isWindowLiveResizing = false
         videoView.liveResizeEnded()
@@ -1353,6 +1397,17 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowDidResize(_ notification: Notification) {
+        // MCP-101: a resize the app did not make and no drag is running
+        // (a tiling action) hands the shape back; a style switch keeps the
+        // stream area and so the shape.
+        // The app's own resize to the shape happens before the window is
+        // shown or opened on the phone: `window.open` already carries it.
+        if applyingAgentShape { return }
+        if let agentShape, !isLiveResizing,
+           abs(videoBounds().width - agentShape.points.width) > 0.5
+            || abs(videoBounds().height - agentShape.points.height) > 0.5 {
+            agentShapeEvent(.tile)
+        }
         // A stream window changing shape cannot keep a frozen frame: the new
         // picture would be a different size under the same overlay.
         liveText.exit(.resize)
@@ -1759,6 +1814,7 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// title bar takes over, so the system's reveal with the menu bar is the
     /// only chrome in full screen (WIN-14).
     func windowWillEnterFullScreen(_ notification: Notification) {
+        agentShapeEvent(.fullScreen)
         if let window, !window.styleMask.contains(.fullScreen) {
             windowedFrame = window.frame
         }
@@ -2095,6 +2151,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
             Log.video.info("density press: the window is at the clamp, nothing to send")
             return
         }
+        // MCP-101: the person's own density change on this window hands a
+        // phone-shape window back before the re-send below asks at WIN-5's size.
+        agentShapeEvent(.densityChange)
         manager.setDensity(next, forPackage: pkg)
     }
 
@@ -2106,20 +2165,26 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// The View ▸ Density pick (nil is "Default") for this window's app.
     func setDensityOverride(_ value: Double?) {
         guard let pkg = densityPackage else { return }
+        agentShapeEvent(.densityChange)  // MCP-101, as in adjustDensity
         manager.setDensity(value, forPackage: pkg)
     }
 
     /// The app's override or the Settings default changed: the phone gets the
     /// new dpi. The value itself is computed, so this only re-sends.
     func applyStoredDensity() {
-        guard window != nil else { return }
+        // MCP-100: a phone-shape window reads no density setting, so a stored
+        // change (another window's pick, Settings' clear, a link window
+        // learning its app) re-sends nothing; only the person's pick on this
+        // window hands it back (adjustDensity, setDensityOverride).
+        guard window != nil, agentShape == nil else { return }
         sendResize()
     }
 
     /// Settings → General's default changed: apps without an override follow
     /// it at once.
     func defaultDensityChanged() {
-        guard usesDensity, densityOverride == nil else { return }
+        // MCP-100: a phone-shape window reads neither density setting.
+        guard usesDensity, densityOverride == nil, agentShape == nil else { return }
         applyStoredDensity()
     }
 

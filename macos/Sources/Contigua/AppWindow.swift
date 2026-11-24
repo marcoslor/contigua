@@ -44,7 +44,7 @@ final class AppWindowController: StreamWindowController {
     /// added window cascades from it and forgets its own place (WIN-13).
     private var storedRemembersFrame = true
     override var remembersFrame: Bool {
-        get { storedRemembersFrame }
+        get { storedRemembersFrame && agentShape == nil }
         set { storedRemembersFrame = newValue }
     }
 

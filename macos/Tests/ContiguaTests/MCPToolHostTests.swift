@@ -241,6 +241,33 @@ final class MCPToolHostTests: XCTestCase {
         XCTAssertTrue(failed.message.contains("window \(stream)"), failed.message)
     }
 
+    /// [MCP-41] [MCP-100] A new window's `size` is the display the phone made
+    /// (`window.opened`'s `w`×`h`), known as soon as the phone answers: an
+    /// open whose first frame has not arrived answers that size with
+    /// `state: "opening"`, never `[0, 0]`. A raised window answers the size
+    /// its stream already has.
+    @MainActor
+    func testAnOpenWithNoFrameAnswersTheOpenedSize_MCP41_MCP100() throws {
+        let (controller, profile) = offlineController()
+        defer { dispose(controller, profile) }
+        let window = controller.windows.openOrRaise(pkg: "com.android.settings")
+        let stream = window.stream
+        let host = MCPToolHost(controller: controller, client: MCPClientID(1))
+        controller.windows.handle(.windowOpened(stream: stream, displayId: 2, width: 576, height: 1280,
+                                                started: .moved))
+        XCTAssertEqual(host.stateToken(for: window), "opening", "the first frame has not arrived")
+
+        let bound = MCPActMachine.Answer(settle: .init(state: "not_ready"), state: "opening")
+        let answer = host.openAnswer(stream, kind: .app, opened: .new, result: bound, lastFrame: nil)
+        XCTAssertEqual(answer["size"] as? [Int], [576, 1280])
+        XCTAssertEqual(answer["state"] as? String, "opening")
+        XCTAssertEqual((answer["settle"] as? [String: Any])?["state"] as? String, "not_ready")
+
+        let raised = host.openAnswer(stream, kind: .app, opened: .raised, result: bound, lastFrame: nil)
+        let has = host.pixelSize(of: window)
+        XCTAssertEqual(raised["size"] as? [Int], [has.0, has.1], "a raise answers the stream it has")
+    }
+
     /// [MCP-44] `send_file` waits for the phone's `drop.result` (30 s at most):
     /// delivered with its bytes, still `sending` at the bound, or `failed`
     /// with the phone's sentence; never the file's name or path.

@@ -16,8 +16,9 @@ final class WindowManager {
     /// Streams whose first frame has reached this window (the opening cover's
     /// end); touched on the session queue under `lock`.
     private var firstFrameNoted: Set<UInt32> = []
-    /// Streams the phone answered `window.opened` for (MCP-41).
-    private var phoneOpened: Set<UInt32> = []
+    /// Streams the phone answered `window.opened` for, with the display's
+    /// `w`×`h` it made (MCP-41, MCP-100).
+    private var phoneOpened: [UInt32: (width: Int, height: Int)] = [:]
     /// An MCP open waiting on its window (MCP-41): one per call, by stream.
     private var openWatches: [UInt32: [(id: Int, client: MCPClientID?, feed: (MCPActMachine.Event) -> Void)]] = [:]
     private var nextOpenWatch = 0
@@ -465,6 +466,10 @@ final class WindowManager {
     private func open<T: StreamWindowController>(_ make: (UInt32) -> T) -> T {
         let stream = allocateStream()
         let controller = make(stream)
+        // MCP-100: an agent's new window takes the phone's shape.
+        if openShape == .phone, let shape = agentShape(for: controller) {
+            controller.takeAgentShape(shape)
+        }
         store(controller, stream: stream)
         // A window opened while a drop runs or its outcome is up shows the pill.
         controller.setDropPill(dropPill)
@@ -500,6 +505,8 @@ final class WindowManager {
     @discardableResult
     func openOrRaise(pkg: String, activity: String? = nil, deviceId: String? = nil) -> AppWindowController {
         if let existing = appWindows(pkg: pkg, deviceId: deviceId).first {
+            // MCP-101: a raise keeps the shape and size the window has.
+            existing.agentShapeEvent(.raise)
             raise(existing)
             return existing
         }
@@ -535,6 +542,15 @@ final class WindowManager {
         if let front = existing.first?.window?.frame {
             controller.placementOverride = NSRect(x: front.minX + 28, y: front.minY - 28,
                                                   width: front.width, height: front.height)
+        }
+        // MCP-100: an agent's added window takes the phone's shape too, at the
+        // cascade's place.
+        if openShape == .phone, let shape = agentShape(for: controller) {
+            controller.takeAgentShape(shape)
+            if let placed = controller.placementOverride, let frame = controller.window?.frame {
+                controller.placementOverride = NSRect(x: placed.minX, y: placed.maxY - frame.height,
+                                                      width: frame.width, height: frame.height)
+            }
         }
         store(controller, stream: stream)
         controller.setDropPill(dropPill)
@@ -959,10 +975,14 @@ final class WindowManager {
         lock.unlock()
         let live = controller(for: stream).map { $0.mcpLifecycle != .opening } ?? false
         // A window that is already showing its picture has had its open.
-        if phoneOpened.contains(stream) || live { feed(.windowOpened) }
+        if phoneOpened[stream] != nil || live { feed(.windowOpened) }
         if framed || live { feed(.firstFrame) }
         return id
     }
+
+    /// The display the phone made for `stream` (`window.opened`'s `w`×`h`),
+    /// nil until the phone answers (MCP-41, MCP-100).
+    func openedSize(_ stream: UInt32) -> (width: Int, height: Int)? { phoneOpened[stream] }
 
     func unwatchOpen(stream: UInt32, id: Int) {
         openWatches[stream]?.removeAll { $0.id == id }
@@ -980,7 +1000,7 @@ final class WindowManager {
             let record = self.ledger.closeRecord(stream, asker: client, now: now)
             return .windowClosed(reason: record?.reason ?? "closed", by: record?.closedBy ?? "person")
         }
-        phoneOpened.remove(stream)
+        phoneOpened[stream] = nil
     }
 
     func markFirstFrame(stream: UInt32, hasWindow: Bool) -> Bool {
@@ -1131,12 +1151,32 @@ final class WindowManager {
     /// otherwise (an MCP connection's `open_app`, the app's own task).
     var opener: MCPWindowLedger.Opener = .person
 
-    /// Run `body` with `opener` naming who opens (MCP-51).
-    func opening<T>(by opener: MCPWindowLedger.Opener, _ body: () throws -> T) rethrows -> T {
-        let before = self.opener
+    /// The shape a new window opens at (MCP-100): `.window` for every
+    /// person's open, the MCP call's `shape` for an agent's.
+    private(set) var openShape: MCPWindowShape = .window
+
+    /// Run `body` with `opener` naming who opens (MCP-51) and `shape` the
+    /// shape a window it creates takes (MCP-100).
+    func opening<T>(by opener: MCPWindowLedger.Opener, shape: MCPWindowShape = .window,
+                    _ body: () throws -> T) rethrows -> T {
+        let before = (self.opener, openShape)
         self.opener = opener
-        defer { self.opener = before }
+        openShape = shape
+        defer { (self.opener, openShape) = before }
         return try body()
+    }
+
+    /// MCP-100: the phone shape for a new app or link window, fitted to the
+    /// visible frame of the screen it opens on with its style's chrome; nil
+    /// when the phone reported no screen (the window opens as a person's).
+    func agentShape(for controller: StreamWindowController) -> AgentWindowShape? {
+        guard controller is AppWindowController || controller is LinkWindowController,
+              let phone else { return nil }
+        let visible = (controller.window?.screen ?? NSScreen.main)?.visibleFrame.size
+            ?? CGSize(width: 1440, height: 900)
+        return AgentWindowShape.make(screenWidth: phone.screenWidth, screenHeight: phone.screenHeight,
+                                     screenDpi: phone.screenDpi, encoder: phone.encoder,
+                                     visible: visible, chrome: controller.style.windowSize(stream: .zero))
     }
 
     /// MCP-52: record why a window closed. The first cause wins.
@@ -1304,8 +1344,8 @@ final class WindowManager {
             let ms = controller?.takeResizeAckMs().map { String(format: "%.1f", $0) } ?? "-"
             Log.video.info("stream \(stream, privacy: .public) resize ack \(width, privacy: .public)x\(height, privacy: .public) dpi=\(dpi, privacy: .public) (\(outcome, privacy: .private)) in \(ms, privacy: .public) ms")
             controller?.resizeSettled(ResizeRequest(w: width, h: height, dpi: dpi))
-        case .windowOpened(let stream, _, _, _, let started):
-            phoneOpened.insert(stream)
+        case .windowOpened(let stream, _, let width, let height, let started):
+            phoneOpened[stream] = (width, height)
             feedOpenWatches(stream) { _ in .windowOpened }  // MCP-41
             if started == .fresh {
                 (controller(for: stream) as? HandoffWindowController)?.showFreshNotice()
