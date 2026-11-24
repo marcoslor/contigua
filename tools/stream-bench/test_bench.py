@@ -814,6 +814,27 @@ class TapProbeTest(unittest.TestCase):
             self.bench.drive_tap(NoProbe(), 1, [])
         self.assertIn("no input_probe tool", str(caught.exception))
 
+    def test_the_missing_probe_names_the_flag(self):
+        """[MCP-99] An app launched without --mcp-dev-tools has no probe: the
+        run is failed and its reason says how to launch it."""
+        class UnknownTool:
+            def text(self, name, arguments):
+                # The shim's -32602 for a tool the app does not list.
+                raise RuntimeError("tools/call %s: Unknown tool: %s" % (name, name))
+
+        import types
+        run = {}
+        try:
+            self.bench.run_script("tap", UnknownTool(), 1, [], types.SimpleNamespace(tap_point=None),
+                                  sleep=lambda seconds: None)
+        except Exception as error:  # what the run loop does with it
+            run.update(self.bench.empty_metrics())
+            reason = str(error)
+        else:
+            self.fail("a missing input_probe did not fail the run")
+        self.assertEqual(run["failed"], 1)
+        self.assertIn("--mcp-dev-tools", reason)
+
     def test_a_failed_tap_run_leaves_a_marked_row_and_a_table(self):
         run = {"arm": "tap", "repeat": 1, "script": "tap"}
         run.update(self.bench.empty_metrics())

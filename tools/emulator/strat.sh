@@ -280,7 +280,7 @@ else
     exit 1
 fi
 
-"$APP" --profile "$PROFILE" --background --mcp-enable \
+"$APP" --profile "$PROFILE" --background --mcp-enable --mcp-dev-tools \
     --connect "127.0.0.1:$PORT" --quit-after 600 > "$WORK/app-bench.log" 2>&1 &
 APP_PID=$!
 if wait_for 60 app_connected; then

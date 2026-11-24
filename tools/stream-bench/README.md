@@ -75,9 +75,13 @@ comparable to the same stage in a swipe run.
 | `soak` | Swipes continuously for `--soak-minutes` (default 20), one swipe per `--sample-seconds` (default 10) period, and writes one phone sample row per period. | Phone health over time: thermals, battery, CPU, PSS and Wi-Fi |
 | `tap` | Calls the Mac's `input_probe` tool once with `--tap-point` (default `0.5,0.5`) and records its `changed_ms` as `input_photon_ms` and `frames` as `input_frames`. | Input-to-photon, the number a person feels |
 
-The `tap` script needs a Mac build with the `input_probe` tool. A build without
-it does not crash the table: the run is marked **failed** and its log says
-`no input_probe tool`, while the other runs and the CSV are still written.
+The `tap` script needs the app launched with `--mcp-dev-tools`: `input_probe`
+is listed and accepted only then (MCP-99). For the installed app, quit it and
+run `open -a Contigua --args --mcp-dev-tools`; the `tools/emulator/` bench
+scripts launch their build with it. An app without it does not crash the
+table: the run is marked **failed** and its log says `no input_probe tool:
+launch Contigua with --mcp-dev-tools`, while the other runs and the CSV are
+still written.
 
 `soak` writes `<out>.samples.csv` beside the run CSV. Its header is
 `at, repeat, arm, sample_seconds, app_fps, app_jank_pct, vd_hz,

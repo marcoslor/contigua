@@ -6437,7 +6437,8 @@ PY
 }
 
 # --- Automation server (MCP) -------------------------------------------------
-# check_mcp — the app's private socket, the stdio shim and the 15 tools: state,
+# check_mcp — the app's private socket, the stdio shim and the 15 tools (14, and
+# input_probe with --mcp-dev-tools): state,
 # open an app, a screenshot, input frames, a link and a 1 MiB file. With the
 # setting off the shim must print the Settings hint and fail. The peer-uid check
 # cannot be exercised without a second local account; the unit tests cover the
@@ -6477,7 +6478,8 @@ with open(sys.argv[1], "wb") as f:
     f.write(os.urandom(1024 * 1024))
 PY
     rm -rf "$WORK-control"; mkdir -p "$WORK-control"
-    launch --mcp-enable --connect "127.0.0.1:$PORT" --quit-after 300 --debug-control "$WORK-control"
+    # --mcp-dev-tools lists input_probe (MCP-99); suite_core checks it is there.
+    launch --mcp-enable --mcp-dev-tools --connect "127.0.0.1:$PORT" --quit-after 300 --debug-control "$WORK-control"
     if ! wait_until 30 test -S "$sock"; then
         bad "MCP --mcp-enable did not create $sock"
         stop_app

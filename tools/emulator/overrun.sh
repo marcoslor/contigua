@@ -378,7 +378,7 @@ run_arm() { # run_arm <a|b> <tag> <connect host:port>
     local arm="$1" tag="$2" addr="$3" rc
     section "arm $arm ($tag)"
     emu logcat -c >/dev/null 2>&1 || true
-    "$APP" --profile "$PROFILE" --background --mcp-enable --connect "$addr" \
+    "$APP" --profile "$PROFILE" --background --mcp-enable --mcp-dev-tools --connect "$addr" \
         --quit-after $((SECONDS_RUN + 240)) > "$WORK/app-$tag.log" 2>&1 &
     APP_PID=$!
     if wait_for 90 app_connected; then
