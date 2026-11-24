@@ -96,6 +96,10 @@ enum PathTimers {
     static let pongTimeout: TimeInterval = 1.5
     static let joinedPingDrop: TimeInterval = 5
     static let maxPaths = 3
+    /// PATH-54: how many times one path's answer may revive an orphaned
+    /// session in the grace before that orphan began; past it the orphan's
+    /// grace runs out, so a path that is always late cannot cycle for ever.
+    static let maxAnswerRevives = 3
 }
 
 struct PathSessionMachine {
@@ -109,6 +113,9 @@ struct PathSessionMachine {
     var scores: [String: Int]
     /// The class each live path was ranked with.
     var kinds: [String: PathKind]
+    /// PATH-54: when each attached path's answer last revived an orphaned
+    /// session, the grace's worth only. A path attached anew starts empty.
+    private(set) var answerRevives: [String: [TimeInterval]] = [:]
 
     init(state: PathSessionState = .unfounded,
          live: Set<String> = [],
@@ -133,6 +140,7 @@ struct PathSessionMachine {
         live = [path]
         standby = []
         scores[path] = -1
+        answerRevives = [:]
     }
 
     /// The best path a failover may take: a standby is only reachable by margin.
@@ -155,6 +163,7 @@ struct PathSessionMachine {
                 // replay (PATH-3).
                 state = .live(current: id)
                 live.insert(id)
+                answerRevives[id] = nil
                 scores[id] = scores[id] ?? -1
                 return [.startPing(path: id), .ranking(.pathUp(id))]
             case .close(let reason):
@@ -173,6 +182,7 @@ struct PathSessionMachine {
             case .pathUp(let id, _):
                 if live.contains(id) { return [.closePath(path: id)] }
                 live.insert(id)
+                answerRevives[id] = nil
                 scores[id] = scores[id] ?? -1
                 return [.startPing(path: id), .ranking(.pathUp(id))]
 
@@ -346,6 +356,7 @@ struct PathSessionMachine {
                 if live.contains(id) { return [.closePath(path: id)] }
                 live.insert(id)
                 standby.remove(id)
+                answerRevives[id] = nil
                 scores[id] = scores[id] ?? -1
                 return [.startPing(path: id), .ranking(.pathUp(id))]
             case .graceExpired, .probeWelcomed, .standbyAnswered:
@@ -358,6 +369,7 @@ struct PathSessionMachine {
                 if live.contains(id) { return [.closePath(path: id)] }
                 live.insert(id)
                 standby.remove(id)
+                answerRevives[id] = nil
                 scores[id] = scores[id] ?? -1
                 state = .live(current: id)
                 return [.switchTo(path: id), .replayFromLastAck,
@@ -392,6 +404,13 @@ struct PathSessionMachine {
                 // attached path that answers a ping takes it, with a join's
                 // unplanned-switch semantics (PATH-6/9); it is already pinged.
                 guard live.contains(id) else { return [] }
+                // A path whose answers are always late would cycle orphaned ->
+                // live -> orphaned, each orphan restarting the grace. Counted
+                // against this orphan's start, so the refusal holds until it
+                // ends: its grace runs out unless another path takes it.
+                let recent = (answerRevives[id] ?? []).filter { since - $0 < PathTimers.grace }
+                guard recent.count < PathTimers.maxAnswerRevives else { return [] }
+                answerRevives[id] = recent + [now]
                 standby.remove(id)
                 state = .live(current: id)
                 return [.switchTo(path: id), .replayFromLastAck,
