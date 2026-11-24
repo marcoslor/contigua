@@ -94,7 +94,7 @@ final class MCPToolHostTests: XCTestCase {
         }
         XCTAssertEqual(controller.windows.openStreams, [stream], "a refused URL opens nothing")
 
-        let failed = MCPOpenAnswer.failure(code: "launch_failed", window: Int(stream))
+        let failed = MCPOpenAnswer.failure(code: "launch_failed", window: Int(stream), maxWindows: 4)
         XCTAssertEqual(failed.code, .failed)
         XCTAssertEqual(failed.extra["window"] as? Int, Int(stream))
         XCTAssertTrue(failed.message.contains("window \(stream)"), failed.message)
