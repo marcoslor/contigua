@@ -377,8 +377,11 @@ struct PathSessionMachine {
                 return [.ranking(.currentFailed(id: id))]
             case .pongLost(let id):
                 // No path is carrying the session: nothing to fail over from.
-                live.remove(id)
-                standby.remove(id)
+                // D-2: a lost pong demotes, never detaches. The path stays
+                // open and pinged, so its later answer still revives the
+                // session (PATH-54); only its socket error or the end closes it.
+                guard live.contains(id) else { return [] }
+                standby.insert(id)
                 return []
             case .peerSwitch:
                 return [.ignore]
