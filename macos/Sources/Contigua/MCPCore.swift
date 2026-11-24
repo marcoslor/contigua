@@ -14,7 +14,14 @@ enum MCPProtocol {
     /// The revision this server implements.
     static let version = "2025-06-18"
     static let serverName = "contigua"
-    static let serverVersion = "0.2.0"
+    /// The app's own version: `VERSION`, which bundle.sh writes into Info.plist,
+    /// so a bump stays one edit (MCP-3).
+    static let serverVersion = appVersion(Bundle.main.infoDictionary)
+    static func appVersion(_ info: [String: Any]?) -> String {
+        guard let version = info?["CFBundleShortVersionString"] as? String, !version.isEmpty
+        else { return "unknown" }
+        return version
+    }
     /// One request per line; a longer line is refused unread.
     static let maxLineBytes = 1 << 20
 }

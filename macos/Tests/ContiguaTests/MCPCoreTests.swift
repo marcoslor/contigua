@@ -65,6 +65,14 @@ final class MCPCoreTests: XCTestCase {
         XCTAssertFalse((info["version"] as? String ?? "").isEmpty)
     }
 
+    /// MCP-3: serverInfo reports the app's version from its bundle, never a
+    /// number of its own that drifts from `VERSION`.
+    func testServerInfoVersionIsTheAppsVersion() {
+        XCTAssertEqual(MCPProtocol.appVersion(["CFBundleShortVersionString": "0.2.0"]), "0.2.0")
+        XCTAssertEqual(MCPProtocol.appVersion(["CFBundleShortVersionString": ""]), "unknown")
+        XCTAssertEqual(MCPProtocol.appVersion(nil), "unknown")
+    }
+
     func testInitializedNotificationGetsNoReply() async {
         let data = await MCPDispatcher.handle(
             line: line(["jsonrpc": "2.0", "method": "notifications/initialized"]),
