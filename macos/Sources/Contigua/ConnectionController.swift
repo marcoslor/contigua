@@ -215,6 +215,12 @@ final class ConnectionController {
     @ObservationIgnored private var frontTimer: Timer?
     /// `ui.tree` (WIN-79): each MCP read waits for the reply carrying its seq.
     @ObservationIgnored private var uiTreeBroker = UITreeBroker()
+    /// `ui.settle` (MCP-81): each settle waits for the reply carrying its seq.
+    @ObservationIgnored private var uiSettleBroker = UISettleBroker()
+    /// MCP-9: every `ui.*` request to the phone, one at a time, in arrival order.
+    @ObservationIgnored private var phoneReads = PhoneReadQueue()
+    /// MCP-84: input calls on one window, one at a time across clients.
+    @ObservationIgnored private(set) var windowActs = WindowActQueue()
     /// APK installs (docs/design/apk.md); the Deck shows its phase.
     let apkInstaller = ApkInstaller()
     /// Files dropped on a window (docs/design/dragdrop.md); windows show the pill.
@@ -694,6 +700,7 @@ final class ConnectionController {
         }
         mcp.configure(profile: profile, forced: options.mcpEnable)
         mcp.hostProvider = { [weak self] in self.map { MCPToolHost(controller: $0) } }
+        mcp.onClientClosed = { [weak self] client in self?.windowActs.clientGone(client) }
         // A phone-side change has to reach the Finder UI even when no extension
         // process is running, and a replicated extension may only be signalled
         // through its working set (NSFileProviderManager.h, design "S5 round 3").
@@ -770,6 +777,16 @@ final class ConnectionController {
             DispatchQueue.main.async {  // gcd: the close arrives on the session queue; hop to main first
                 self?.uiTreeBroker.forget(stream: stream) // F4: a closed window's refs die with it
                 self?.dockFollowWindowClosed(stream)
+            }
+        }
+        windows.onPersonInput = { [weak self] stream in
+            MainActor.assumeIsolated { self?.noteOtherInput(stream: stream, source: "person") }
+        }
+        // MCP-52, MCP-83: the Mac closed a stream itself.
+        windows.onMacClosed = { [weak self] stream, byAgent in
+            MainActor.assumeIsolated {
+                let closed = MCPCloseReason.mac(byAgent: byAgent)
+                self?.windowActs.closed(window: stream, reason: closed.reason, by: closed.by)
             }
         }
         windows.onFilesDropped = { [weak self] urls, target in
@@ -1296,11 +1313,39 @@ final class ConnectionController {
     /// MCP `ui_tree` tool. One request at a time per call, paired by `seq`; the
     /// phone's answer arrives as `.uiTree`. A closed session fails at once and
     /// a silent phone at the deadline, so a tool call never hangs.
-    func uiTree(stream: UInt32, timeout: TimeInterval = UITreeBroker.deadline) async throws -> UITree {
+    func uiTree(stream: UInt32, timeout: TimeInterval = UITreeBroker.deadline,
+                until: ContinuousClock.Instant? = nil) async throws -> UITree {
         guard link.isOnline, let session else { throw UITreeError.notConnected }
-        return try await uiTreeBroker.read(stream: stream, timeout: timeout) { seq in
-            session.requestUITree(stream: stream, seq: seq)
+        let bound = until ?? .now + .milliseconds(Int(timeout * 1000))
+        return try await phoneReads.run(until: bound) { [uiTreeBroker] in
+            try await uiTreeBroker.read(stream: stream, timeout: timeout) { seq in
+                session.requestUITree(stream: stream, seq: seq)
+            }
         }
+    }
+
+    /// `ui.settle` for a window's display (MCP-81), in the phone's read queue
+    /// (MCP-9). The caller is answered by `until`; the request itself waits
+    /// `timeoutMs` plus the phone's 2.5 s and 3 s, holding the queue; a closed
+    /// session fails at once.
+    func uiSettle(stream: UInt32, quietMs: Int, timeoutMs: Int,
+                  until: ContinuousClock.Instant) async throws -> UISettleReply {
+        guard link.isOnline, let session else { throw UITreeError.notConnected }
+        return try await phoneReads.run(until: until) { [uiSettleBroker] in
+            try await uiSettleBroker.settle(stream: stream, quietMs: quietMs, timeoutMs: timeoutMs) { seq in
+                session.requestUISettle(stream: stream, seq: seq, quietMs: quietMs, timeoutMs: timeoutMs)
+            }
+        }
+    }
+
+    /// The window's latest tree, for an answer's `did` (MCP-87, MCP-108).
+    func uiTreeLatest(stream: UInt32) -> UITree? {
+        uiTreeBroker.latestTree(stream: stream)
+    }
+
+    /// MCP-84: the person's input reached a window during an agent's call.
+    func noteOtherInput(stream: UInt32, source: String) {
+        windowActs.report(window: stream, source: source)
     }
 
     private func uiTreeReplied(_ tree: UITree) {
@@ -1322,6 +1367,9 @@ final class ConnectionController {
 
     /// A closed session, or a phone switch, has no tree to answer with.
     private func failUITrees(_ error: UITreeError) {
+        phoneReads.fail(error)
+        uiSettleBroker.fail(error)
+        windowActs.linkLost()
         uiTreeBroker.fail(error)
     }
 
@@ -3253,6 +3301,8 @@ final class ConnectionController {
             frontReplied(seq: seq, pkg: pkg)
         case .uiTree(let tree):
             uiTreeReplied(tree)
+        case .uiSettle(let reply):
+            uiSettleBroker.reply(reply)
         case .phoneState(let locked, let battery, let charging, let dnd, let ringer, let volume,
                          let volumeMax, let screen, let secure, let panel):            status = PhoneStatus(locked: locked, battery: battery, charging: charging, dnd: dnd, ringer: ringer,
                                  volume: volume, volumeMax: volumeMax, screen: screen)
@@ -3274,7 +3324,11 @@ final class ConnectionController {
             windows.powerLocked()
         case .audioState:
             break
-        case .windowClosed:
+        case .windowClosed(let stream, let reason):
+            // MCP-83: a call acting on the window answers why it closed. Who
+            // closed a window from the Mac is T7's ledger; the phone's own
+            // closes are named here.
+            windowActs.closed(window: stream, reason: MCPCloseReason.token(phone: reason), by: "phone")
             syncAudio()
         case .pairCodeShown(let deviceId, let code):
             codeShown(deviceId: deviceId, code: code)
@@ -3921,7 +3975,9 @@ final class ConnectionController {
                   ["back", "home", "recents"].contains(action) else {
                 return "nav needs back|home|recents"
             }
-            guard let window = windows.controller(for: 1) else { return "no first window" }
+            // An optional second word names the window (MCP-84's e2e); else the first.
+            let id = arguments.count > 1 ? UInt32(arguments[1]) ?? 1 : 1
+            guard let window = windows.controller(for: id) else { return "no such window" }
             switch action {
             case "back":
                 window.navigateBack(nil)

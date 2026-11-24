@@ -176,6 +176,9 @@ enum SessionEvent {
     /// `ui.tree` (docs/PROTOCOL.md "UI tree", WIN-79): the accessibility tree of
     /// the display a stream's window lives on. `seq` echoes the request.
     case uiTree(UITree)
+    /// `ui.settle` (PROTOCOL.md "UI tree" item 7, MCP-81): the phone's answer
+    /// to "has this display stopped changing". `seq` echoes the request.
+    case uiSettle(UISettleReply)
     /// `ring.state`: a `phone.ring` started or ended.
     case ringState(ringing: Bool)
     /// `power.locked`: the phone's own power press with app streams up (its VD
@@ -1814,6 +1817,8 @@ final class Session {
             emit(.frontApp(seq: message.int("seq") ?? 0, pkg: message.string("pkg")))
         case "ui.tree":
             if let tree = UITree(message: message) { emit(.uiTree(tree)) }
+        case "ui.settle":
+            if let reply = UISettleReply(message: message) { emit(.uiSettle(reply)) }
         case "state":
             phoneScreenOn = (message.string("screen") ?? "on") == "on"
             if let cap = message.int("maxWindows") {
@@ -2353,6 +2358,13 @@ final class Session {
     func requestUITree(stream: UInt32, seq: Int) {
         sendPing()
         sendJSON(["t": "ui.tree", "stream": Int(stream), "seq": seq])
+    }
+    /// `ui.settle` (docs/PROTOCOL.md "UI tree" item 7, MCP-81): answer when the
+    /// stream's display has not changed for `quietMs` with nothing loading, or
+    /// at `timeoutMs`. Sent on the same ordered lane as the input before it.
+    func requestUISettle(stream: UInt32, seq: Int, quietMs: Int, timeoutMs: Int) {
+        sendJSON(["t": "ui.settle", "stream": Int(stream), "seq": seq,
+                  "quietMs": quietMs, "timeoutMs": timeoutMs])
     }
     func resizeWindow(stream: UInt32, width: Int, height: Int, dpi: Double) {
         sendJSON(["t": "window.resize", "stream": Int(stream), "w": width, "h": height, "dpi": Int(dpi.rounded())])
