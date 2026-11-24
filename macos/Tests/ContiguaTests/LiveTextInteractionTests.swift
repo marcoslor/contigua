@@ -7,10 +7,12 @@
 // resolved set has no text selection, so the person's drags selected nothing.
 //
 // The down/drag/up itself runs in the app (e2e `livetext`, the `drag-check`
-// script action): an XCTest bundle has no NSApplication, so a window can never
-// become key there and AppKit drops the activation click before VisionKit sees
-// it. K2 pins the view tree and the interaction set; the quiet e2e's app is
-// inactive too, so the selection itself is the person's (an active window).
+// script action): an XCTest bundle's app is never active, so a window can
+// never become key there and AppKit drops the activation click before
+// VisionKit sees it. K2 pins the view tree, the interaction set, and the window's own
+// dispatch (NSWindow.sendEvent, #245): a click over the overlay never reaches
+// the video's mouse-down. The quiet e2e's app is inactive too, so the
+// selection itself is the person's (an active window).
 
 import AppKit
 import CoreVideo
@@ -79,6 +81,44 @@ final class LiveTextInteractionTests: XCTestCase {
         return hit.isDescendant(of: overlay)
     }
 
+    /// The view AppKit's dispatch gives a click at `point` (in `root`):
+    /// `hitTest`, except that NSBackgroundExtensionView's own hosting view
+    /// passes the point through to the mirror's content view. On macOS 26 the
+    /// mirror lays a hosting view over its content and `hitTest` names it,
+    /// while a real click still reaches the content (#245).
+    private func dispatchedHit(_ root: NSView, at point: NSPoint) -> NSView? {
+        guard let hit = root.hitTest(point) else { return nil }
+        var cursor = hit.superview
+        while let view = cursor, !(view is NSBackgroundExtensionView) { cursor = view.superview }
+        guard let mirror = cursor as? NSBackgroundExtensionView,
+              let content = mirror.contentView, hit !== content, !hit.isDescendant(of: content),
+              let parent = content.superview else { return hit }
+        return content.hitTest(parent.convert(point, from: root)) ?? hit
+    }
+
+    /// A left click at a point in the window's base coordinates, for
+    /// `NSWindow.sendEvent`.
+    private func windowClick(_ type: NSEvent.EventType, at point: NSPoint, in window: NSWindow) -> NSEvent {
+        NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                           timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                           context: nil, eventNumber: 0, clickCount: 1,
+                           pressure: type == .leftMouseDown ? 1 : 0)!
+    }
+
+    /// A click through the window's own dispatch (#245). The up is queued
+    /// first, so a control that tracks the mouse from its down finds it.
+    private func click(_ point: NSPoint, in content: NSView) {
+        guard let window = content.window else { return XCTFail("no window") }
+        let inWindow = content.convert(point, to: nil)
+        let up = windowClick(.leftMouseUp, at: inWindow, in: window)
+        NSApplication.shared.postEvent(up, atStart: false)
+        window.sendEvent(windowClick(.leftMouseDown, at: inWindow, in: window))
+        if let queued = NSApplication.shared.nextEvent(matching: .leftMouseUp, until: Date(), inMode: .default,
+                                                       dequeue: true) {
+            window.sendEvent(queued)
+        }
+    }
+
     func testTheOverlayTakesAHitTestOnTextAndKeepsTextSelection() throws {
         let manager = makeManager()
         let controller = AppWindowController(stream: 1, pkg: "com.example.app", activity: nil,
@@ -91,6 +131,17 @@ final class LiveTextInteractionTests: XCTestCase {
         controller.noteFirstFrame()
         let content = try XCTUnwrap(window.contentView)
         content.layoutSubtreeIfNeeded()
+
+        // The video's own mouse-down, whatever the mapper then lets through.
+        let video = controller.videoView
+        var videoDowns = 0
+        let pointerDown = video.onPointerDown
+        video.onPointerDown = { videoDowns += 1; pointerDown?() }
+        // The witness: before the freeze, a click on the picture is the video's.
+        let videoCentre = content.convert(NSPoint(x: video.bounds.midX, y: video.bounds.midY), from: video)
+        click(videoCentre, in: content)
+        XCTAssertEqual(videoDowns, 1, "a click on the live picture reaches the video (the witness)")
+        videoDowns = 0
 
         let session = try XCTUnwrap(controller.videoView.liveText)
         // VisionKit's analyser occasionally comes back with no results at all
@@ -128,7 +179,7 @@ final class LiveTextInteractionTests: XCTestCase {
         var overlayHits = 0
         stride(from: frame.minX + 8, to: frame.maxX - 8, by: 8).forEach { x in
             stride(from: frame.minY + 8, to: frame.maxY - 8, by: 8).forEach { y in
-                let hit = content.hitTest(NSPoint(x: x, y: y))
+                let hit = dispatchedHit(content, at: NSPoint(x: x, y: y))
                 if isOverlay(hit, overlay: overlay) {
                     overlayHits += 1
                 } else if hit === controller.videoView || hit?.isDescendant(of: controller.videoView) == true {
@@ -138,6 +189,10 @@ final class LiveTextInteractionTests: XCTestCase {
         }
         XCTAssertEqual(videoHits, 0, "the video view swallowed \(videoHits) points over the overlay")
         XCTAssertGreaterThan(overlayHits, 0, "no point over the frozen frame hit the overlay")
+        // The window's own dispatch agrees: a click over the overlay is never
+        // the video's.
+        click(NSPoint(x: frame.midX, y: frame.midY), in: content)
+        XCTAssertEqual(videoDowns, 0, "a click over the overlay reached the video's mouse-down")
 
         // With recognised text, the hit at the word itself is the same route
         // the pointer takes (VisionKit lays its text views out after the
@@ -152,7 +207,7 @@ final class LiveTextInteractionTests: XCTestCase {
             stride(from: frame.minX + 8, to: frame.maxX - 8, by: 8).forEach { x in
                 stride(from: frame.minY + 8, to: frame.maxY - 8, by: 8).forEach { y in
                     let point = NSPoint(x: x, y: y)
-                    guard isOverlay(content.hitTest(point), overlay: overlay) else { return }
+                    guard isOverlay(dispatchedHit(content, at: point), overlay: overlay) else { return }
                     if overlay.hasText(at: overlay.convert(point, from: content)), textPoint == nil {
                         textPoint = point
                     }
@@ -161,8 +216,10 @@ final class LiveTextInteractionTests: XCTestCase {
             if textPoint == nil { pump(0.2) }
         } while textPoint == nil && Date() < scanDeadline
         let point = try XCTUnwrap(textPoint, "no point over the recognised word hit the overlay")
-        let hit = try XCTUnwrap(content.hitTest(point))
+        let hit = try XCTUnwrap(dispatchedHit(content, at: point))
         XCTAssertTrue(isOverlay(hit, overlay: overlay),
                       "a drag at recognised text must reach the overlay, not \(type(of: hit))")
+        click(point, in: content)
+        XCTAssertEqual(videoDowns, 0, "a click at recognised text reached the video's mouse-down")
     }
 }
