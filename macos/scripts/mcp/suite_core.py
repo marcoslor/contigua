@@ -28,6 +28,11 @@ def suite(args):
         result = initialize.get("result") or {}
         report(result.get("protocolVersion") == "2025-06-18",
                "MCP initialize answers revision 2025-06-18")
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+        with open(os.path.join(root, "VERSION")) as handle:
+            version = handle.read().strip()
+        report((result.get("serverInfo") or {}).get("version") == version,
+               "[MCP-3] serverInfo.version is the app's VERSION (%s)" % version)
         client.notify("notifications/initialized")
 
         listing = client.request("tools/list", {}, timeout=30).get("result") or {}

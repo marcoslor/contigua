@@ -3,6 +3,12 @@
 All notable changes are listed here, in the style of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 The version follows [SemVer](https://semver.org/), 0.x, and lives in `VERSION`.
 
+## 0.2.0 (unreleased)
+
+### Agents
+
+- An MCP server in the Mac app lets an AI agent see and drive phone app windows: open apps, read the screen's UI tree, tap, type, swipe and take screenshots. It is off until you switch it on in Settings › Automation.
+
 ## 0.1.0 (2026-11-14)
 
 The first public alpha. The signed Android APK is on the
