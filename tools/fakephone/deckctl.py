@@ -1596,6 +1596,24 @@ def cmd_ui_press(client, args):
     return 0
 
 
+def cmd_ui_type(client, args):
+    """`ui.type` on the phone (docs/PROTOCOL.md "UI tree" item 10): open a phone
+    mirror and type `--text` into its focused field, printing the reply as one
+    JSON line."""
+    stream = 1
+    client.send_json({"t": "window.open", "stream": stream, "w": args.w, "h": args.h,
+                      "dpi": args.dpi, "mode": "phone"})
+    _await_json(client, "window.opened", args.wait)
+    msg = {"t": "ui.type", "stream": stream, "seq": 1, "text": args.text}
+    if args.clear:
+        msg["clear"] = True
+    if args.submit:
+        msg["submit"] = True
+    client.send_json(msg)
+    print(json.dumps(_await_json(client, "ui.type", args.wait), sort_keys=True))
+    return 0
+
+
 def _await_json(client, kind, wait):
     """The next JSON message of type `kind`; an `error` or a silence fails."""
     deadline = time.time() + wait
@@ -3221,6 +3239,15 @@ def build_parser():
     sp.add_argument("--hold-ms", type=int, default=0, dest="hold_ms")
     sp.add_argument("--wait", type=float, default=5.0, help="seconds to wait for each reply")
 
+    sp = sub.add_parser("ui-type", help="open a phone mirror and ui.type into its focused field", **spp)
+    sp.add_argument("--w", type=int, default=400)
+    sp.add_argument("--h", type=int, default=800)
+    sp.add_argument("--dpi", type=int, default=160)
+    sp.add_argument("--text", required=True)
+    sp.add_argument("--clear", action="store_true")
+    sp.add_argument("--submit", action="store_true")
+    sp.add_argument("--wait", type=float, default=5.0, help="seconds to wait for the reply")
+
     sp = sub.add_parser("ui-settle", help="open a phone mirror and read ui.settle", **spp)
     sp.add_argument("--w", type=int, default=400)
     sp.add_argument("--h", type=int, default=800)
@@ -3863,6 +3890,7 @@ COMMANDS = {
     "ui-tree": cmd_ui_tree,
     "ui-press": cmd_ui_press,
     "ui-settle": cmd_ui_settle,
+    "ui-type": cmd_ui_type,
     "latency": cmd_latency,
     "quality-test": cmd_quality_test,
     "watch-state": cmd_watch_state,

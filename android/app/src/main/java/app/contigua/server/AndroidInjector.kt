@@ -171,7 +171,9 @@ internal class AndroidInjector(
     }
 
     override fun key(displayId: Int, action: Int, keycode: Int, metaState: Int, downTime: Long, eventTime: Long) {
-        val e = KeyEvent(downTime, eventTime, action, keycode, metaState)
+        // Repeat 0, then the meta: the five-argument constructor's last
+        // argument is the repeat count, and took the meta for it (B5's proof).
+        val e = KeyEvent(downTime, eventTime, action, keycode, 0, metaState)
         e.setSource(InputDevice.SOURCE_KEYBOARD)
         deliver(e, displayId)
     }
@@ -194,6 +196,21 @@ internal class AndroidInjector(
         if (previous != null) {
             clipboardScheduler.schedule({ setClipText(previous) }, CLIPBOARD_RESTORE_DELAY_MS, TimeUnit.MILLISECONDS)
         }
+    }
+
+    /**
+     * `ui.type`'s keys (MCP-109): the events `KeyCharacterMap.VIRTUAL_KEYBOARD`
+     * makes for [s], or null when a character has none. A map that answers a
+     * character with `KEYCODE_UNKNOWN` instead of null has no key for it
+     * either. [text] and its clipboard paste are not this path (MCP-110).
+     */
+    override fun keyStrokes(s: String): List<KeyStroke>? {
+        if (s.isEmpty()) return emptyList()
+        val events = runCatching {
+            KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD).getEvents(s.toCharArray())
+        }.getOrNull() ?: return null
+        if (events.any { it.keyCode == KeyEvent.KEYCODE_UNKNOWN }) return null
+        return events.map { KeyStroke(it.action, it.keyCode, it.metaState) }
     }
 
     private fun typeAscii(displayId: Int, s: String) {

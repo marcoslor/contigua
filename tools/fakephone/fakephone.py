@@ -1208,6 +1208,16 @@ class EventLog(object):
         never a label (WIN-79)."""
         self._emit({"ev": "ui.tree", "stream": stream, "nodes": nodes, "ts": time.time()})
 
+    def ui_type(self, stream, characters, via=None, entry=None, code=None):
+        """`ui.type` answered (MCP-109): its character count and how it typed,
+        or the code it refused with; never the text (MCP-110)."""
+        event = {"ev": "type", "stream": stream, "characters": characters, "ts": time.time()}
+        if code is None:
+            event.update({"via": via, "entry": entry})
+        else:
+            event["code"] = code
+        self._emit(event)
+
     def drop(self, drop_id, files, ok, code):
         self._emit({"ev": "drop", "id": drop_id, "files": files, "ok": ok, "code": code,
                     "ts": time.time()})
@@ -3546,6 +3556,7 @@ class Session(object):
             "ui.tree": self._on_ui_tree,
             "ui.settle": self._on_ui_settle,
             "ui.press": self._on_ui_press,
+            "ui.type": self._on_ui_type,
             "nav": self._on_nav,
             "text": self._on_noop,
             "clip.set": self._on_clip_set,
@@ -5570,6 +5581,69 @@ class Session(object):
             body["desc"] = node["desc"]
         answer(body)
 
+    # -- ui.type (docs/PROTOCOL.md "UI tree" item 10): type into the focused field.
+    UI_TYPE_SENTENCES = {
+        "no_field": "Window %s has no focused text field. Tap the field first.",
+        "not_supported": "The focused field on window %s can't take this text: type only letters, "
+                         "digits and symbols a keyboard has, or pass clear: true to replace what is there.",
+        "no_window": "There is no window %s.",
+        "busy": "The last accessibility request is still running.",
+        "failed": "The focused field on window %s refused the text.",
+    }
+
+    def _on_ui_type(self, msg):
+        """Type into the fake's focused field, which takes set text: printable
+        ASCII goes as keys (one key input each), anything else as set text;
+        `clear` replaces. `--type-refuse CODE` answers that code and types
+        nothing. Logs `type` with the character count, `via` and `entry`,
+        never the text, and touches no clipboard (MCP-110)."""
+        seq = msg.get("seq")
+        stream = msg.get("stream")
+        text = msg.get("text")
+        characters = len(text) if isinstance(text, str) else 0
+
+        def answer(body):
+            reply = {"t": "ui.type", "stream": 0 if stream is None else stream}
+            if seq is not None:
+                reply["seq"] = seq
+            reply.update(body)
+            print("fakephone: ui.type stream=%s characters=%d %s" % (
+                reply["stream"], characters,
+                "via=%s" % body["via"] if body.get("ok") else "failed=%s" % body.get("code")),
+                file=sys.stderr)
+            self._send(reply)
+
+        def refuse(code):
+            sentence = self.UI_TYPE_SENTENCES[code]
+            self.phone.events.ui_type(stream, characters, code=code)
+            answer({"ok": False, "code": code,
+                    "message": sentence % (stream,) if "%s" in sentence else sentence})
+
+        if stream is None or self.windows.get(stream) is None:
+            refuse("no_window")
+            return
+        if self._ui_busy:
+            refuse("busy")
+            return
+        if self.phone.args.type_refuse:
+            refuse(self.phone.args.type_refuse)
+            return
+        if not characters or characters > 2000:
+            refuse("failed")
+            return
+        keys = all(0x20 <= ord(c) <= 0x7E for c in text)
+        clear = msg.get("clear") is True
+        # The fake's field takes set text, so clear always sets it whole.
+        via = "keys" if keys and not clear else "set_text"
+        entry = "replaced" if clear else "inserted"
+        # One input per key or set, counted as "type": the counters carry no keycode.
+        for _ in (text if via == "keys" else "x"):
+            self.phone.events.input("type")
+        if msg.get("submit") is True:
+            self.phone.events.input("type")
+        self.phone.events.ui_type(stream, characters, via=via, entry=entry)
+        answer({"ok": True, "entry": entry, "via": via, "characters": characters})
+
     # -- ui.settle (docs/PROTOCOL.md "UI tree" §7): the display's quiet watch.
     def _on_ui_settle(self, msg):
         """Answer settled after `--settle-ms`, or still-changing per the settle
@@ -6771,6 +6845,9 @@ def build_parser():
     p.add_argument("--tree-variant", action="store_true",
                    help="ui.tree adds a heading row and a covered button, and from the "
                         "second read drops the row with k 2 (MCP-71/72/73)")
+    p.add_argument("--type-refuse", default=None, metavar="CODE", dest="type_refuse",
+                   choices=["no_field", "not_supported", "no_window", "busy", "failed"],
+                   help="ui.type answers this code and types nothing (MCP-109)")
     p.add_argument("--ignore-ui-settle", action="store_true",
                    help="never answer ui.settle (a phone that cannot watch a display)")
     p.add_argument("--settle-ms", type=int, default=120, metavar="MS",

@@ -453,6 +453,13 @@ interface Injector {
     fun hover(displayId: Int, action: Int, nx: Float, ny: Float, size: IntSize)
     fun key(displayId: Int, action: Int, keycode: Int, metaState: Int, downTime: Long, eventTime: Long)
     fun text(displayId: Int, s: String)
+
+    /**
+     * [s]'s key events from the virtual keyboard's key map, or null when a
+     * character has none (MCP-109). Only builds the events: the caller injects
+     * them through [key] with its own times. Never touches the clipboard.
+     */
+    fun keyStrokes(s: String): List<KeyStroke>?
 }
 
 /** Battery/keep-awake policy. It never keeps the panel on beyond the person's own timeout. */
