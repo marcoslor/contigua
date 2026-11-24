@@ -826,9 +826,13 @@ final class MCPToolHostTests: XCTestCase {
         XCTAssertEqual(fixture.touches, 0, "a tap went out while the phone may still be typing")
         fixture.release("ui.type")
         let (tap, _) = await tapped.value
+        let tappedAt = ContinuousClock.now
         XCTAssertEqual(tap["isError"] as? Bool, false, "\(tap)")
-        XCTAssertEqual(fixture.touches, 2)
-        XCTAssertLessThan(ContinuousClock.now - sentAt, .milliseconds(7800),
+        // The answer comes once both TOUCH frames are sent; the fake phone
+        // counts them as they arrive on its own connection.
+        let landed = await fixture.wait { fixture.touches == 2 }
+        XCTAssertTrue(landed, "touches: \(fixture.touches)")
+        XCTAssertLessThan(tappedAt - sentAt, .milliseconds(7800),
                           "the turn waited for the bound, not for the phone's answer")
     }
 
@@ -858,9 +862,13 @@ final class MCPToolHostTests: XCTestCase {
         try await Task.sleep(until: sentAt + .milliseconds(7500), clock: .continuous)  // real-time: short of the 8 s bound
         XCTAssertEqual(fixture.touches, 0, "the turn freed before the text's bound")
         let (tap, _) = await tapped.value
+        let tappedAt = ContinuousClock.now
         XCTAssertEqual(tap["isError"] as? Bool, false, "\(tap)")
-        XCTAssertEqual(fixture.touches, 2)
-        XCTAssertGreaterThanOrEqual(ContinuousClock.now - sentAt, .milliseconds(7900))
+        // The answer comes once both TOUCH frames are sent; the fake phone
+        // counts them as they arrive on its own connection.
+        let landed = await fixture.wait { fixture.touches == 2 }
+        XCTAssertTrue(landed, "touches: \(fixture.touches)")
+        XCTAssertGreaterThanOrEqual(tappedAt - sentAt, .milliseconds(7900))
     }
 }
 
