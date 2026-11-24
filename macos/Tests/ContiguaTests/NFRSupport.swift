@@ -33,6 +33,85 @@ enum NFROffscreen {
     }
 }
 
+// MARK: - On-screen capture
+
+/// The window server's own picture of a view: what a person sees, glass and
+/// Reduce Transparency included, which `cacheDisplay` cannot draw (on macOS 26
+/// it leaves the glass out). The view goes into a borderless, click-through
+/// window at the main screen's bottom-left for under a second, in the given
+/// appearance, and `screencapture -l` takes that window alone. Where capture
+/// is unavailable (no window server, no screen-recording permission) the
+/// result says why, so the caller can fall back and report it.
+@MainActor
+enum NFROnScreen {
+    enum Capture {
+        case picture(NSBitmapImageRep)
+        case unavailable(String)
+    }
+
+    static func capture(_ view: NSView, size: CGSize, appearance: NSAppearance.Name) -> Capture {
+        guard let screen = NSScreen.main else { return .unavailable("no screen") }
+        view.frame = NSRect(origin: .zero, size: size)
+        let origin = NSPoint(x: screen.visibleFrame.minX + 40, y: screen.visibleFrame.minY + 40)
+        let window = NSWindow(contentRect: NSRect(origin: origin, size: size),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.isOpaque = true
+        window.hasShadow = false
+        window.ignoresMouseEvents = true
+        window.level = .floating
+        window.appearance = NSAppearance(named: appearance)
+        window.contentView = view
+        window.orderFrontRegardless()
+        defer {
+            window.orderOut(nil)
+            window.contentView = nil
+            window.close()
+        }
+        view.layoutSubtreeIfNeeded()
+        window.display()
+        // Bounded: the window server composites the window and the glass
+        // settles.
+        RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+        CATransaction.flush()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+
+        let path = NSTemporaryDirectory()
+            + "nfr-onscreen-\(ProcessInfo.processInfo.processIdentifier)-\(window.windowNumber).png"
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+        process.arguments = ["-x", "-o", "-l", "\(window.windowNumber)", path]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return .unavailable("screencapture did not start") }
+        let deadline = Date().addingTimeInterval(15)
+        while process.isRunning && Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+        if process.isRunning {
+            process.terminate()
+            return .unavailable("screencapture timed out")
+        }
+        guard process.terminationStatus == 0 else {
+            return .unavailable("screencapture exited \(process.terminationStatus)")
+        }
+        guard let data = FileManager.default.contents(atPath: path),
+              let rep = NSBitmapImageRep(data: data) else {
+            return .unavailable("screencapture wrote no picture")
+        }
+        // A capture without screen-recording permission is the desktop
+        // without the window, or a blank: it must at least be the window's
+        // shape.
+        let scale = screen.backingScaleFactor
+        guard abs(CGFloat(rep.pixelsWide) - size.width * scale) <= 2,
+              abs(CGFloat(rep.pixelsHigh) - size.height * scale) <= 2 else {
+            return .unavailable("capture is \(rep.pixelsWide)x\(rep.pixelsHigh), not the window")
+        }
+        return .picture(rep)
+    }
+}
+
 /// The frames text and controls must stay readable over: white, black and the
 /// saturated, busy picture that made bare symbols disappear.
 final class NFRBackdropView: NSView {
