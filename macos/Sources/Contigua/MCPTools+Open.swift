@@ -116,7 +116,7 @@ extension MCPToolHost {
             switch code {
             case "no_window": throw noWindow(id)
             case "phone_offline": throw MCPToolError.phoneOffline(phoneName)
-            default: throw MCPOpenAnswer.failure(code: code, window: id)
+            default: throw MCPOpenAnswer.failure(code: code, window: id, maxWindows: controller.windows.maxWindows)
             }
         case .answer(let result):
             // MCP-43: a link window's names come from the phone's first
@@ -187,8 +187,9 @@ enum MCPOpenAnswer {
         return answer
     }
 
-    /// The Mac at the phone's window cap refuses `newWindow: true` itself
-    /// (MCP-42), with design/mcp.md's sentence.
+    /// The phone's window cap: the Mac's own refusal of `newWindow: true` and
+    /// the phone's refusal of a window answer alike (MCP-42), with
+    /// design/mcp.md's sentence.
     static func atCap(_ maxWindows: Int) -> MCPToolError {
         MCPToolError(.tooManyWindows,
                      "The phone allows \(maxWindows) app windows at once. Close one with close_window, then try again.",
@@ -201,13 +202,12 @@ enum MCPOpenAnswer {
                      ["window": window, "state": "opening"])
     }
 
-    /// The phone refused the window it was opening (MCP-42, MCP-43).
-    static func failure(code: String, window: Int) -> MCPToolError {
+    /// The phone refused the window it was opening (MCP-42, MCP-43). Its cap
+    /// answers as the Mac's does, with `maxWindows`.
+    static func failure(code: String, window: Int, maxWindows: Int) -> MCPToolError {
         switch code {
         case "too_many_windows":
-            return MCPToolError(.tooManyWindows,
-                                "The phone has as many windows open as it allows. Close one with close_window, then try again.",
-                                ["window": window])
+            return atCap(maxWindows)
         case "timeout":
             return MCPToolError(.timeout, "Window \(window) did not open in time. Call list_windows.",
                                 ["window": window])
