@@ -336,7 +336,7 @@ display pixels, the ref's `box` plus 8 on each side, clamped to `size`; the
 Mac scales it by frame/`size` to cut the decoded frame. `crop` only with `ref`, `blank` only when true, `settle` only with
 `wait: "settle"`.
 
-### `wait` (MCP-96, MCP-97)
+### `wait` (MCP-96, MCP-97, MCP-111)
 
 ```json
 {"window": 3, "waitedMs": 5004, "until": "met", "match": {"ref": "e14", "text": "00:05.02"},
@@ -344,7 +344,16 @@ Mac scales it by frame/`size` to cut the decoded frame. `crop` only with `ref`, 
 ```
 
 `until` is `met` or `timeout`, absent for a plain `ms` wait; `match` only when
-met.
+met on `text` (none with `gone: true`), the first node whose text or
+description contains it ignoring case and accents, with its own text; `reason` (`loading` or `changes`) only
+for a `settle: true` wait that timed out. `tree` is the `observe` read: after
+the clock or the settle, or the poll's last read for `text`; `treeError` when
+that read failed. The tree is read at most every 500 ms, each read in the
+phone's read queue (MCP-9) and bounded by the call (MCP-8): `ms` + 3 s, or
+`timeoutMs` + 3 s for `text` and `settle`. A `busy` read is retried at the next
+poll; a wait that ends on one fails `busy`. A settle longer than the wire's
+10 s is a chain of settles, each its own turn in the queue. With none of `ms`,
+`text` or `settle` the call is `-32602` "wait needs ms, text or settle".
 
 ### `list_windows` (MCP-50…52)
 

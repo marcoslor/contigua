@@ -79,6 +79,25 @@ def ui_dump(adb, timeout=30):
     return adb.sh("cat", UI_DUMP, timeout=timeout).stdout
 
 
+def dump_state_evidence(adb, evidence_dir, tag):
+    """Evidence only: what `uiautomator dump` printed (it says why a dump came
+    back empty) and the screen's power, focus, dream and keyguard state. Reads
+    only; changes nothing on the device."""
+    if not evidence_dir:
+        return
+    res = adb.sh("uiautomator", "dump", "--compressed", UI_DUMP, timeout=10)
+    write_evidence(evidence_dir, "uiautomator-%s.txt" % tag,
+                   "rc=%s\n--- stdout\n%s\n--- stderr\n%s\n" % (
+                       getattr(res, "returncode", "?"), res.stdout, res.stderr))
+    power = adb.sh("dumpsys", "power", timeout=10).stdout
+    window = adb.sh("dumpsys", "window", timeout=10).stdout
+    keep = lambda text, pattern: "\n".join(l for l in text.splitlines() if re.search(pattern, l))
+    write_evidence(evidence_dir, "screen-state-%s.txt" % tag,
+                   "--- dumpsys power\n%s\n--- dumpsys window\n%s\n" % (
+                       keep(power, r"mWakefulness|Display Power"),
+                       keep(window, r"mCurrentFocus|mDreaming|isKeyguardShowing")))
+
+
 def find_node(xml, text):
     """Return (x, y) centre of the first node whose text starts with *text*."""
     if not xml:
@@ -181,6 +200,7 @@ def tap_allow(adb, timeout, evidence_dir=None):
             first = False
             phone_evidence(adb, evidence_dir, "before-tap")
             write_evidence(evidence_dir, "ui-before-tap.xml", ui_dump(adb, 10))
+            dump_state_evidence(adb, evidence_dir, "before-tap")
             # The dumps can be slow on a fresh boot; they must not eat the
             # window that finds the Allow button.
             deadline = time.time() + timeout
