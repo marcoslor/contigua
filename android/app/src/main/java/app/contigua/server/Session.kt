@@ -2022,6 +2022,8 @@ class Session(
             return
         }
         val seq = Json.int(obj["seq"])
+        // MCP-106: off-screen rows are left out unless the Mac asks for them.
+        val offscreen = obj["offscreen"] == true
         val displayId = synchronized(streams) { streams[stream]?.displayId }
         if (displayId == null) {
             sendUiTree(stream, seq, UiTree.failure(UiCodes.NO_WINDOW, "There is no window $stream."))
@@ -2057,7 +2059,7 @@ class Session(
                         "ui.tree stream=$stream display=$displayId layers=${layers.size} " +
                             "nodes=${layers.sumOf { it.nodes.size }} took_ms=${now() - started}",
                     )
-                    sendUiTree(stream, seq, UiTree.reply(displayId, size, layers, answer.keys))
+                    sendUiTree(stream, seq, UiTree.reply(displayId, size, layers, answer.keys, offscreen))
                 }
                 is UiTree.Answer.Failure -> {
                     log("ui.tree stream=$stream display=$displayId failed=${answer.code}")
@@ -2168,6 +2170,8 @@ class Session(
         // A key the phone never issued is `gone` (item 8), and so is a request without one.
         val k = Json.int(obj["k"]) ?: -1
         val expect = obj["expect"] as? String
+        // Whether the Mac sent a label to compare, never the label (logs carry no text).
+        val sent = if (expect != null) "yes" else "no"
         val holdMs = (obj["holdMs"] as? Number)?.toLong()?.coerceIn(0L, UiPress.MAX_HOLD_MS) ?: 0L
         val source = uiTree as? UiPressSource
         if (source == null) {
@@ -2190,11 +2194,11 @@ class Session(
                 when (decision) {
                     is UiPress.Decision.Press -> {
                         injectPress(state, decision.x, decision.y, size, holdMs)
-                        log("ui.press stream=$stream pressed hold_ms=$holdMs took_ms=${now() - started}")
+                        log("ui.press stream=$stream pressed expect=$sent hold_ms=$holdMs took_ms=${now() - started}")
                         sendUiPress(stream, seq, decision.reply)
                     }
                     is UiPress.Decision.Refuse -> {
-                        log("ui.press stream=$stream failed=${decision.code} took_ms=${now() - started}")
+                        log("ui.press stream=$stream failed=${decision.code} expect=$sent took_ms=${now() - started}")
                         sendUiPress(stream, seq, decision.reply)
                     }
                 }

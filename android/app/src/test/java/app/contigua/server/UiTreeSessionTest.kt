@@ -24,7 +24,7 @@ class UiTreeSessionTest : SessionFixture() {
         // The mirror stream is 590×1280 but the input space (display 0's real
         // pixels) is 1440×3120: `box` lives there, so `at` must too (F2).
         val source = UiTreeSource { _, _ ->
-            UiTree.Answer.Tree(listOf(UiTree.Layer("Mirror", "app", true, true, listOf(
+            UiTree.Answer.Tree(listOf(UiTree.Layer("Mirror", "app", true, listOf(
                 UiTree.Node(role = "android.widget.Button", text = "Buy",
                     box = UiTree.Box(620, 1_460, 820, 1_660), clickable = true),
             ))))
@@ -38,6 +38,31 @@ class UiTreeSessionTest : SessionFixture() {
         assertEquals(listOf(0.5, 0.5), nodes[0]["at"])
         // The JSON reader decodes numbers as Long or Double: compare the values.
         assertEquals(listOf(1_440, 3_120), (reply["size"] as List<*>).map { (it as Number).toInt() })
+    }
+
+    @Test
+    fun testTheRequestsOffscreenKeepsOffRows() { // [MCP-106]
+        val source = UiTreeSource { _, _ ->
+            UiTree.Answer.Tree(listOf(UiTree.Layer("App", "app", true, listOf(
+                UiTree.Node(role = "android.widget.Button", text = "Buy",
+                    box = UiTree.Box(0, 0, 100, 100), clickable = true),
+                UiTree.Node(role = "android.widget.Button", text = "Below",
+                    box = UiTree.Box(0, 5_000, 100, 5_100), clickable = true),
+            ))))
+        }
+        connect(uiTree = source)
+        platform.screenSize = IntSize(1_440, 3_120)
+        openPhoneMirror(590, 1_280)
+        fun rows(reply: Map<String, Any?>) = (reply["nodes"] as? List<*>)?.filterIsInstance<Map<String, Any?>>().orEmpty()
+        send(mapOf("t" to "ui.tree", "stream" to 1, "seq" to 1))
+        val plain = readUntil("ui.tree")
+        assertEquals(listOf("Buy"), rows(plain).map { it["text"] })
+        assertEquals(1, (plain["omitted"] as Number).toInt())
+        send(mapOf("t" to "ui.tree", "stream" to 1, "seq" to 2, "offscreen" to true))
+        val all = readUntil("ui.tree")
+        assertEquals(listOf("Buy", "Below"), rows(all).map { it["text"] })
+        assertEquals(true, rows(all)[1]["off"])
+        assertEquals(0, (all["omitted"] as Number).toInt())
     }
 
     @Test

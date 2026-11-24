@@ -156,16 +156,28 @@ def suite(args):
         # [MCP-71] T10: a ref is the phone's key, e<k>, with no snapshot in it.
         report(bool(nodes) and all(re.match(r"^e\d+$", n.get("ref") or "") for n in nodes),
                "[MCP-71] MCP ui_tree's refs are the phone's keys")
-        # [WIN-79 F9] An off-screen node keeps its text, has no tap point, and
-        # a tap by its ref is refused.
-        below = next((n for n in nodes if n.get("text") == "Below the fold"), None)
-        report(bool(below and below.get("off") is True and "at" not in below),
-               "MCP ui_tree marks an off-screen node off with no tap point")
+        # [MCP-106] An off-screen node is left out and counted: the list's row
+        # says how many of its rows it hides, and the reply how many in all.
+        # A tap by its ref (the fake's fixed k 4, "Below the fold") is still
+        # refused with F9's sentence and presses nothing.
+        report(not any(n.get("text") == "Below the fold" for n in nodes)
+               and not any(n.get("off") for n in nodes),
+               "[MCP-106] MCP ui_tree leaves out an off-screen node")
+        scroller = next((n for n in nodes if n.get("scroll")), None)
+        report(bool(scroller and scroller.get("hidden") == [0, 5]) and tree.get("omitted") == 6,
+               "[MCP-106] MCP ui_tree's list row carries hidden and the reply omitted")
+        since = time.time()
         try:
-            client.text("tap", {"window": window, "ref": (below or {}).get("ref") or "s0e0"})
+            client.text("tap", {"window": window, "ref": "e4", "wait": "none", "observe": "none"})
             report(False, "MCP tap by an off-screen ref must fail")
         except RuntimeError as error:
-            report("off screen" in str(error), "MCP tap by an off-screen ref is refused")
+            report("e4 is off screen: scroll it into view and read the tree again." in str(error)
+                   and "off_screen" in str(error),
+                   "[MCP-106] MCP tap by an off-screen ref fails off_screen with F9's sentence")
+        time.sleep(0.3)
+        report(not [e for e in events(args.events) if e.get("ev") == "input" and e.get("kind") == "touch"
+                    and e.get("stream") == window and (e.get("ts") or 0) >= since],
+               "[MCP-106] MCP tap by an off-screen ref presses nothing")
         # [MCP-71] T10: a ref from an older read is no longer refused by the
         # Mac (suite_refs presses one); a ref that is no key is an argument error.
         try:
