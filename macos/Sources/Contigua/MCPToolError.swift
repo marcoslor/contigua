@@ -176,7 +176,7 @@ extension MCPToolError {
                 return MCPToolError(.staleRef, UITreeRefusal.noTree(ref), fields)
             }
             return MCPToolError(.staleRef,
-                                "\(ref) is no longer on window \(id); its latest tree is snapshot \(latestSnapshot). Use a ref from snapshot \(latestSnapshot), or call ui_tree.",
+                                "\(ref) is no longer on window \(id): the screen changed after its latest tree (snapshot \(latestSnapshot)). Call ui_tree and use a ref from it.",
                                 fields)
         case "changed":
             if let now { fields["now"] = now }
