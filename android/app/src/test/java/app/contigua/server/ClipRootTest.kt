@@ -144,11 +144,12 @@ class ClipRootTest : SessionFixture() {
 
     /**
      * The injector's save/restore around a paste reads and writes through the
-     * same clipboard port: at uid 0 it never reads, at uid 2000 it reads once
-     * and puts the previous text back.
+     * same clipboard port: at uid 0 it never reads, so it cannot save the clip
+     * whole and never writes or pastes (WIN-80); at uid 2000 it reads once and
+     * puts the previous text back.
      */
     @Test
-    fun theInjectorPastePathUsesTheClipboardPort() {
+    fun theInjectorPastePathUsesTheClipboardPort() { // [WIN-80]
         val atRoot = service()
         atRoot.copy("synthetic-previous-" + "e".repeat(4))
         val rootPort = shell(0, atRoot)
@@ -161,8 +162,9 @@ class ClipRootTest : SessionFixture() {
 
         rootInjector.text(7, "synth\u00e9tic-root")
         assertEquals("the injector read at uid 0", 0, atRoot.gets.get())
-        assertTrue("the injector did not write through the port", atRoot.writes.isNotEmpty())
-        assertTrue("no paste key", rootKeys.any { it.keyCode == KeyEvent.KEYCODE_PASTE })
+        assertTrue("the injector wrote over a clip it could not save", atRoot.writes.isEmpty())
+        assertTrue("a paste key over an unsaved clip", rootKeys.none { it.keyCode == KeyEvent.KEYCODE_PASTE })
+        assertTrue("the person's clip is gone at uid 0", atRoot.present())
 
         val atShell = service()
         atShell.copy("synthetic-previous-" + "f".repeat(4))

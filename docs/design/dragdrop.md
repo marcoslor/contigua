@@ -92,8 +92,8 @@ The paste key comes from AOSP, read on 2026-11-03: `TextView.onKeyDown` handles
 `onTextContextMenuItem(ID_PASTE)` (`core/java/android/widget/TextView.java`). Ctrl+V is also
 handled: `TextView.onKeyShortcut` handles `META_CTRL_ON` + `KEYCODE_V`, and
 `ViewRootImpl.ViewPostImeInputStage` turns a modified key into a shortcut event. `KEYCODE_PASTE`
-is the direct one, needs no modifiers, and `AndroidInjector.pasteViaClipboard` already injects
-it at shell UID for non-ASCII typing. Known unknowns for the real-phone spike: a Compose field
+is the direct one, needs no modifiers, and `AndroidInjector.pasteKeepingTheClip` already injects
+it at shell UID for the person's non-ASCII typing into a field with no set text (WIN-80). Known unknowns for the real-phone spike: a Compose field
 and a WebView do not use `TextView.onKeyDown`, an app may swallow the key, and the focused field
 may not be the one the person means. `[NEEDS CLARIFICATION]` per app, as above.
 

@@ -12,6 +12,8 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 /**
  * The shell side of `ui.tree` (docs/PROTOCOL.md "UI tree", WIN-79): one
@@ -29,11 +31,15 @@ import java.util.concurrent.TimeUnit
  * `UiAutomationConnection` is the platform's own. Nothing here reads a node's
  * text into a log; only counts and codes leave.
  */
-internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSource, UiPressSource, UiTypeSource {
+internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSource, UiPressSource, UiTypeSource, FocusedFieldSource {
 
     private val lock = Any()
     private val startLock = Any()
-    private val readLock = Any()
+    /**
+     * One read or action at a time. Internal so the JVM tests can hold it:
+     * the person's typing waits on it for [FOCUS_WAIT_MS] only (WIN-80).
+     */
+    internal val readLock = ReentrantLock()
 
     @Volatile private var looperThread: Thread? = null
     @Volatile private var handler: Handler? = null
@@ -44,13 +50,13 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
     @Volatile var disconnected = false
         private set
 
-    override fun dump(displayId: Int, size: IntSize): UiTree.Answer = synchronized(readLock) {
+    override fun dump(displayId: Int, size: IntSize): UiTree.Answer = readLock.withLock {
         if (disconnected) {
-            return@synchronized UiTree.Answer.Failure(
+            return@withLock UiTree.Answer.Failure(
                 UiCodes.NO_A11Y, "This phone cannot read an accessibility tree right now.",
             )
         }
-        val automation = ensureAutomation() ?: return@synchronized UiTree.Answer.Failure(
+        val automation = ensureAutomation() ?: return@withLock UiTree.Answer.Failure(
             UiCodes.NO_A11Y, failure ?: "This phone cannot read an accessibility tree right now.",
         )
         try {
@@ -58,7 +64,7 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
         } catch (t: Throwable) {
             log("ui.tree: read ${t.javaClass.simpleName}") // log-ok: class only
             restart()
-            val again = ensureAutomation() ?: return@synchronized UiTree.Answer.Failure(
+            val again = ensureAutomation() ?: return@withLock UiTree.Answer.Failure(
                 UiCodes.NO_A11Y, "This phone cannot read an accessibility tree right now.",
             )
             try {
@@ -81,12 +87,12 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
      * new one, never a reused one. Never reads a node's text into a log.
      */
     override fun press(displayId: Int, size: IntSize, k: Int, expect: String?): UiPress.Decision =
-        synchronized(readLock) {
+        readLock.withLock {
             val failed = UiPress.Decision.Refuse(
                 UiCodes.FAILED, UiTree.failure(UiCodes.FAILED, "This phone cannot read an accessibility tree right now."),
             )
-            if (disconnected) return@synchronized failed
-            val automation = ensureAutomation() ?: return@synchronized failed
+            if (disconnected) return@withLock failed
+            val automation = ensureAutomation() ?: return@withLock failed
             val keys = tables.table(displayId) { true }
             val latestNode = keys.identity(k)?.let { latestNode(displayId, it) }
             val target = latestNode?.let { found ->
@@ -134,17 +140,35 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
         clear: Boolean,
         submit: Boolean,
         keys: TextEntry.Keys,
-    ): TextEntry.Outcome = synchronized(readLock) {
-        val failed = TextEntry.Outcome.Refused(UiCodes.FAILED, "This phone cannot read the focused field right now.")
-        if (disconnected) return@synchronized failed
-        val automation = ensureAutomation() ?: return@synchronized failed
+    ): TextEntry.Outcome = readLock.withLock { focused(displayId) { focus -> TextEntry.type(window, text, clear, submit, focus, keys) } }
+        ?: TextEntry.Outcome.Refused(UiCodes.FAILED, "This phone cannot read the focused field right now.")
+
+    /**
+     * The person's typing (WIN-80): [displayId]'s node with input focus, under
+     * the one read at a time, waited on for [FOCUS_WAIT_MS] at most because
+     * the caller is the session's reader thread. Null when the tree is busy
+     * or cannot be read; nothing runs then.
+     */
+    override fun <T> withFocus(displayId: Int, block: (TextEntry.Focus?) -> T): T? {
+        if (!readLock.tryLock(FOCUS_WAIT_MS, TimeUnit.MILLISECONDS)) return null
+        try {
+            return focused(displayId, block)
+        } finally {
+            readLock.unlock()
+        }
+    }
+
+    /** [displayId]'s node with input focus, the read lock held: the field `ui.type` and the person's typing act on. */
+    private fun <T> focused(displayId: Int, block: (TextEntry.Focus?) -> T): T? {
+        if (disconnected) return null
+        val automation = ensureAutomation() ?: return null
         // A connection just made lists its windows only after its flags land
         // (read() waits for the same reason): one wait, then once more.
         val node = inputFocusOn(automation, displayId) ?: run {
             Thread.sleep(SETTLE_MS)
             inputFocusOn(automation, displayId)
         }
-        TextEntry.type(window, text, clear, submit, node?.let { NodeFocus(it) }, keys)
+        return block(node?.let { NodeFocus(it) })
     }
 
     /** The node with input focus in [displayId]'s active layer, or null. */
@@ -287,7 +311,7 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
      * a no-op.
      */
     fun disconnect() {
-        synchronized(readLock) {
+        readLock.withLock {
             if (disconnected) return
             disconnected = true
             restart()
@@ -573,6 +597,12 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
         /** `UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES`. */
         private const val CONNECT_FLAGS = 1
         private const val SETTLE_MS = 300L
+        /**
+         * How long the person's typing waits for a tree busy with another read
+         * (WIN-80): it runs on the session's reader thread, so a busy tree is
+         * unreadable after this and the run takes the fallback.
+         */
+        private const val FOCUS_WAIT_MS = 150L
         // WIN-79 F5: thread start, connect and settle stay under the Mac's 5 s
         // deadline, so a first read answers before the Mac gives up on it.
         private const val CONNECT_TIMEOUT_MS = 2_500L

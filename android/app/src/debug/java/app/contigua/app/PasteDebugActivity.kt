@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.ClipData
 import android.content.ClipDescription
 import android.content.ClipboardManager
+import android.content.Context
 import android.graphics.Bitmap
 import android.os.Bundle
 import android.text.Editable
@@ -11,6 +12,7 @@ import android.text.TextWatcher
 import android.util.Log
 import android.view.KeyEvent
 import android.view.ViewGroup
+import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -40,6 +42,13 @@ import java.io.File
  * whatever the real ShellClipboard wrote from a clip.image.* transfer. The
  * result is one logcat line (`PasteDebug: plain text length=…`, `rich image
  * bytes=…`); no text or path is ever logged.
+ *
+ * `--es field noset` focuses a third field that offers no `ACTION_SET_TEXT`,
+ * as a view that draws its own text does, so the person's typing takes the
+ * clipboard fallback there (WIN-80, tools/emulator/clip-keep.sh); it logs
+ * `noset text length=…`. `--es expect 61.e9` (hex code points) adds
+ * ` match=true|false` to each length line: whether the field now holds
+ * exactly that text, so an order can be checked without logging the text.
  */
 class PasteDebugActivity : Activity() {
 
@@ -54,12 +63,18 @@ class PasteDebugActivity : Activity() {
             inputType = android.text.InputType.TYPE_CLASS_TEXT or
                 android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
         }
+        val noset = NoSetTextField(this).apply {
+            hint = "no set text"
+            inputType = android.text.InputType.TYPE_CLASS_TEXT
+        }
         val result = TextView(this)
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(plain, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(rich, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(noset, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(result, LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -70,7 +85,14 @@ class PasteDebugActivity : Activity() {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
             override fun afterTextChanged(s: Editable?) {
-                Log.i(TAG, "plain text length=${s?.length ?: 0}")
+                Log.i(TAG, "plain text length=${s?.length ?: 0}${match(s)}")  // log-ok: a length and a boolean, never the text
+            }
+        })
+        noset.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(s: Editable?) {
+                Log.i(TAG, "noset text length=${s?.length ?: 0}${match(s)}")  // log-ok: a length and a boolean, never the text
             }
         })
         ViewCompat.setOnReceiveContentListener(rich, arrayOf("image/*"),
@@ -97,11 +119,27 @@ class PasteDebugActivity : Activity() {
         }
 
         val field = intent.getStringExtra("field")
-        val target = if (field == "rich") rich else plain
+        val name = if (field == "rich" || field == "noset") field else "plain"
+        val target = when (name) {
+            "rich" -> rich
+            "noset" -> noset
+            else -> plain
+        }
         target.requestFocus()
-        Log.i(TAG, "ready field=${if (field == "rich") "rich" else "plain"} " +  // log-ok: fixed state names, never text
+        Log.i(TAG, "ready field=$name " +  // log-ok: fixed state names, never text
             "item=${intent.getStringExtra("item") ?: "keep"}")
     }
+
+    /** `--es expect`'s text, from dot-separated hex code points; null without it. */
+    private val expected: String? by lazy {
+        intent.getStringExtra("expect")?.let { cps ->
+            runCatching {
+                cps.split('.').filter { it.isNotEmpty() }.joinToString("") { String(Character.toChars(it.toInt(16))) }
+            }.getOrNull()
+        }
+    }
+
+    private fun match(s: Editable?): String = expected?.let { " match=${s?.toString() == it}" } ?: ""
 
     /** The exists probe runs once, only after this activity's window has focus. */
     private var existsReported = false
@@ -161,5 +199,13 @@ class PasteDebugActivity : Activity() {
 
     private companion object {
         const val TAG = "PasteDebug"
+    }
+}
+
+/** A field that offers no `ACTION_SET_TEXT` to accessibility, and still takes keys and pastes. */
+private class NoSetTextField(context: Context) : EditText(context) {
+    override fun onInitializeAccessibilityNodeInfo(info: AccessibilityNodeInfo) {
+        super.onInitializeAccessibilityNodeInfo(info)
+        info.removeAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_TEXT)
     }
 }
