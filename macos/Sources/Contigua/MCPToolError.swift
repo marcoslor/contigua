@@ -93,8 +93,10 @@ extension MCPToolError {
 
     /// `state` is the window's state word (live, offline, …).
     static func noFrame(window id: Int, state: String) -> MCPToolError {
-        MCPToolError(.noFrame, "Window \(id) is \(state): no new picture arrived in 2 s. Use ui_tree, or try again.",
-                     ["window": id, "state": state])
+        let sentence = state == "opening"
+            ? "Window \(id) is opening: no picture yet. Try again in a few seconds."
+            : "Window \(id) is \(state): no new picture arrived in 2 s. Use ui_tree, or try again."
+        return MCPToolError(.noFrame, sentence, ["window": id, "state": state])
     }
 
     static func timeout(_ phone: String?) -> MCPToolError {

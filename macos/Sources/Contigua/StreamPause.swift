@@ -15,7 +15,11 @@ enum StreamPause {
                             key: Bool,
                             main: Bool,
                             occludedVisible: Bool,
-                            menuTracking: Bool) -> Bool {
+                            menuTracking: Bool,
+                            agentHold: Bool) -> Bool {
+        // MCP-22: an agent's hold wins over every other rule, so a covered or
+        // minimised window keeps streaming while an agent uses it.
+        if agentHold { return false }
         // A minimised window is really gone, whatever is tracking.
         if miniaturized { return true }
         // `occlusionState` can spuriously report !visible for the frontmost
