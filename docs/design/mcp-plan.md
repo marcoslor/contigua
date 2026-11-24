@@ -541,9 +541,9 @@ The task sections below are grouped by area; the schedule above is the order.
     label at the press, not the tree's.
   - K2 `UITreeTests.testRefsAreTheKeys` `[MCP-71]`: a reply row `{"k":12}` →
     ref `"e12"`; `covered: 31` → `"e31"`; no ref matches `^s\d+e\d+$`.
-  - K2 `MCPToolErrorTests.testAGoneRefKeepsS1sSentenceShape` `[MCP-71]`:
+  - K2 `MCPToolErrorTests.testAGoneRefSendsTheAgentToANewTree` `[MCP-71]`:
     `ui.press` `gone` for e12 on window 3 whose latest snapshot is 6 →
-    `stale_ref`, message `e12 is no longer on window 3; its latest tree is snapshot 6. Use a ref from snapshot 6, or call ui_tree.`
+    `stale_ref`, message `e12 is no longer on window 3: the screen changed after its latest tree (snapshot 6). Call ui_tree and use a ref from it.`
   - K2 `MCPCoreTests.testTheRefRuleIsOneSentence` `[MCP-71]`: the `tap` and
     `ui_tree` descriptions contain the target sentence and not S1's.
 - **Tier** K2, e2e, emulator (B3's run, driven through the tool). **Depends** T5, B3.

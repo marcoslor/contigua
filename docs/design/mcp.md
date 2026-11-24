@@ -122,9 +122,9 @@ that names the next step. Extra fields depend on the code:
 | `phone_offline` | the phone in use is connecting, reconnecting or offline; nothing was sent or queued | <phone> is not connected. Wait until phone_status says connected, then try again. | — |
 | `no_window` | the window is not open | No window <id>. Call list_windows to see what is open. — or, when it closed recently: Window <id> closed <n> s ago: <reason sentence>. Call list_windows to see what is open. | `window`, `closed` when it closed recently (MCP-53) |
 | `not_ready` | the window is `opening` or `stalled`, or the app list has not arrived | Window <id> is <opening: still opening \| stalled: not responding>. Call wait on it, then try again. — or: The phone's app list has not arrived yet; try again in a few seconds. — or, for `ui_tree` on a display with nothing to read yet: Window <id> has nothing on screen to read yet: its app may still be opening. Try again in a moment. | `window`, `state` |
-| `stale_ref` | with S1's refs: the ref is from a read that is not the window's latest; from T10 on: the ref's element is gone or not visible | S1 (#162's words, MCP-86): <ref> is from snapshot s<n>, but the window is at s<m>. Call ui_tree again. — a ref the latest read never had: <ref> is not in the window's latest tree (s<m>). Use a ref from that tree, or call ui_tree again. — no read since the window opened or the phone reconnected: <ref> names nothing: this window has had no tree read since it opened or since the phone reconnected. Call ui_tree first. — from T10 on: <ref> is no longer on window <id>; its latest tree is snapshot <m>. Use a ref from snapshot <m>, or call ui_tree. | `window`, `ref`, `snapshot` (the latest) |
+| `stale_ref` | `tap`: the ref's element is gone or not visible, or now reads differently from the label this client was given (#188), or the window has had no tree read; `screenshot`: the ref is not in the window's latest tree | gone or not visible: <ref> is no longer on window <id>: the screen changed after its latest tree (snapshot <m>). Call ui_tree and use a ref from it. — relabelled: <ref> now reads "<now>", not "<expect>". Call ui_tree and use the ref it gives. — no read since the window opened or the phone reconnected: <ref> names nothing: this window has had no tree read since it opened or since the phone reconnected. Call ui_tree first. — `screenshot` only: <ref> is not in the window's latest tree (s<m>). Use a ref from that tree, or call ui_tree again. | `window`, `ref`, `snapshot` (the latest) when there is one, `now` when relabelled |
 | `off_screen` | the ref's node is off the display (F9, MCP-106) | <ref> is off screen: scroll it into view and read the tree again. | `window`, `ref`, `in` (its scrollable's ref) when known |
-| `covered` | the ref's element is under another one | Element <ref> is covered by <cover ref \| another window>. Close or move what covers it, or tap the cover. | `window`, `ref`, `coveredBy` (a ref or `"window"`) |
+| `covered` | the ref's element is under another one at the press (MCP-89) | <ref> is covered by <cover ref \| another window>, so nothing was pressed. Close or move what covers it, then call ui_tree. | `window`, `ref`, `snapshot`, `coveredBy` (a ref or `"window"`) |
 | `no_field` | `type_text` needs a focused field and none has input focus (MCP-109) | Window <id> has no focused text field. Tap the field first. | `window` |
 | `not_found` | no app matches | No app on the phone matches "<query>". Call list_apps and pass its package as app. (T9: "Call list_apps with a query to find it.") | — |
 | `ambiguous` | several apps match | Several apps match "<query>". Pass one of these packages as app. — or, where no list is at hand: Several apps match "<query>". Call list_apps and pass one package as app. (T9: "…with a query to see them.") | `matches: [{label, package}]` (empty in the second form) |
@@ -168,9 +168,9 @@ The contract holds five rules; each tool below follows them.
 ## Tools
 
 The descriptions are the `tools/list` text, word for word (MCP-7), as they
-stand once every task has shipped. Until T10 ships stable refs, the `tap` and
-`ui_tree` descriptions carry S1's rule instead of the cross-read sentence: "A
-ref works only from the window's latest tree; an older one is refused."
+stand once every task has shipped. Since T10 the `tap` and `ui_tree`
+descriptions carry the cross-read sentence: "A ref names one element for as
+long as it is on screen, across reads; a ref whose element is gone is refused."
 (MCP-71). Coordinates
 are `0..1` of the window (the same space TOUCH frames carry). `window` is an id
 from `list_windows`, `open_app` or `send_link`.

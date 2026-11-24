@@ -54,6 +54,11 @@ struct UITree: Equatable {
         let password: Bool
         /// A loading signal: an indeterminate spinner or an empty WebView (MCP-103).
         var loading: Bool = false
+        /// The phone's key (MCP-71): the same node keeps it across reads.
+        var k: Int? = nil
+        var heading: Bool = false
+        /// The covering node's ref (`e<k>`) or `"window"` (MCP-73).
+        var covered: String? = nil
     }
 
     let seq: Int
@@ -105,8 +110,12 @@ struct UITree: Equatable {
                 guard values.count == 2 else { return nil }
                 return Point(x: values[0].doubleValue, y: values[1].doubleValue)
             }
+            var covered: String?
+            if let key = raw["covered"] as? Int { covered = "e\(key)" }
+            else if let word = raw["covered"] as? String { covered = word }
+            let key = raw["k"] as? Int
             return Node(index: index,
-                        ref: "",
+                        ref: key.map { "e\($0)" } ?? "",
                         parent: raw["p"] as? Int,
                         layer: raw["l"] as? Int ?? 0,
                         role: role,
@@ -124,7 +133,10 @@ struct UITree: Equatable {
                         focused: raw["focus"] as? Bool ?? false,
                         disabled: raw["disabled"] as? Bool ?? false,
                         password: raw["pwd"] as? Bool ?? false,
-                        loading: raw["loading"] as? Bool ?? false)
+                        loading: raw["loading"] as? Bool ?? false,
+                        k: key,
+                        heading: raw["heading"] as? Bool ?? false,
+                        covered: covered)
         }
     }
 
@@ -146,18 +158,72 @@ struct UITree: Equatable {
         self.loading = loading
     }
 
-    /// The same tree with the Mac's read counter [snapshot] and every node's
-    /// ref named `s<snapshot>e<row>` (S1).
+    /// The same tree stamped with the Mac's read counter [snapshot]. Refs are
+    /// the phone's keys, `e<k>`, named at parse (MCP-71); a row with no key
+    /// has no ref.
     func assigning(snapshot: Int) -> UITree {
         UITree(seq: seq, stream: stream, ok: ok, code: code, message: message,
                displayId: displayId, snapshot: snapshot, size: size,
-               truncated: truncated, layers: layers,
-               nodes: nodes.map { node in
-                   var named = node
-                   named.ref = "s\(snapshot)e\(node.index)"
-                   return named
-               },
+               truncated: truncated, layers: layers, nodes: nodes,
                note: note, loading: loading)
+    }
+
+    /// Each keyed row's label, as `expect` sends it (PROTOCOL.md "UI tree"
+    /// item 8): its text, else its desc, else the first row under it with
+    /// either, in reading order. An editable row's label is its desc, else
+    /// its id, never its text (its value); under another row an editable row
+    /// and its rows give none. A row with no label is left out: no `expect`.
+    ///
+    /// Rows arrive in pre-order, so a row's subtree is the run of rows after
+    /// it up to `ends[at]`; one pass finds every run.
+    func labels() -> [Int: String] {
+        let ends = subtreeEnds()
+        var out: [Int: String] = [:]
+        for (at, node) in nodes.enumerated() {
+            guard let k = node.k else { continue }
+            if let label = label(at: at, ends: ends) { out[k] = label }
+        }
+        return out
+    }
+
+    private static func own(_ node: Node) -> String? {
+        if let text = node.text, !text.isEmpty { return text }
+        if let desc = node.desc, !desc.isEmpty { return desc }
+        return nil
+    }
+
+    private func label(at: Int, ends: [Int]) -> String? {
+        let node = nodes[at]
+        if node.edit {
+            if let desc = node.desc, !desc.isEmpty { return desc }
+            if let id = node.id, !id.isEmpty { return id }
+            return nil
+        }
+        if let own = Self.own(node) { return own }
+        var next = at + 1
+        while next < ends[at] {
+            if nodes[next].edit {
+                next = ends[next]  // a field and its rows give no label
+                continue
+            }
+            if let own = Self.own(nodes[next]) { return own }
+            next += 1
+        }
+        return nil
+    }
+
+    /// For each row's position, the position just past its subtree.
+    private func subtreeEnds() -> [Int] {
+        var ends = Array(repeating: nodes.count, count: nodes.count)
+        var open: [Int] = []  // positions of the rows the current one may sit under
+        for (at, node) in nodes.enumerated() {
+            while let top = open.last, nodes[top].index != node.parent {
+                ends[top] = at
+                open.removeLast()
+            }
+            open.append(at)
+        }
+        return ends
     }
 
     /// The tool result: the trimmed tree as JSON text, only the fields the
@@ -178,7 +244,7 @@ struct UITree: Equatable {
 
             struct Node: Encodable {
                 let i: Int
-                let ref: String
+                let ref: String?
                 let p: Int?
                 let l: Int?
                 let role: String
@@ -197,6 +263,8 @@ struct UITree: Equatable {
                 let disabled: Bool?
                 let pwd: Bool?
                 let loading: Bool?
+                let heading: Bool?
+                let covered: String?
             }
 
             let window: Int
@@ -226,7 +294,7 @@ struct UITree: Equatable {
                           focused: $0.focused, active: $0.active)
             },
             nodes: nodes.map { node in
-                Out.Node(i: node.index, ref: node.ref, p: node.parent,
+                Out.Node(i: node.index, ref: node.ref.isEmpty ? nil : node.ref, p: node.parent,
                          l: severalLayers ? node.layer : nil,
                          role: node.role, text: node.text, desc: node.desc, id: node.id,
                          box: node.box, at: node.at.map { [$0.x, $0.y] },
@@ -239,7 +307,9 @@ struct UITree: Equatable {
                          focus: node.focused ? true : nil,
                          disabled: node.disabled ? true : nil,
                          pwd: node.password ? true : nil,
-                         loading: node.loading ? true : nil)
+                         loading: node.loading ? true : nil,
+                         heading: node.heading ? true : nil,
+                         covered: node.covered)
             },
             note: note,
             loading: loading ? true : nil)
@@ -366,29 +436,6 @@ enum UITreeError: Error, Equatable {
     }
 }
 
-/// What `tap` by ref does with a resolution (WIN-79): press one point, or
-/// refuse with a sentence and press nothing. Pure, so the tests prove that a
-/// stale, closed or off-screen ref never becomes a TOUCH.
-enum UITreeTapPlan: Equatable {
-    case press(point: UITree.Point, snapshot: Int, box: [Int]?)
-    case refuse(String)
-
-    init(_ resolution: UITreeResolution, ref: String) {
-        switch resolution {
-        case .placed(let snapshot, let placed):
-            if let point = placed.point, !placed.off {
-                self = .press(point: point, snapshot: snapshot, box: placed.box)
-            } else {
-                self = .refuse(UITreeRefusal.offScreen(ref))  // F9
-            }
-        case .stale(let ref, let snapshot, let latest):
-            self = .refuse(UITreeRefusal.stale(ref: ref, snapshot: snapshot, latest: latest))  // F1
-        case .noTree:
-            self = .refuse(UITreeRefusal.noTree(ref))  // F4, and a reconnect
-        }
-    }
-}
-
 /// The `tap` tool's refusals as human sentences (WIN-79). Kept here, not in the
 /// tool layer, so the unit tests assert the exact words.
 enum UITreeRefusal {
@@ -422,6 +469,28 @@ final class UITreeBroker {
     private var seq = 0
     private var waiters: [Int: CheckedContinuation<UITree, Error>] = [:]
     private var refs = UITreeRefs()
+    /// The label each client was last answered per window and key: the
+    /// `expect` of its next press (MCP-86, #188).
+    private var answered: [MCPClientID: [UInt32: [Int: String]]] = [:]
+
+    /// A tree went to [client]: remember its labels for that client's presses.
+    func answered(_ tree: UITree, client: MCPClientID?) {
+        guard let client, tree.ok else { return }
+        let labels = tree.labels()
+        var known = answered[client, default: [:]][tree.stream, default: [:]]
+        for node in tree.nodes {
+            guard let k = node.k else { continue }
+            known[k] = labels[k]  // a row with no label now drops the old one: no `expect`
+        }
+        answered[client, default: [:]][tree.stream] = known
+    }
+
+    /// The label [client] was last answered for key [k] on [stream]; nil when
+    /// never (the press then sends no `expect`).
+    func expect(client: MCPClientID?, stream: UInt32, k: Int) -> String? {
+        guard let client else { return nil }
+        return answered[client]?[stream]?[k]
+    }
 
     /// Start a read. `send` carries the request out with the allocated `seq`;
     /// the reply arrives as [reply], the session's end as [fail], and a silent
@@ -461,12 +530,18 @@ final class UITreeBroker {
     /// A closed session has no tree to answer with.
     func fail(_ error: UITreeError) {
         refs.forgetAll()
+        answered.removeAll()
         let waiting = Array(waiters.values)
         waiters.removeAll()
         for waiter in waiting { waiter.resume(throwing: error) }
     }
 
-    func forget(stream: UInt32) { refs.forget(stream: stream) }
+    func forget(stream: UInt32) {
+        refs.forget(stream: stream)
+        for client in answered.keys { answered[client]?[stream] = nil }
+    }
+
+    func latestSnapshot(stream: UInt32) -> Int? { refs.latestSnapshot(for: stream) }
 
     /// The pixel space of the window's latest tree (MCP-50, MCP-63).
     func latestSize(stream: UInt32) -> [Int]? {

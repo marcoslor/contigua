@@ -207,3 +207,105 @@ final class UISettleBroker {
         waiter.resume(with: result)
     }
 }
+
+/// The phone's `ui.press` reply (PROTOCOL.md "UI tree" item 8, MCP-86).
+struct UIPressReply: Equatable {
+    let seq: Int
+    let stream: UInt32
+    let ok: Bool
+    let box: [Int]?
+    /// The point pressed, 0..1 of the display's input space.
+    let at: [Double]?
+    let role: String?
+    let text: String?
+    let desc: String?
+    let code: String?
+    /// The cover as a ref (`e<k>`) or `"window"` (MCP-89).
+    let coveredBy: String?
+    /// The label read at the press, on `changed` (#188).
+    let now: String?
+
+    init(seq: Int, stream: UInt32, ok: Bool, box: [Int]? = nil, at: [Double]? = nil,
+         role: String? = nil, text: String? = nil, desc: String? = nil, code: String? = nil,
+         coveredBy: String? = nil, now: String? = nil) {
+        self.seq = seq
+        self.stream = stream
+        self.ok = ok
+        self.box = box
+        self.at = at
+        self.role = role
+        self.text = text
+        self.desc = desc
+        self.code = code
+        self.coveredBy = coveredBy
+        self.now = now
+    }
+
+    init?(message: JSONMessage) {
+        guard let ok = message.bool("ok"), let stream = message.int("stream") else { return nil }
+        var cover: String?
+        if let key = message.raw["coveredBy"] as? Int { cover = "e\(key)" }
+        else if let word = message.raw["coveredBy"] as? String { cover = word }
+        self.init(seq: message.int("seq") ?? 0, stream: UInt32(max(0, stream)), ok: ok,
+                  box: (message.raw["box"] as? [NSNumber])?.map(\.intValue),
+                  at: (message.raw["at"] as? [NSNumber])?.map(\.doubleValue),
+                  role: message.string("role"), text: message.string("text"),
+                  desc: message.string("desc"), code: message.string("code"),
+                  coveredBy: cover, now: message.string("now"))
+    }
+}
+
+/// Pairs each `ui.press` with its reply by `seq`; a silent phone fails
+/// `timedOut` after the hold plus the read deadline, a late reply is ignored.
+@MainActor
+final class UIPressBroker {
+    private var seq = 0
+    private var waiters: [Int: CheckedContinuation<UIPressReply, Error>] = [:]
+
+    func press(holdMs: Int, send: (Int) -> Void) async throws -> UIPressReply {
+        seq += 1
+        let id = seq
+        let wait = Double(holdMs) / 1000 + UITreeBroker.deadline
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<UIPressReply, Error>) in
+            waiters[id] = cont
+            send(id)
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+                self?.finish(id: id, .failure(UITreeError.timedOut))
+            }
+        }
+    }
+
+    func reply(_ reply: UIPressReply) { finish(id: reply.seq, .success(reply)) }
+
+    func fail(_ error: UITreeError) {
+        let waiting = Array(waiters.values)
+        waiters.removeAll()
+        for waiter in waiting { waiter.resume(throwing: error) }
+    }
+
+    private func finish(id: Int, _ result: Result<UIPressReply, Error>) {
+        guard let waiter = waiters.removeValue(forKey: id) else { return }
+        waiter.resume(with: result)
+    }
+}
+
+/// What a `ui.press` came to: the phone's reply, or a failure before one.
+enum UIPressResult {
+    case reply(UIPressReply)
+    case failed(String)
+
+    /// Internal: the call was cancelled (its client left) after the press may
+    /// have gone out. The machine sees it as `failed`.
+    static let cancelled = "cancelled"
+
+    /// MCP-84: whether the window may have taken input from the call. A
+    /// refusal pressed nothing; a press with no answer (`timeout`, a link
+    /// that dropped) may have.
+    var mayHaveActed: Bool {
+        switch self {
+        case .reply(let reply): return reply.ok
+        case .failed(let code): return code == "timeout" || code == "phone_offline" || code == Self.cancelled
+        }
+    }
+}

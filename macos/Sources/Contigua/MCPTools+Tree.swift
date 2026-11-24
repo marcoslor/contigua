@@ -37,6 +37,7 @@ extension MCPToolHost {
             throw MCPToolError.uiTreeFailed(code: tree.code, message: tree.message,
                                             window: id, phone: phoneName)
         }
+        controller.uiTreeAnswered(tree, client: client)  // MCP-86: this client's expects
         let object = try JSONSerialization.jsonObject(with: Data(tree.encoded().utf8))
         guard let answer = object as? [String: Any] else {
             throw MCPToolError.failed("The phone could not read that display's accessibility tree. Use screenshot instead.",

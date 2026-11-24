@@ -155,6 +155,15 @@ final class MCPToolErrorTests: XCTestCase {
         XCTAssertEqual(back["tiny"] as? Double, 1e-7)
         XCTAssertEqual(back["s"] as? String, "a\u{1}\u{8}\"\\\n/")
     }
+
+    // [MCP-71] T10: a ref the phone finds gone names the one next step, a new tree (#171's hand-run).
+    func testAGoneRefSendsTheAgentToANewTree() {
+        let error = MCPToolError.pressRefusal(code: "gone", ref: "e12", window: 3, latestSnapshot: 6,
+                                              expect: "Item 3", now: nil, coveredBy: nil)
+        XCTAssertEqual(error.code, .staleRef)
+        XCTAssertEqual(error.message,
+                       "e12 is no longer on window 3: the screen changed after its latest tree (snapshot 6). Call ui_tree and use a ref from it.")
+    }
 }
 
 extension MCPToolErrorTests {
