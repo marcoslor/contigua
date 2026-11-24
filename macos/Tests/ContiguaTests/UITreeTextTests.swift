@@ -166,6 +166,31 @@ final class UITreeTextTests: XCTestCase {
         XCTAssertNil(plainReads.first?.raw["offscreen"], "a plain read must not ask for off-screen nodes")
     }
 
+    // [MCP-75] `find` with `format: "text"`: the text view of the matches only,
+    // an off-screen one bracketed `off, in <the list's ref>`.
+    @MainActor
+    func testFindWithTheTextFormatReadsOnlyTheMatches() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        let window = try await fixture.liveWindow()
+        fixture.treeNodes = [
+            ["i": 0, "k": 20, "role": "RecyclerView", "scroll": true,
+             "box": [0, 200, 1080, 2000], "at": [0.5, 0.47]],
+            ["i": 1, "k": 31, "p": 0, "role": "TextView", "text": "Other",
+             "box": [0, 200, 1080, 300], "at": [0.5, 0.1]],
+            ["i": 2, "k": 33, "p": 0, "role": "TextView", "text": "Row 50", "off": true],
+        ]
+        let (answer, _) = await fixture.call("ui_tree", ["window": Int(window.stream),
+                                                         "find": "row 50", "format": "text"])
+        XCTAssertEqual(answer["isError"] as? Bool, false, "ui_tree failed: \(answer)")
+        let structured = try XCTUnwrap(answer["structuredContent"] as? [String: Any])
+        XCTAssertEqual(structured["text"] as? String, "Row 50 [e33 TextView off, in e20]")
+        XCTAssertNil(structured["nodes"])
+        XCTAssertEqual(structured["matched"] as? Int, 1)
+        XCTAssertEqual(structured["total"] as? Int, 3)
+        XCTAssertEqual(fixture.sent("ui.tree").first?.bool("offscreen"), true)
+    }
+
     // [MCP-74] Through the tool: `format: "text"` answers `text` and no nodes.
     @MainActor
     func testTheTextFormatAnswersText() async throws {
