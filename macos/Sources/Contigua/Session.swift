@@ -2400,9 +2400,17 @@ final class Session {
     }
     /// `ui.tree` (docs/PROTOCOL.md "UI tree", WIN-79): one read of the display a
     /// stream's window lives on. The reply echoes `seq` and is not a watch.
-    func requestUITree(stream: UInt32, seq: Int) {
+    /// `offscreen` asks for the nodes F9 marks `off` too (MCP-106): only
+    /// `find` asks for them (MCP-75).
+    func requestUITree(stream: UInt32, seq: Int, offscreen: Bool = false) {
         sendPing()
-        sendJSON(["t": "ui.tree", "stream": Int(stream), "seq": seq])
+        sendJSON(Self.uiTreeRequest(stream: stream, seq: seq, offscreen: offscreen))
+    }
+
+    nonisolated static func uiTreeRequest(stream: UInt32, seq: Int, offscreen: Bool) -> [String: Any] {
+        var request: [String: Any] = ["t": "ui.tree", "stream": Int(stream), "seq": seq]
+        if offscreen { request["offscreen"] = true }
+        return request
     }
     /// `ui.settle` (docs/PROTOCOL.md "UI tree" item 7, MCP-81): answer when the
     /// stream's display has not changed for `quietMs` with nothing loading, or

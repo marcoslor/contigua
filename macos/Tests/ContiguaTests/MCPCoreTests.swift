@@ -153,7 +153,7 @@ final class MCPCoreTests: XCTestCase {
     func testEveryToolValidatesItsArguments() throws {
         let cases: [(String, [String: Any], MCPCall)] = [
             ("phone_status", [:], .phoneStatus),
-            ("list_apps", [:], .listApps),
+            ("list_apps", [:], .listApps()),
             ("open_app", ["app": "com.android.settings"], .openApp("com.android.settings", newWindow: false)),
             ("open_app", ["app": "com.android.chrome", "newWindow": true],
              .openApp("com.android.chrome", newWindow: true)),

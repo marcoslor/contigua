@@ -89,8 +89,8 @@ extension MCPToolHost {
         return answer
     }
 
-    func listApps() throws -> [String: Any] {
+    func listApps(query: String?, limit: Int?) throws -> [String: Any] {
         let phone = try IntentsBridge.resolve(nil)
-        return try Self.appsAnswer(IntentsBridge.apps(for: phone))
+        return try Self.appsAnswer(IntentsBridge.apps(for: phone), query: query, limit: limit)
     }
 }

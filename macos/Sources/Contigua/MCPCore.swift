@@ -89,17 +89,24 @@ enum MCPSwipeDirection: String, CaseIterable {
     case up, down, left, right
 }
 
+/// `format` on `ui_tree` (MCP-74): the nodes, or the text view.
+enum MCPTreeFormat: String, Equatable, CaseIterable {
+    case tree, text
+}
+
 /// A validated tool call: exactly what the tools layer may execute.
 enum MCPCall: Equatable {
     case phoneStatus
-    case listApps
+    /// MCP-34: `query` keeps the matches, at most `limit`.
+    case listApps(query: String? = nil, limit: Int? = nil)
     /// An open answers like an action: first frame, settle, tree (MCP-41).
     case openApp(String, newWindow: Bool, shape: MCPWindowShape = .phone, wait: MCPWait = .settle, observe: MCPObserve = .tree)
     case listWindows
     /// `wait: settle` settles the window first (MCP-64).
     case screenshot(window: Int, ref: String?, wait: MCPWait = .none)
     /// WIN-79: the display's accessibility tree, for finding a node by its text.
-    case uiTree(window: Int, wait: MCPWait = .none)
+    /// MCP-74, MCP-75: `format: text` answers the text view; `find` keeps the matches.
+    case uiTree(window: Int, wait: MCPWait = .none, format: MCPTreeFormat = .tree, find: String? = nil)
     /// MCP-96, MCP-97, MCP-111: a clock, a text condition or the settle.
     case wait(window: Int, mode: MCPWaitMode, timeoutMs: Int, observe: MCPObserve)
     // Every input tool settles and observes (MCP-81, MCP-82): `wait` defaults
@@ -132,7 +139,7 @@ extension MCPCall {
         switch self {
         case .phoneStatus, .listApps, .openApp, .listWindows, .sendLink, .sendFile:
             return nil
-        case .screenshot(let window, _, _), .uiTree(let window, _), .closeWindow(let window, _),
+        case .screenshot(let window, _, _), .uiTree(let window, _, _, _), .closeWindow(let window, _),
              .wait(let window, _, _, _),
              .tap(let window, _, _, _, _, _), .tapRef(let window, _, _, _, _),
              .swipe(let window, _, _, _, _, _, _, _), .swipeDirection(let window, _, _, _, _, _),
@@ -231,6 +238,11 @@ enum MCPTools {
          "description": "How long the gesture lasts, in milliseconds (at most \(maximum), default \(fallback))."]
     }
 
+    /// MCP-34, MCP-75: the longest `query` or `find`.
+    static let maxQuery = 200
+    /// MCP-34: the largest `limit`.
+    static let maxAppsLimit = 500
+
     /// MCP-88: the longest `holdMs`.
     static let maxHoldMs = 3000
     /// MCP-90: a swipe's `ms` when the call gives none.
@@ -242,8 +254,13 @@ enum MCPTools {
                 description: "The phone in use: connected or not, its name, battery, screen and lock state, the app in front on the phone's own screen, and how many windows are open. App windows take input whether or not the phone is locked.",
                 schema: object([:], required: [])),
         MCPTool(name: .listApps,
-                description: "Apps on the phone that can be opened, as label and package.",
-                schema: object([:], required: [])),
+                description: "Apps on the phone that can be opened, as label and package. query keeps only the apps whose label or package contains it, ignoring case and accents, those whose label starts with it first; total says how many matched, and at most limit (default 20) are listed.",
+                schema: object([
+                    "query": ["type": "string", "minLength": 1, "maxLength": maxQuery,
+                              "description": "Keep only the apps whose label or package contains this (case and accents ignored)."],
+                    "limit": ["type": "integer", "minimum": 1, "maximum": maxAppsLimit,
+                              "description": "List at most this many apps (1 to \(maxAppsLimit); default 20 with query, every app without)."],
+                ], required: [])),
         MCPTool(name: .openApp,
                 description: "Open a phone app in a window on this Mac, or bring its window to the front if it has one, and return that window and the screen it shows. The app opens on whatever screen it last showed. A new window has the phone's shape unless shape is \"window\"; a window brought to the front keeps its shape, and size says what it is. newWindow: true opens a second window of an app that allows it.",
                 schema: object([
@@ -265,8 +282,14 @@ enum MCPTools {
                     "wait": wait,
                 ], required: ["window"])),
         MCPTool(name: .uiTree,
-                description: "What the window shows, as accessibility nodes in reading order: text, role, view id, states, a tap point (at, 0..1) and a ref for tap; box is in the display's pixels (size). A ref names one element for as long as it is on screen, across reads; a ref whose element is gone is refused. Only what is on screen is listed: a list says how many items it hides before and after; swipe the list to reach them. A field showing its hint has hint: true and no text. loading: true means the screen is still loading. Exact, and cheaper than a screenshot for finding what to press.",
-                schema: object(["window": window, "wait": wait], required: ["window"])),
+                description: "What the window shows, as accessibility nodes in reading order: text, role, view id, states, a tap point (at, 0..1) and a ref for tap; box is in the display's pixels (size). A ref names one element for as long as it is on screen, across reads; a ref whose element is gone is refused. Only what is on screen is listed: a list says how many items it hides before and after; swipe the list to reach them. A field showing its hint has hint: true and no text. loading: true means the screen is still loading. Exact, and cheaper than a screenshot for finding what to press. find keeps only the nodes whose text, description or view id contains it, ignoring case and accents, off-screen ones included (off: true, no at, and in names the list to swipe), and says how many matched of the total. format: \"text\" answers text instead of nodes: one line per label in reading order, # before a heading, and [ref role states] after what can be acted on.",
+                schema: object([
+                    "window": window, "wait": wait,
+                    "format": ["type": "string", "enum": MCPTreeFormat.allCases.map(\.rawValue),
+                               "description": "tree (the default) answers the nodes; text answers one line per label in reading order, with [ref role states] after what can be acted on."],
+                    "find": ["type": "string", "minLength": 1, "maxLength": maxQuery,
+                             "description": "Keep only the nodes whose text, description or view id contains this (case and accents ignored), off-screen ones included."],
+                ], required: ["window"])),
         MCPTool(name: .wait,
                 description: "Wait on a window: for ms milliseconds, until text appears on it (with gone: true, until it disappears), or with settle: true until it stops changing and nothing on it is loading, at most timeoutMs; if timeoutMs ends first, reason says whether it was still loading. Use this instead of sleeping or re-reading the tree as a clock.",
                 schema: object([
@@ -453,8 +476,9 @@ enum MCPOutputSchemas {
                                      "input", "foreground", "windows", "maxWindows"])
         case .listApps:
             return object(["apps": array(object(["label": string, "package": string],
-                                                required: ["label", "package"]))],
-                          required: ["apps"])
+                                                required: ["label", "package"])),
+                           "total": integer],
+                          required: ["apps", "total"])
         case .openApp, .sendLink:
             return openedWindow
         case .listWindows:
@@ -480,9 +504,11 @@ enum MCPOutputSchemas {
                            "snapshot": integer, "size": array(integer), "truncated": boolean,
                            "layers": array(["type": "object"]), "nodes": array(["type": "object"]),
                            "note": string, "loading": boolean, "settle": settleObject,
+                           "omitted": integer, "matched": integer, "total": integer,
+                           "format": ["type": "string", "enum": ["text"]], "text": string,
                            "state": stateToken, "frame": frameObject],
-                          required: ["window", "ok", "truncated", "layers", "nodes",
-                                     "state", "frame"])
+                          // `format: text` answers `text` in place of the rows (MCP-74).
+                          required: ["window", "state", "frame"])
         case .wait:
             return object(["window": integer, "waitedMs": integer,
                            "until": ["type": "string", "enum": ["met", "timeout"]],
@@ -692,7 +718,10 @@ enum MCPArguments {
         case .phoneStatus:
             return .phoneStatus
         case .listApps:
-            return .listApps
+            return .listApps(
+                query: args["query"] == nil ? nil : try string(args, "query", maximum: MCPTools.maxQuery),
+                limit: args["limit"] == nil ? nil : try integer(args, "limit", minimum: 1,
+                                                                maximum: MCPTools.maxAppsLimit))
         case .openApp:
             return .openApp(try string(args, "app", maximum: 200),
                             newWindow: try boolean(args, "newWindow", default: false),
@@ -705,7 +734,9 @@ enum MCPArguments {
             return .screenshot(window: window, ref: ref, wait: try wait(args, default: .none))
         case .uiTree:
             return .uiTree(window: try integer(args, "window", minimum: 1, maximum: 1_000_000),
-                           wait: try wait(args, default: .none))
+                           wait: try wait(args, default: .none),
+                           format: try token(args, "format", default: MCPTreeFormat.tree),
+                           find: args["find"] == nil ? nil : try string(args, "find", maximum: MCPTools.maxQuery))
         case .wait:
             return try waitCall(args)
         case .tap:

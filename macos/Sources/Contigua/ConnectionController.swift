@@ -1330,13 +1330,14 @@ final class ConnectionController {
     /// MCP `ui_tree` tool. One request at a time per call, paired by `seq`; the
     /// phone's answer arrives as `.uiTree`. A closed session fails at once and
     /// a silent phone at the deadline, so a tool call never hangs.
+    /// `offscreen` asks for the off-screen nodes too: `find` only (MCP-106).
     func uiTree(stream: UInt32, timeout: TimeInterval = UITreeBroker.deadline,
-                until: ContinuousClock.Instant? = nil) async throws -> UITree {
+                until: ContinuousClock.Instant? = nil, offscreen: Bool = false) async throws -> UITree {
         guard link.isOnline, let session else { throw UITreeError.notConnected }
         let bound = until ?? .now + .milliseconds(Int(timeout * 1000))
         return try await phoneReads.run(until: bound) { [uiTreeBroker] in
             try await uiTreeBroker.read(stream: stream, timeout: timeout) { seq in
-                session.requestUITree(stream: stream, seq: seq)
+                session.requestUITree(stream: stream, seq: seq, offscreen: offscreen)
             }
         }
     }
@@ -1382,8 +1383,9 @@ final class ConnectionController {
     }
 
     /// A tree answered to [client]: its labels become that client's `expect`s.
-    func uiTreeAnswered(_ tree: UITree, client: MCPClientID?) {
-        uiTreeBroker.answered(tree, client: client)
+    /// [only] limits them to the keys the answer showed (`find`, MCP-75).
+    func uiTreeAnswered(_ tree: UITree, client: MCPClientID?, only: Set<Int>? = nil) {
+        uiTreeBroker.answered(tree, client: client, only: only)
     }
 
     func uiTreeExpect(client: MCPClientID?, stream: UInt32, k: Int) -> String? {

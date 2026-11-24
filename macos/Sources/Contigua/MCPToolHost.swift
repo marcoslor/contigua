@@ -53,8 +53,8 @@ struct MCPToolHost {
             switch call {
             case .phoneStatus:
                 return .answer(await phoneStatus())
-            case .listApps:
-                return .answer(try listApps())
+            case .listApps(let query, let limit):
+                return .answer(try listApps(query: query, limit: limit))
             case .openApp(let query, let newWindow, let shape, let wait, let observe):
                 return .answer(try await openApp(query, newWindow: newWindow, shape: shape, wait: wait,
                                                  observe: observe))
@@ -62,8 +62,8 @@ struct MCPToolHost {
                 return .answer(listWindows())
             case .screenshot(let window, let ref, let wait):
                 return try await screenshot(window, ref: ref, wait: wait)
-            case .uiTree(let window, let wait):
-                return .answer(try await uiTree(window, wait: wait))
+            case .uiTree(let window, let wait, let format, let find):
+                return .answer(try await uiTree(window, wait: wait, format: format, find: find))
             case .wait(let window, let mode, let timeoutMs, let observe):
                 return .answer(try await wait(window: window, mode: mode, timeoutMs: timeoutMs,
                                               observe: observe))
@@ -156,11 +156,33 @@ struct MCPToolHost {
 
     // MARK: Pure decisions (unit-tested)
 
+    /// MCP-34: a query's answer holds at most this many apps unless `limit` says.
+    nonisolated static let appsQueryLimit = 20
+
     /// MCP-33: an empty list is "not arrived yet", never an empty answer.
-    nonisolated static func appsAnswer(_ apps: [AppInfo]) throws -> [String: Any] {
+    /// MCP-34: [query] keeps the apps whose label or package contains it,
+    /// ignoring case and accents: label-prefix matches, then the other label
+    /// matches, then the package-only ones, each by label; at most [limit]
+    /// (20 with a query, every app without). `total` counts every match.
+    nonisolated static func appsAnswer(_ apps: [AppInfo], query: String? = nil,
+                                       limit: Int? = nil) throws -> [String: Any] {
         guard !apps.isEmpty else { throw MCPToolError.appsNotReady }
-        let sorted = IntentAppCatalog.search("", in: apps, limit: 10_000)
-        return ["apps": sorted.map { ["label": $0.label, "package": $0.pkg] }]
+        let sorted = apps.sorted { ($0.label.lowercased(), $0.pkg) < ($1.label.lowercased(), $1.pkg) }
+        let folded = query.map(IntentPhoneResolver.fold) ?? ""
+        var matches = sorted
+        var cap = limit ?? sorted.count
+        if !folded.isEmpty {
+            let labels = sorted.map { IntentPhoneResolver.fold($0.label) }
+            let packages = sorted.map { IntentPhoneResolver.fold($0.pkg) }
+            let indices = sorted.indices
+            let prefix = indices.filter { labels[$0].hasPrefix(folded) }
+            let inLabel = indices.filter { !labels[$0].hasPrefix(folded) && labels[$0].contains(folded) }
+            let inPackage = indices.filter { !labels[$0].contains(folded) && packages[$0].contains(folded) }
+            matches = (prefix + inLabel + inPackage).map { sorted[$0] }
+            cap = limit ?? appsQueryLimit
+        }
+        return ["apps": matches.prefix(cap).map { ["label": $0.label, "package": $0.pkg] },
+                "total": matches.count]
     }
 
     /// MCP-33/MCP-40: the app `open_app` names, or its closed failure.
