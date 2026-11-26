@@ -620,4 +620,57 @@ class UiTreeTest {
         assertTrue(off.none { it.containsKey("at") })
         assertEquals(0, body["omitted"])
     }
+
+    // MARK: where an off-screen row is (MCP-75)
+
+    @Test
+    fun testOffscreenRowsSayWhereTheyAre() { // [MCP-106]
+        // A list whose rows lie above and below the display: each `off` row
+        // says which way a swipe must go, so `find` need not guess.
+        val body = UiTree.reply(7, IntSize(1_000, 2_000), listOf(layer(list(3, 4, 112))), offscreen = true)
+        val off = nodes(body).filter { it["off"] == true }
+        assertEquals("above", off.single { it["text"] == "Item 1" }["where"])
+        assertEquals("above", off.single { it["text"] == "Item 3" }["where"])
+        assertEquals("below", off.single { it["text"] == "Item 8" }["where"])
+        assertEquals("below", off.single { it["text"] == "Item 119" }["where"])
+        // Nothing off screen on a plain read, so no `where` anywhere.
+        val clear = nodes(reply(listOf(layer(list(0, 4, 0)))))
+        assertTrue(clear.none { it.containsKey("where") })
+    }
+
+    @Test
+    fun testAnOffscreenRowOnTheSideSaysWhich() { // [MCP-106]
+        // A carousel's next card is to the right, a drawer's edge to the left.
+        val card = node(text = "Next", clickable = true, box = UiTree.Box(1_000, 200, 1_400, 600))
+        val edge = node(text = "Menu", clickable = true, box = UiTree.Box(-300, 200, -100, 600))
+        val rows = nodes(reply(listOf(layer(card, edge)), offscreen = true))
+        assertEquals("right", rows.single { it["text"] == "Next" }["where"])
+        assertEquals("left", rows.single { it["text"] == "Menu" }["where"])
+    }
+
+    @Test
+    fun testAHiddenOnScreenRowSaysHidden() { // [MCP-106]
+        // A tab or a DOM node that is on the display but not visible to the
+        // user: swiping reaches nothing, so the direction is `hidden`.
+        val tab = node(text = "Archived", clickable = true, visibleToUser = false,
+            box = UiTree.Box(0, 100, 1_000, 300))
+        val rows = nodes(reply(listOf(layer(tab)), offscreen = true))
+        assertEquals("hidden", rows.single()["where"])
+    }
+
+    @Test
+    fun testAPlatformClippedRowSaysBeforeOrAfterInItsList() { // [MCP-106]
+        // The platform clips a scrolled-out row's screen box to nothing: the
+        // only evidence of where it is, is the list the walk is inside and
+        // whether an on-screen row of that list came first.
+        val body = UiTree.reply(7, IntSize(1_000, 2_000), listOf(layer(clippedList(3, 4, 112))), offscreen = true)
+        val off = nodes(body).filter { it["off"] == true }
+        assertEquals("before", off.single { it["text"] == "Item 1" }["where"])
+        assertEquals("before", off.single { it["text"] == "Item 3" }["where"])
+        assertEquals("after", off.single { it["text"] == "Item 8" }["where"])
+        assertEquals("after", off.single { it["text"] == "Item 119" }["where"])
+        // A clipped row that no scrollable holds has nowhere to swipe to.
+        val loose = node(text = "Spacer", visibleToUser = false, sized = true, box = UiTree.Box(0, 0, 1_000, 0))
+        assertEquals("hidden", nodes(reply(listOf(layer(loose)), offscreen = true)).single()["where"])
+    }
 }
