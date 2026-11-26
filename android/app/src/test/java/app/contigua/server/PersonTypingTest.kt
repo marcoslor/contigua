@@ -186,16 +186,19 @@ class PersonTypingTest {
             // The tree connected for an agent's read; no window has focus, so
             // the settle sleep would be the price of every character typed.
             assertTrue("the agent's read connected", tree.ensureAutomation() != null)
-            tree.withFocus(0) { } // the first read warms the platform's classes
+            tree.withFocus(0) { } // a warm-up read: it pays the platform's class loading, not the tree
             val connectsBefore = connects.get()
             var ranAgain = false
-            val second = System.nanoTime()
-            val none = tree.withFocus(0) { ranAgain = true; "read" }
-            val secondMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - second)
-            assertEquals("a connected tree runs the block", "read", none)
+            var fastest = Long.MAX_VALUE
+            repeat(3) {
+                val second = System.nanoTime()
+                val none = tree.withFocus(0) { ranAgain = true; "read" }
+                fastest = minOf(fastest, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - second))
+                assertEquals("a connected tree runs the block", "read", none)
+            }
             assertTrue("the block ran", ranAgain)
             assertEquals("no second connect", connectsBefore, connects.get())
-            assertTrue("no settle sleep (waited $secondMs ms)", secondMs < 150)
+            assertTrue("no settle sleep, which alone is 300 ms (fastest $fastest ms)", fastest < 150)
         } finally {
             tree.disconnect()
         }
