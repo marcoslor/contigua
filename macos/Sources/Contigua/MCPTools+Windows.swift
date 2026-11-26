@@ -15,9 +15,26 @@ extension MCPToolHost {
             row["state"] = stateToken(for: window)
             row["frame"] = frameObject(for: window)
             row["package"] = package(of: window).map { $0 as Any } ?? NSNull()
+            row["label"] = label(of: window).map { $0 as Any } ?? NSNull()
+            row["title"] = title(of: window).map { $0 as Any } ?? NSNull()
             return row
         }
         return ["windows": windows, "recentlyClosed": ledger.recentlyClosed(asker: client, now: now)]
+    }
+
+    /// MCP-50: the app's own label, null for the Phone Mirror and for an app
+    /// the phone has not named yet.
+    func label(of window: StreamWindowController) -> String? {
+        if let app = window as? AppWindowController { return app.appLabel }
+        if window is PhoneWindowController { return nil }
+        guard let pkg = WindowManager.ledgerPackage(window) else { return nil }
+        return controller.apps.first { $0.pkg == pkg }?.label
+    }
+
+    /// MCP-50: the phone's task title, null before one arrives (the other
+    /// kinds show one app, not a task).
+    func title(of window: StreamWindowController) -> String? {
+        (window as? AppWindowController)?.taskLabel
     }
 
     func package(of window: StreamWindowController) -> String? {

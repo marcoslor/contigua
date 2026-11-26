@@ -1149,7 +1149,8 @@ final class ConnectionController {
             disconnect(deviceId: phone.id)
         }
         if wasActive {
-            windows.closeAll()
+            // MCP-52: the person changed the phone; its windows close for that.
+            windows.closeAll(cause: .phoneSwitched)
             apps = []
             appsLoaded = false
             status = nil
@@ -2840,7 +2841,8 @@ final class ConnectionController {
         // keep saying Reconnecting; the windows go and the banner is the one
         // truth. A generic pairing failure (kind nil) keeps today's down window.
         if result.affectsCurrent, case .needsPairing = link, machine.trustLossKind != nil {
-            windows.closeAll()
+            // MCP-52: a trust loss closes the windows as the phone's own close.
+            windows.closeAll(cause: .phone("phone_closed"))
         }
         // A window that was opening during the one-shot transition follows
         // the current Link value too: the zombie-service case left it on
@@ -3060,7 +3062,8 @@ final class ConnectionController {
         if book.currentId?.hasPrefix("hook:pair-") != true {
             pairingResumeId = book.currentId
         }
-        windows.closeAll()
+        // MCP-52: re-pairing is the person changing the phone.
+        windows.closeAll(cause: .phoneSwitched)
         stopClipboardSync()
         // A person re-running the pairing revokes the old pin here (§7): the
         // next connect lands in pairing mode (no record, no §3 mirror).

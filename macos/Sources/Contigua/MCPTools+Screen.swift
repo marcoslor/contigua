@@ -44,7 +44,8 @@ extension MCPToolHost {
         // a window's first frame can end its opening while the call waits.
         return try await Screenshot.result(id: id, state: { self.stateToken(for: window) },
                                            source: window, size: size, crop: crop,
-                                           online: controller.link.isOnline, phone: phoneName)
+                                           online: controller.link.isOnline, phone: phoneName,
+                                           noWindow: { self.noWindow(id) })
     }
 
     /// P0 (pmaxx): the tap goes through the same session path a click does;
@@ -168,6 +169,7 @@ enum Screenshot {
     static func result(id: Int, state: () -> String, source: ScreenshotSource,
                        size: (Int, Int), crop: [Int]?,
                        online: Bool = true, phone: String? = nil,
+                       noWindow: (() -> MCPToolError)? = nil,
                        encode: @escaping @Sendable (CVPixelBuffer, [Int]?) -> Data? = { FrameGrab.png(from: $0, crop: $1) })
         async throws -> MCPToolResult {
         // MCP-61: an offline window can make no picture; say so before asking.
@@ -186,8 +188,9 @@ enum Screenshot {
         guard let frame else {
             // MCP-61: a window that closed while the call waited is gone,
             // not short of a picture.
+            // MCP-53: a window that closed keeps the ledger's record, as `tap` does.
             let now = state()
-            if now == "closed" { throw MCPToolError.noWindow(id) }
+            if now == "closed" { throw (noWindow ?? { MCPToolError.noWindow(id) })() }
             throw MCPToolError.noFrame(window: id, state: now)
         }
         let buffer = frame.buffer

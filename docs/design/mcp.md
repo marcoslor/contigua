@@ -379,7 +379,9 @@ with that read's error (one of the closed codes: the phone's own `busy` maps to
 
 A window stays open when the client that opened it disconnects, and keeps its
 opener (MCP-102). `kind`: `app`, `link`, `handoff`, `mirror`. `openedBy`: `you`, `another_agent`,
-`person`, `app`. `reason`: `closed`, `app_exited`, `moved_to_phone`,
+`person`, `app`. `label` is the app's own label — null for the Phone Mirror and
+an app the phone has not named yet; `title` is the phone's task title, null
+before one arrives. `reason`: `closed`, `app_exited`, `moved_to_phone`,
 `phone_closed`, `open_failed`, `phone_switched`; `closedBy`: `you`,
 `another_agent`, `person`, `phone`.
 
@@ -499,7 +501,10 @@ the closer that asked (an MCP connection, or `person` for ⌘W, the close light,
 Close All); an open the phone refused (`too_many_windows`, `cannot_adopt`, a
 handoff with `nothing_to_continue`) → `open_failed` (closedBy `phone`); a live
 window whose stream the phone forgot (`error no_stream`) → `phone_closed`
-(closedBy `phone`); Use This Phone → `phone_switched`.
+(closedBy `phone`); Use This Phone, a new phone paired, a phone forgotten or a
+re-pairing → `phone_switched` (closedBy `person`); a trust loss →
+`phone_closed` (closedBy `phone`). A window the Mac closes for the person
+records its close like any other: every close answers `recentlyClosed`.
 
 ## A window an agent opens (MCP-100, MCP-101)
 

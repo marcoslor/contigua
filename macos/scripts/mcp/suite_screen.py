@@ -106,6 +106,9 @@ def suite(args):
                "MCP [MCP-50] list_windows' size is the screenshot's size (%s)" % row.get("size"))
         report(row.get("state") == "live" and isinstance((row.get("frame") or {}).get("seq"), int),
                "MCP [MCP-20] list_windows' row carries state and frame")
+        report(row.get("label") == "Settings" and isinstance(row.get("title"), str),
+               "MCP [MCP-50] list_windows' row carries the app's label and the phone's task title (%r/%r)"
+               % (row.get("label"), row.get("title")))
 
         # [MCP-22] A minimised window: the call resumes it, and it pauses again
         # by WIN's rule 15 s after the call.

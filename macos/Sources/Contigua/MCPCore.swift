@@ -484,6 +484,7 @@ enum MCPOutputSchemas {
             return openedWindow
         case .listWindows:
             return object(["windows": array(object(["id": integer, "package": nullable("string"),
+                                                    "label": nullable("string"), "title": nullable("string"),
                                                     "size": array(integer), "state": stateToken,
                                                     "frame": frameObject, "kind": string,
                                                     "openedBy": string, "openedAgoMs": integer],

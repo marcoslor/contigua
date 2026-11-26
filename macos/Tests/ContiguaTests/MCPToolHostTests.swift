@@ -768,8 +768,10 @@ final class MCPToolHostTests: XCTestCase {
         let items = ((schema["properties"] as? [String: Any])?["windows"] as? [String: Any])?["items"]
             as? [String: Any]
         let properties = items?["properties"] as? [String: Any] ?? [:]
-        XCTAssertEqual(properties["label"] as? [String], ["string", "null"])
-        XCTAssertEqual(properties["title"] as? [String], ["string", "null"])
+        for key in ["label", "title"] {
+            let type = (properties[key] as? [String: Any])?["type"] as? [String]
+            XCTAssertEqual(type, ["string", "null"], "\(key): \(String(describing: properties[key]))")
+        }
     }
 
     private static let settingsMulti: [String: Any] = ["pkg": "com.android.settings", "label": "Settings",
