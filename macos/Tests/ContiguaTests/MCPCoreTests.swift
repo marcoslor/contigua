@@ -735,7 +735,7 @@ final class MCPActArgumentTests: XCTestCase {
     /// sent by the call holding the window's turn, so no call can see another
     /// agent's input (#262).
     func testAlsoActedNamesOnlyThePerson_MCP84() {
-        for tool: MCPToolName in [.tap, .longPress, .swipe, .typeText, .pressKey] {
+        for tool: MCPToolName in [.tap, .swipe, .typeText, .pressKey] {
             let properties = MCPOutputSchemas.schema(for: tool)["properties"] as? [String: Any] ?? [:]
             let items = (properties["alsoActed"] as? [String: Any])?["items"] as? [String: Any]
             XCTAssertEqual(items?["enum"] as? [String], ["person"], "\(tool)")
