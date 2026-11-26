@@ -331,8 +331,8 @@ enum MCPTools {
                 description: "Type text into the window's focused field at the cursor: what is there stays, and entry in the answer says inserted. clear: true replaces the field's text instead (entry: replaced); submit: true presses Enter after. The phone's clipboard is never used. Tap the field first if nothing is focused.",
                 schema: object([
                     "window": window,
-                    "text": ["type": "string", "maxLength": 2000,
-                             "description": "Up to 2000 characters."],
+                    "text": ["type": "string", "minLength": 1, "maxLength": 2000,
+                             "description": "1 to 2000 characters, counted as Unicode code points (the phone's unit)."],
                     "clear": ["type": "boolean",
                               "description": "Replace the field's text instead of inserting at the cursor."],
                     "submit": ["type": "boolean", "description": "Press Enter after the text."],
@@ -638,11 +638,16 @@ enum MCPArguments {
         guard let value = raw as? String else {
             throw MCPArgumentError(message: "“\(key)” must be a string")
         }
-        guard value.count >= minimum else {
+        // MCP-92: a limit counts Unicode code points, as JSON Schema's
+        // `maxLength` and the phone do. A grapheme cluster can be several
+        // ("👍🏽" is two), so counting it as one lets text through that the
+        // phone then refuses (#270).
+        let length = value.unicodeScalars.count
+        guard length >= minimum else {
             throw MCPArgumentError(message: "“\(key)” must not be empty")
         }
-        guard value.count <= maximum else {
-            throw MCPArgumentError(message: "“\(key)” is longer than \(maximum) characters")
+        guard length <= maximum else {
+            throw MCPArgumentError(message: "“\(key)” is longer than \(maximum) characters (Unicode code points)")
         }
         return value
     }
@@ -824,7 +829,7 @@ enum MCPArguments {
             return try swipeCall(args)
         case .typeText:
             return .typeText(window: try integer(args, "window", minimum: 1, maximum: 1_000_000),
-                             text: try string(args, "text", minimum: 0, maximum: 2000),
+                             text: try string(args, "text", maximum: 2000),
                              clear: try boolean(args, "clear", default: false),
                              submit: try boolean(args, "submit", default: false),
                              wait: try wait(args), observe: try observe(args))
