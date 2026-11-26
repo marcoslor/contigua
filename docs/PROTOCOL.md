@@ -1687,7 +1687,10 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
      carry `at` and are clickable or carry a label. A layer above that reaches the point (by
      its window bounds, or a counted row of it there) wins over the row's own layer: the
      highest such layer names its topmost counted row at the point, or `"window"` when it has
-     none there. Absent when nothing covers the point, and on a row with no `at`.
+     none there. In the row's own layer a counted row covers it only when it is clickable,
+     editable or checkable: a plain label sibling — a rotating placeholder, a badge drawn
+     over the field's centre — takes no touch, so the platform lets the press through and it
+     covers nothing. Absent when nothing covers the point, and on a row with no `at`.
    - **`hint`, `hintText` (B6).** A row whose node `isShowingHintText` carries `hint: true` and
      the hint's words as `hintText` (its text when the node reports no hint), and no `text`;
      a field holding content carries `text` and neither hint key.

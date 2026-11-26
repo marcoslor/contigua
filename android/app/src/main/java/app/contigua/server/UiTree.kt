@@ -24,7 +24,9 @@ package app.contigua.server
  *
  * Each row carries `k`, its node's key in the display's [UiTreeKeys] table
  * (MCP-71), `heading` when the node is one (MCP-72), and `covered` when a node
- * drawn after it, or a window above it, holds its tap point (MCP-73). A
+ * that takes a touch for itself, drawn after it, or a window above it, holds
+ * its tap point (MCP-73): a plain label drawn over the point is not clickable,
+ * so the platform lets the press through and it covers nothing. A
  * field showing its hint says so instead of reading as filled (MCP-104), and
  * only the active layer's focused node carries `focus` (MCP-105).
  */
@@ -303,6 +305,12 @@ object UiTree {
         val box: Box?,
         /** Clickable or labelled (MCP-73): what can cover another row. */
         val readable: Boolean,
+        /**
+         * Clickable, editable or checkable (MCP-73): what takes the touch a
+         * sibling draws over. A plain label — a placeholder, a badge — does
+         * not intercept it, so it covers nothing in its own window.
+         */
+        val interactive: Boolean,
     )
 
     /** A scrollable row's left-out descendants, before and after its first on-screen one (MCP-106). */
@@ -376,16 +384,18 @@ object UiTree {
                 })
                 return top?.let { nodes[it]["k"] } ?: "window"
             }
+            // In the row's own window only something that takes a touch covers
+            // it (MCP-73): a plain label sibling — a rotating placeholder, a
+            // badge — is not clickable, so the platform lets the press through.
             val top = topmost(placed.indices.filter { other ->
                 val it = placed[other]
-                other != target && it.layer == row.layer && it.readable && it.box != null &&
+                other != target && it.layer == row.layer && it.interactive && it.box != null &&
                     inside(it.box, x, y) && drawnAfter(it.path, row.path)
             })
             return top?.let { nodes[it]["k"] }
         }
 
-        /** The row that draws last of [rows], all in one window: a later branch, or a descendant. */
-        private fun topmost(rows: List<Int>): Int? = rows.maxWithOrNull { a, b -> paint(placed[a].path, placed[b].path) }
+        /** The row that draws last of [rows], all in one window: a later branch, or a descendant. */        private fun topmost(rows: List<Int>): Int? = rows.maxWithOrNull { a, b -> paint(placed[a].path, placed[b].path) }
 
         private fun paint(a: List<Step>, b: List<Step>): Int {
             for (i in 0 until minOf(a.size, b.size)) {
@@ -459,6 +469,7 @@ object UiTree {
                     identity = node.identity,
                     box = visible,
                     readable = node.clickable || label(node.text) != null || label(node.desc) != null,
+                    interactive = node.clickable || node.editable || node.checkable,
                 ))
                 val inside = if (node.scrollable) open + Hidden(index).also { scrolls.add(it) } else open
                 add(layer, node.children, index, depth + 1, here, active, inside)
