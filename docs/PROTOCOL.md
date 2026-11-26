@@ -761,10 +761,10 @@ Mac → phone (after `welcome`):
 | `fs.digest` | `id`, `paths`: up to 64 folder paths | one reply with each folder's digest; see "Phone files" |
 | `fs.read` | `id`, `path`, `offset`, `length`, `etag`? | stream `length` bytes from `offset` (`FS_DATA`, then `fs.read.end`); an `etag` that no longer matches answers `fs_stale` |
 | `fs.cancel` | `id` | abandon a running `fs.read`; the phone stops streaming and drops what is queued |
-| `ui.tree` | `stream`, `seq`, `offscreen`? (**wire change, #171 B6**) | read that window's display's accessibility tree; see "UI tree" |
-| `ui.settle` | `stream`, `seq`, `quietMs`, `timeoutMs` | **wire change (#171 B1):** answer when the display's content stops changing for `quietMs` with nothing loading, or at `timeoutMs`; see "UI tree" §7 |
-| `ui.press` | `stream`, `seq`, `k`, `holdMs`?, `expect`? | **wire change (#171 B3):** press the node whose key `k` the latest read named, at its bounds now; see "UI tree" §8 |
-| `ui.type` | `stream`, `seq`, `text`, `clear`?, `submit`? | **wire change (#171 B5):** type into the focused field of that display as keys or by setting its text, never through the clipboard; see "UI tree" §10 |
+| `ui.tree` | `stream`, `seq`, `offscreen`? (**wire addition**) | read that window's display's accessibility tree; see "UI tree" |
+| `ui.settle` | `stream`, `seq`, `quietMs`, `timeoutMs` | **wire addition:** answer when the display's content stops changing for `quietMs` with nothing loading, or at `timeoutMs`; see "UI tree" §7 |
+| `ui.press` | `stream`, `seq`, `k`, `holdMs`?, `expect`? | **wire addition:** press the node whose key `k` the latest read named, at its bounds now; see "UI tree" §8 |
+| `ui.type` | `stream`, `seq`, `text`, `clear`?, `submit`? | **wire addition:** type into the focused field of that display as keys or by setting its text, never through the clipboard; see "UI tree" §10 |
 
 Phone → Mac:
 
@@ -787,7 +787,7 @@ Phone → Mac:
 | `window.still` | `stream` — the stream is live but its encoder has produced no output buffer for 1000 ms; sent again once a second while the silence lasts. A heartbeat for the Mac's picture rule (WIN-17), never a first frame; see "Video rules" |
 | `window.title` | `stream`, `label`, `pkg` — the display's task and its app: `pkg` is the task's own app (the root's package from `baseActivity`, then `baseIntent.component`), and only a task that reports no root falls back to its top activity, then `topActivityInfo`; another package's activity on top of the task never becomes the app (WIN-28). Every stream sends it at once when that app changes (`label` is the app's label, `pkg` its package). An app or link stream also carries `title`: the task's own description (`RecentTaskInfo.taskDescription.label`), or the app's label while the phone describes none. A change to `title` alone goes out at most once a second (the newest label always goes out); a message whose `label`/`pkg` changed carries the current `title` and counts as that send. The Mac titles a window with `title` while the app has several windows, and takes a link or handoff window's Dock identity from `pkg` |
 | `task.front` | `seq` (the request echoed), `pkg`: string or null — the app in front on the phone's own screen when the Mac asked (docs/design/handoff.md); `null` when nothing continuable is in front. A read: it opens nothing and changes nothing on the phone, and the phone never sends it unasked |
-| `state` | `locked`: bool, `battery`: int, `charging`: bool, `dnd`: `"off"`/`"priority"`/`"alarms"`/`"none"`, `ringer`: `"normal"`/`"vibrate"`/`"silent"`, `volume`: int, `volumeMax`: int, `screen`: `"on"`/`"off"`, `secure`: bool, `panel`: `"on"`/`"off"`, `maxWindows`: int (the most app windows this phone allows at once; 4 today), `lockSource`: `"keyguard_listener"`/`"broadcast"`/`"app_relay"`/`"initial_read"` (**wire change, #171**: which source gave the current `locked`: the hidden window-manager keyguard listener, the screen broadcasts, the app process's relay, or the read at start that no event has replaced since; a change of source alone is a change) — sent on change; `dnd`/`ringer` are absent on a phone that does not support them (old builds), `volume`/`volumeMax` are both absent on one that cannot read its music stream, `secure` while no phone window is open; see "Phone screen", "Volume" and "Secure screens" |
+| `state` | `locked`: bool, `battery`: int, `charging`: bool, `dnd`: `"off"`/`"priority"`/`"alarms"`/`"none"`, `ringer`: `"normal"`/`"vibrate"`/`"silent"`, `volume`: int, `volumeMax`: int, `screen`: `"on"`/`"off"`, `secure`: bool, `panel`: `"on"`/`"off"`, `maxWindows`: int (the most app windows this phone allows at once; 4 today), `lockSource`: `"keyguard_listener"`/`"broadcast"`/`"app_relay"`/`"initial_read"` (**wire addition**: which source gave the current `locked`: the hidden window-manager keyguard listener, the screen broadcasts, the app process's relay, or the read at start that no event has replaced since; a change of source alone is a change) — sent on change; `dnd`/`ringer` are absent on a phone that does not support them (old builds), `volume`/`volumeMax` are both absent on one that cannot read its music stream, `secure` while no phone window is open; see "Phone screen", "Volume" and "Secure screens" |
 | `audio.state` | `on`: bool, `codec`: int — audio capture on/off (for the UI dot) |
 | `ring.state` | `ringing`: bool — a `phone.ring` started (`true`) or ended (`false`) |
 | `power.locked` | — **no longer sent** (#142): app windows run in a display group of their own, so a power press never stops their picture. A Mac still accepts it and holds each app window's last frame for a short grace; see "Phone screen" |
@@ -805,10 +805,10 @@ Phone → Mac:
 | `fs.items` | `id`, `page` (null = last), `items`: `[{"name","dir","size","mtime","ino","etag"}]` — no path per item; the parent is implicit |
 | `fs.item` | `id`, `item` (same shape) |
 | `fs.read.end` | `id`, `size`, `sha256` — the requested range is complete and correct |
-| `ui.tree` | `stream`, `seq`, `ok`; success: the tree of "UI tree" §2 (as #162 leaves it) plus #171's `loading`, `omitted` and row fields (§9); failure: `code`, `message` — see "UI tree" |
-| `ui.settle` | `stream`, `seq`, `ok`; success: `settled`, `waitedMs`, `events`, `reason`?; failure: `code`, `message` — **wire change (#171 B1)**, see "UI tree" §7 |
-| `ui.press` | `stream`, `seq`, `ok`; success: `box`, `at`, `role`, `text`?, `desc`?; failure: `code`, `message`, `coveredBy`?, `now`? — **wire change (#171 B3)**, see "UI tree" §8 |
-| `ui.type` | `stream`, `seq`, `ok`; success: `entry`, `via`, `characters`; failure: `code`, `message` — **wire change (#171 B5)**, see "UI tree" §10 |
+| `ui.tree` | `stream`, `seq`, `ok`; success: the tree of "UI tree" §2 plus `loading`, `omitted` and the row fields (§9); failure: `code`, `message` — see "UI tree" |
+| `ui.settle` | `stream`, `seq`, `ok`; success: `settled`, `waitedMs`, `events`, `reason`?; failure: `code`, `message` — **wire addition**, see "UI tree" §7 |
+| `ui.press` | `stream`, `seq`, `ok`; success: `box`, `at`, `role`, `text`?, `desc`?; failure: `code`, `message`, `coveredBy`?, `now`? — **wire addition**, see "UI tree" §8 |
+| `ui.type` | `stream`, `seq`, `ok`; success: `entry`, `via`, `characters`; failure: `code`, `message` — **wire addition**, see "UI tree" §10 |
 
 Unknown `t` values and unknown binary frame types are ignored (log once). Unknown
 fields are ignored. `activity` is a component string `pkg/fully.qualified.Class`.
@@ -1511,14 +1511,15 @@ The MCP `ui_tree` tool reads a window's screen as accessibility nodes instead of
 paired session: the Settings › Automation switch is the Mac's own gate on the tool, not
 something the phone checks.
 
-Items 1–5 are the read as #162 shipped it:
-the phone sends no `ref` and the Mac names refs `s<snapshot>e<row>` from its own per-window
-read count (S1); the reply carries `size: [w, h]`, the pixel space of `box`, and `at` is
-TOUCH's 0..1 input space (S2); `windows`/`w` become `layers`/`l` (S3); a node off the display,
-not visible to the user or under 8×8 visible pixels carries `off: true` and no `at`, and `box`
-is clipped to the display (F9). Items 6–10 are epic #171's wire changes on top of that, each
-named with the task that adds it (docs/design/mcp-plan.md). The protocol version stays 4: an
-older phone ignores an unknown `t` or request field, and the Mac's deadline answers for it.
+The phone sends no `ref` and no `snapshot`: the Mac keeps a read counter per
+window and names each row from the phone's key. The reply carries `size: [w, h]`,
+the pixel space of `box`, and `at` in TOUCH's 0..1 input space; `windows`/`w`
+become `layers`/`l`; a node off the display, not visible to the user or under 8×8
+visible pixels is left out and counted, its `box` clipped to the display. The
+items below give the read, the settle, the press and the type exchange, their
+reply fields and their failure codes. The protocol version stays 4: an older
+phone ignores an unknown `t` or request field, and the Mac's deadline answers
+for it.
 
 1. Mac → `{"t":"ui.tree","stream":N,"seq":S}`. The phone finds the display the stream's
    window lives on and reads that display's accessibility tree at shell UID through
@@ -1534,7 +1535,7 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
      stream's video size.
    - `layers`: one row per window on the display — `i`, `title`, `type` (`app`, `ime`,
      `system`, `overlay`, `divider`, `magnifier`, or the platform's number), and `active`
-     on the one layer with input focus (item 9, B6; no `focused`).
+     on the one layer with input focus (item 9; no `focused`).
    - `nodes`: one row per node worth reading, in document order (the reading order):
      `i` the index, `p` the nearest kept ancestor's index (absent at a root), `l` the
      layer's index, `role` the class's last part (`Button`), `text`, `desc` (absent when
@@ -1546,7 +1547,7 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
      (true **or** false, only when the node is checkable), `sel`, `focus` (only in the
      active layer, item 9), `disabled`, `pwd`.
    - A node whose box does not intersect the display, that is not visible to the user, or
-     whose visible part is under 8×8 px is `off`. Since B6 it is left out of the reply and
+     whose visible part is under 8×8 px is `off`. It is left out of the reply and
      counted (item 9); a read that asks `offscreen: true` keeps it with `off: true` and no
      `at`, its text still there so a reader knows to scroll. A tap by its ref is refused
      either way. `box` is the clipped part and `at` the centre of it, never a clamped
@@ -1563,9 +1564,8 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
      of them is no label.
    - The phone sends no `ref` and no `snapshot`. The Mac keeps a read counter per
      window (starting at 1, kept across reconnects), and `snapshot` in the tool result is
-     that counter. S1 named each node `s<snapshot>e<row>` and refused a ref from any reply
-     but the window's latest; since T10 the Mac names a row `e<k>` from its key (item 9), a
-     ref from any earlier read is sent back as `ui.press` with that `k` (item 8), and the
+     that counter. The Mac names a row `e<k>` from its key (item 9); a ref from any
+     earlier read is sent back as `ui.press` with that `k` (item 8), and the
      phone, not the Mac, decides whether the node is still there, visible, uncovered and
      labelled as the asking client last saw it. A row with no `k` has no ref.
    - At most 1200 nodes and 200 characters per label. `truncated` says the cap cut the
@@ -1588,13 +1588,13 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
 5. Text is on-screen content: it travels in this message and into the tool result, never
    into a log line. The phone logs the stream, display, layer and node counts and the
    duration; the Mac logs the tool name, its duration, its outcome code and the window id.
-6. **One `ui.*` request at a time (B1).** `ui.tree`, `ui.settle`, `ui.press` and `ui.type`
+6. **One `ui.*` request at a time.** `ui.tree`, `ui.settle`, `ui.press` and `ui.type`
    share item 4's rule: one per session. The phone answers a second one while the first runs
    with `ok: false`, `busy`; the Mac queues its own requests so it never sends one
    (docs/specs/mcp.md MCP-9). The Mac waits at most its read deadline past the request's own
    time (for `ui.settle`, its `timeoutMs`; for `ui.type`, 10 ms per code point of its text,
    item 10).
-7. **`ui.settle` (B1).** Mac → `{"t":"ui.settle","stream":N,"seq":S,"quietMs":Q,"timeoutMs":T}`,
+7. **`ui.settle`.** Mac → `{"t":"ui.settle","stream":N,"seq":S,"quietMs":Q,"timeoutMs":T}`,
    `Q` 100–2000 and `T` 200–10000 (the MCP tools send 300 and 2000); a value outside its
    range is clamped, and then `Q` is clamped to at most `T`. The phone listens to `UiAutomation`'s accessibility events and counts
    the content changes — `TYPE_WINDOW_CONTENT_CHANGED`, `TYPE_WINDOW_STATE_CHANGED`,
@@ -1624,8 +1624,8 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
    `no_a11y`), `busy` (item 6) or `failed`. The watch is a pure state
    machine (docs/specs/mcp.md "Settling a display"); it reads event types, window ids and the
    loading check's yes or no, and logs the stream, the outcome, `waitedMs` and `events`.
-8. **`ui.press` (B3).** Mac → `{"t":"ui.press","stream":N,"seq":S,"k":K,"holdMs":H,"expect":"…"}`,
-   `k` a row's key (item 9, B2), `holdMs` optional (absent = a tap; 1–3000). `expect` is the
+8. **`ui.press`.** Mac → `{"t":"ui.press","stream":N,"seq":S,"k":K,"holdMs":H,"expect":"…"}`,
+   `k` a row's key (item 9), `holdMs` optional (absent = a tap; 1–3000). `expect` is the
    node's label as the Mac last answered it to the connection that asks: the row's `text`, else
    its `desc`, else the first on-screen row under it with either, in reading order (a row
    marked `off` gives none of its own), where a row with
@@ -1662,12 +1662,12 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
    that order — `gone`, `not_visible`, `off_screen`, `changed`, `covered` — and the first that
    fails answers. A phone that cannot press by element answers `failed`. The phone logs the stream, the outcome,
    whether `expect` came (`expect=yes|no`) and the duration, never the node's text or `expect`.
-9. **Row and reply fields of #171**, added to item 2's reply:
-   - **`loading` (B1).** A row is kept and marked `loading: true` when it is visible to the
+9. **Row and reply fields**, added to item 2's reply:
+   - **`loading`.** A row is kept and marked `loading: true` when it is visible to the
      user and is a `android.widget.ProgressBar` (or a class whose name ends in `ProgressBar`)
      with no `RangeInfo`, or a `android.webkit.WebView` with no child node; the reply carries
      `loading: true` while any row has it.
-   - **`k` (B2).** Each row carries `k`, an integer key. The phone keeps, per display, a table
+   - **`k`.** Each row carries `k`, an integer key. The phone keeps, per display, a table
      from a node's identity — its window id and source node id, the pair
      `AccessibilityNodeInfo.equals` compares — to its key. A node seen again in a later read
      keeps its key; a new node gets the next unused one (1, 2, …); a key is never given to
@@ -1677,10 +1677,10 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
      twice in one read gets a second key. At most
      4096 identities are remembered per display; past it the oldest that are not in the latest
      read are forgotten (a forgotten node that returns gets a new key). `k` is unique within a
-     reply. The Mac names the row's ref `e<k>` (T10); the key crosses back to the phone only in
+     reply. The Mac names the row's ref `e<k>`; the key crosses back to the phone only in
      `ui.press` (item 8).
-   - **`heading` (B2).** `true` when `AccessibilityNodeInfo.isHeading`.
-   - **`covered` (B2).** The `k` of the topmost row whose visible `box` contains this row's
+   - **`heading`.** `true` when `AccessibilityNodeInfo.isHeading`.
+   - **`covered`.** The `k` of the topmost row whose visible `box` contains this row's
      `at` point and that is drawn after it — a later `getDrawingOrder` where their branches
      part (an ancestor or a descendant never covers), or any row of a layer above this row's
      layer on the display (by `AccessibilityWindowInfo.getLayer`) — counting only rows that
@@ -1688,22 +1688,22 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
      its window bounds, or a counted row of it there) wins over the row's own layer: the
      highest such layer names its topmost counted row at the point, or `"window"` when it has
      none there. Absent when nothing covers the point, and on a row with no `at`.
-   - **`hint`, `hintText` (B6).** A row whose node `isShowingHintText` carries `hint: true` and
+   - **`hint`, `hintText`.** A row whose node `isShowingHintText` carries `hint: true` and
      the hint's words as `hintText` (its text when the node reports no hint), and no `text`;
      a field holding content carries `text` and neither hint key.
-   - **`active` on a layer; `focus` (B6).** Exactly the layer with input focus
+   - **`active` on a layer; `focus`.** Exactly the layer with input focus
      (`AccessibilityWindowInfo.isFocused`) carries `active: true`, and none when no layer has
      it; a layer carries no `focused`. `focus` is sent only on the row of the node with input
      focus in that active layer (`findFocus(FOCUS_INPUT)` on its root; when that node is not
      editable and hosts a virtual tree with an editable node that reports focus, as a WebView
      does for its focused `<input>`, that node).
-   - **Off-screen rows left out; `hidden`, `omitted`, `offscreen` (B6).** A row item 2 marks
+   - **Off-screen rows left out; `hidden`, `omitted`, `offscreen`.** A row item 2 marks
      `off` is left out of the reply. A kept row with `scroll` carries `hidden: [before, after]`
      when either is non-zero: its left-out descendants before its first on-screen descendant
      in reading order, and the rest. The reply carries `omitted`, the count of left-out rows.
      A request `{"t":"ui.tree","stream":N,"seq":S,"offscreen":true}` keeps them, marked `off`
      as item 2 sends them; the Mac asks so only for the MCP `find` argument.
-10. **`ui.type` (B5).** Mac → `{"t":"ui.type","stream":N,"seq":S,"text":"…","clear":B,"submit":B}`,
+10. **`ui.type`.** Mac → `{"t":"ui.type","stream":N,"seq":S,"text":"…","clear":B,"submit":B}`,
     `text` 1–2000 characters, `clear` and `submit` optional (false). The phone finds the node
     with input focus in the active layer (item 9) of the stream's display. Text made only of
     characters `KeyCharacterMap.VIRTUAL_KEYBOARD` can produce is injected as KEY events at the
@@ -1806,9 +1806,9 @@ and `fs_busy` (more than 8 reads, or more than 3 thumbnail ids, in flight), `too
 the phone's `maxWindows`; no display is created).
 The `ui.*` exchanges answer in their own reply with `ok: false` and a `code`, never with an
 `error` message: `ui.tree` `no_window`, `not_available`, `busy`, `no_display`, `no_a11y`,
-`failed`; `ui.settle` (**wire change, #171 B1**) `no_window`, `no_display`, `not_available`,
-`busy`, `failed`; `ui.press` (**wire change, #171 B3**) `gone`, `not_visible`, `off_screen`,
-`covered`, `changed`, `no_window`, `busy`, `failed`; `ui.type` (**wire change, #171 B5**) `no_field`,
+`failed`; `ui.settle` (**wire addition**) `no_window`, `no_display`, `not_available`,
+`busy`, `failed`; `ui.press` (**wire addition**) `gone`, `not_visible`, `off_screen`,
+`covered`, `changed`, `no_window`, `busy`, `failed`; `ui.type` (**wire addition**) `no_field`,
 `not_supported`, `no_window`, `busy`, `failed` ("UI tree" §3, §7, §8, §10).
 Oversized frames close the session without a reply. JSON nesting is capped at
 64 arrays/objects; deeper input is rejected like any malformed JSON (before

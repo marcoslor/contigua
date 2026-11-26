@@ -7,14 +7,10 @@ off by default, and is visible while it is in use.
 
 The behaviour is specified in [specs/mcp.md](../specs/mcp.md) (`MCP-n`); this
 page is the contract a client sees: the tools, their arguments, their exact
-descriptions and their answer shapes. The contract below is the target of epic
-#171; `docs/design/mcp-plan.md` is the order it ships in, and a row of the spec
-marked **target** has not shipped yet. Until each task lands, the code answers
-as the previous revision of this page described (see "What breaks"), with PR
-#162's fixes: refs the Mac issues as `s<snapshot>e<row>`, `size: [w, h]` for
-the pixel space of `box`, a display's Android windows as `layers`/`l`, and an
-off-screen node as `off: true` with no `at`. Every task starts from `main`
-after #162 has merged.
+descriptions and their answer shapes. Every row of the spec is shipped
+behaviour: refs are `e<k>`, `size: [w, h]` is the display's pixels, a display's
+Android windows are `layers`/`l`, and an off-screen node is left out of a tree
+and counted.
 
 ## Transport
 
@@ -128,9 +124,9 @@ that names the next step. Extra fields depend on the code:
 | `no_phone` | no phone is paired or in use | No phone is paired with Contigua. Pair one in Contigua's Settings, then try again. — or, with phones paired and none in use: No phone is in use: <n> phones are paired and none is connected. Connect one in Contigua, then call phone_status. | — |
 | `phone_offline` | the phone in use is connecting, reconnecting or offline; nothing was sent or queued | <phone> is not connected. Wait until phone_status says connected, then try again. | — |
 | `no_window` | the window is not open | No window <id>. Call list_windows to see what is open. — or, when it closed recently: Window <id> closed <n> s ago: <reason sentence>. Call list_windows to see what is open. | `window`, `closed` when it closed recently (MCP-53) |
-| `not_ready` | the window is `opening` or `stalled` (also `open_app` with `newWindow` while the app's window is still opening, naming that window), or the app list has not arrived | Window <id> is <opening: still opening \| stalled: not responding>. Call wait on it, then try again. — or: The phone's app list has not arrived yet; try again in a few seconds. — or, for `ui_tree` on a display with nothing to read yet: Window <id> has nothing on screen to read yet: its app may still be opening. Try again in a moment. | `window`, `state` |
+| `not_ready` | the window is `opening` or `stalled` (also `open_app` with `newWindow` while the app's window is still opening, naming that window), or the app list has not arrived | Window <id> is <opening \| stalled>: it takes no input until its picture is live. Call list_windows, or try again in a moment. — or, for `open_app` naming a window that is still opening: Window <id> is still opening. Call wait on it, then try again. — or: The phone's app list has not arrived yet; try again in a few seconds. — or, for `ui_tree` on a display with nothing to read yet: Window <id> has nothing on screen to read yet: its app may still be opening. Try again in a moment. | `window`, `state` |
 | `stale_ref` | `tap`: the ref's element is gone or not visible, or now reads differently from the label this client was given (#188), or the window has had no tree read; `screenshot`: the ref is not in the window's latest tree | gone or not visible: <ref> is no longer on window <id>: the screen changed after its latest tree (snapshot <m>). Call ui_tree and use a ref from it. — relabelled: <ref> now reads "<now>", not "<expect>". Call ui_tree and use the ref it gives. — no read since the window opened or the phone reconnected: <ref> names nothing: this window has had no tree read since it opened or since the phone reconnected. Call ui_tree first. — `screenshot` only: <ref> is not in the window's latest tree (s<m>). Use a ref from that tree, or call ui_tree again. | `window`, `ref`, `snapshot` (the latest) when there is one, `now` when relabelled |
-| `off_screen` | the ref's node is off the display (F9, MCP-106) | <ref> is off screen: scroll it into view and read the tree again. | `window`, `ref`, `in` (its scrollable's ref) when known |
+| `off_screen` | the ref's node is off the display (MCP-106) | <ref> is off screen: scroll it into view and read the tree again. | `window`, `ref`, `snapshot` (the latest) when there is one |
 | `covered` | the ref's element is under another one at the press (MCP-89) | <ref> is covered by <cover ref \| another window>, so nothing was pressed. Close or move what covers it, then call ui_tree. | `window`, `ref`, `snapshot`, `coveredBy` (a ref or `"window"`) |
 | `no_field` | `type_text` needs a focused field and none has input focus (MCP-109) | Window <id> has no focused text field. Tap the field first. | `window` |
 | `not_found` | no app matches | No app on the phone matches "<query>". Call list_apps with a query to find it. | — |
@@ -163,7 +159,7 @@ The contract holds five rules; each tool below follows them.
 3. **Closed codes.** Errors, settle states, window states, openers and close
    reasons are closed sets, listed here and in the spec.
 4. **Nothing to compute.** Tap points are `at` in the space `tap` takes; refs
-   name elements (and, from T10, survive re-reads); `openedBy` is already
+   name elements and survive re-reads; `openedBy` is already
    relative to the caller; every pixel space is one `size: [w, h]`; a
    screenshot crops to a ref; `swipe` takes a direction; an off-screen match
    names the scrollable that holds it. A model never scales, diffs or counts
@@ -174,10 +170,9 @@ The contract holds five rules; each tool below follows them.
 
 ## Tools
 
-The descriptions are the `tools/list` text, word for word (MCP-7), as they
-stand once every task has shipped. Since T10 the `tap` and `ui_tree`
-descriptions carry the cross-read sentence: "A ref names one element for as
-long as it is on screen, across reads; a ref whose element is gone is refused."
+The descriptions are the `tools/list` text, word for word (MCP-7). `tap` and
+`ui_tree` carry the cross-read sentence: "A ref names one element for as long
+as it is on screen, across reads; a ref whose element is gone is refused."
 (MCP-71). Coordinates
 are `0..1` of the window (the same space TOUCH frames carry). `window` is an id
 from `list_windows`, `open_app` or `send_link`.
@@ -235,7 +230,7 @@ closed token is listed in the spec row cited.
 ```
 
 - `did` by action:
-  - `tap` by ref: `{action: "tap", ref, at, box, node: {role, text?, desc?}, holdMs?}` — `at` and `box` are where the phone pressed, now (MCP-86), and `node` is the node as the phone read it at the press, so a button that relabelled itself is named by its new label (MCP-108; with S1's refs, from the tree the ref came from).
+  - `tap` by ref: `{action: "tap", ref, at, box, node: {role, text?, desc?}, holdMs?}` — `at` and `box` are where the phone pressed, now (MCP-86), and `node` is the node as the phone read it at the press, so a button that relabelled itself is named by its new label (MCP-108).
   - `tap` by point: `{action: "tap", at, holdMs?, hit?: {ref, role, text?, desc?}}` — `hit` is the node under the point in the tree `on.snapshot` names (MCP-87).
   - `swipe`: `{action: "swipe", from: [x, y], to: [x, y], ms, direction?, ref?}`.
   - `type_text`: `{action: "type", characters: 2, clear: false, submit: false, entry: "inserted", via: "keys"}` — never the text. `entry`: `inserted` (at the cursor; what was there stays), `replaced` (`clear`), `unknown` (keys sent with no focused field seen); `via`: `keys` or `set_text` (MCP-109).
@@ -282,7 +277,7 @@ open with no first frame at the 10 s bound answers `state: "opening"`,
 ### `ui_tree` (MCP-70…75)
 
 ```json
-{"window": 3, "displayId": 64, "snapshot": 8, "state": "live",
+{"window": 3, "ok": true, "displayId": 64, "snapshot": 8, "state": "live",
  "frame": {"seq": 1340, "ageMs": 35}, "truncated": false, "size": [1080, 2364],
  "omitted": 41,
  "layers": [{"i": 0, "title": "Wikipedia", "type": "app", "active": true}],
@@ -298,7 +293,7 @@ open with no first frame at the 10 s bound answers `state: "opening"`,
  ]}
 ```
 
-Rows are WIN-79's as #162 leaves them (`i`, `ref`, `p`, `l`, `role`, `text`,
+Rows are WIN-79's (`i`, `ref`, `p`, `l`, `role`, `text`,
 `desc`, `id`, `box`, `at`, `off`, `click`, `edit`, `scroll`, `check`, `sel`,
 `focus`, `disabled`, `pwd`), plus `heading` and `covered` (MCP-72, MCP-73),
 `loading` (MCP-103), `hint` and `hintText` (MCP-104) and a scrollable's
@@ -311,15 +306,13 @@ that layer (MCP-105). `omitted` counts the off-screen nodes left out;
 `at` and `in` (the scrollable to swipe), and the answer adds `"matched": 1,
 "total": 87`.
 
-Refs by stage: once #162 has merged a ref is `s<snapshot>e<row>` and works only
-from the window's latest tree; from T10 a ref is `e<k>`, the phone's key for the
-node, and works for as long as the node is on screen (MCP-71). The example shows
-the T10 form.
+A ref is `e<k>`, the phone's key for the node (MCP-71): it works for as long as
+the node is on screen, across reads, and the phone resolves it at the press.
 
 `format: "text"`:
 
 ```json
-{"window": 3, "snapshot": 8, "state": "live", "frame": {"seq": 1340, "ageMs": 35},
+{"window": 3, "ok": true, "snapshot": 8, "state": "live", "frame": {"seq": 1340, "ageMs": 35},
  "format": "text",
  "text": "# Ada Lovelace\nSearch Wikipedia (hint) [e7 EditText edit focus]\n[e20 RecyclerView scroll, 0 before, 41 after]\nRead more [e9 Button]"}
 ```
@@ -425,13 +418,16 @@ before one arrives. `reason`: `closed`, `app_exited`, `moved_to_phone`,
 // close_window (MCP-54)
 {"window": 3, "closed": {"reason": "closed", "closedBy": "you"}}
 
-// input_probe (MCP-99, unchanged; listed only with --mcp-dev-tools)
-{"window": 3, "frames": 4, "sent_ms": 1823344.2, "changed_ms": 48.1}
+// input_probe (MCP-99; listed only with --mcp-dev-tools)
+{"ok": true, "window": 3, "frames": 4, "sent_ms": 1823344.2, "changed_ms": 48.1,
+ "state": "live", "frame": {"seq": 1340, "ageMs": 35}}
 ```
 
 `phone_status` with no phone: `{"connected": false, "name": null, "battery":
 null, "charging": false, "screen": null, "locked": null, "foreground": null,
-"windows": 0}`. `foregroundError` (`not_supported`, `timeout`) appears when
+"windows": 0, "maxWindows": 4, "input": "App windows take input whether or not
+the phone is locked; the Phone Mirror shows the lock screen until the person
+unlocks it."}`. `foregroundError` (`not_supported`, `timeout`) appears when
 `foreground` is null because the phone could not answer.
 
 ## Freshness
@@ -606,15 +602,12 @@ clients learned the hard way:
   pixels and `at`, the centre as 0..1 of the window: exactly the space `tap`
   takes. Models that compute a tap from a scaled screenshot tap the wrong
   quarter of the screen; this leaves nothing to scale.
-- **A ref that names the element (S1), then for as long as it is there
-  (MCP-71).** Once #162 has merged, the Mac issues refs as `s<snapshot>e<row>`
-  from its own per-window read count, and a ref from any read but the window's
-  latest is refused with a sentence naming both snapshots: a ref can never
-  press whatever took its row in a newer tree. From T10 the phone sends each
-  row `k`, a key it keeps for the node's life (the accessibility node's
-  identity: the window id and source node id `AccessibilityNodeInfo.equals`
-  compares) and never gives another node; the Mac names the ref `e<k>`. A
-  `tap` by ref is then resolved **by the phone, at the moment of the press**
+- **A ref that names the element, for as long as it is there (MCP-71).** The
+  phone sends each row `k`, a key it keeps for the node's life (the
+  accessibility node's identity: the window id and source node id
+  `AccessibilityNodeInfo.equals` compares) and never gives another node; the Mac
+  names the ref `e<k>`. A `tap` by ref is resolved **by the phone, at the moment
+  of the press**
   (`ui.press`): it refreshes the node, presses the centre of its bounds as they
   are now, answers the node's role and label as it read them, and refuses with
   `stale_ref` when the node is gone or not visible, `off_screen` when it is
@@ -622,7 +615,7 @@ clients learned the hard way:
   ref from three reads ago still works if the button is still there, never
   presses whatever moved under the point it once had, and a cart's "Add to
   cart" that turned into "Buy now" is named as "Buy now" in the answer
-  (MCP-108). Both refusals keep one sentence shape: the ref, the window, its
+  (MCP-108). The refusals keep one sentence shape: the ref, the window, its
   latest snapshot, the next step.
 - **Headings and covers (MCP-72, MCP-73).** `heading: true` comes from
   `isHeading`, so a section title reads differently from a table-of-contents
@@ -636,8 +629,8 @@ clients learned the hard way:
   `find` keeps only matching nodes: a browser page's ninety rows become the one
   the client was looking for.
 - **Only what is on screen, and how much is not (MCP-106).** A node off the
-  display, not visible to the user or under 8×8 visible pixels is left out
-  (#162's F9 marked it `off: true`; a long WebView list still sent hundreds).
+  display, not visible to the user or under 8×8 visible pixels is left out;
+  a long WebView list sends only its on-screen rows and counts the rest.
   Each scrollable says what it hides as `hidden: [before, after]`, and the
   answer counts every left-out node as `omitted`, so "is there more" is a
   number, not a guess. `find` searches the left-out nodes too: an off-screen
@@ -663,7 +656,7 @@ clients learned the hard way:
 - **Password fields carry no text**, only `pwd: true`.
 - **`displayId` is an id, `snapshot` is the counter.** The display's own number
   (virtual displays are in the sixties on current builds) and the Mac's read
-  count for that window (S1). The tool result leaves `l` out when the display
+  count for that window (MCP-70). The tool result leaves `l` out when the display
   holds one layer, where every row would repeat `0`.
 
 An app's own accessibility text can merge a value with its label
@@ -699,8 +692,8 @@ the window's turn and the phone's read queue meanwhile: text sent as keys can
 take longer than the read deadline, and the next call's input must not land
 inside it (MCP-84).
 
-**Typing without the clipboard (#173).** Before T13 the tool sent the `text`
-message, whose non-ASCII runs go through the phone's clipboard and a paste key:
+**Typing without the clipboard (#173).** A tool that sent the `text` message
+would put its non-ASCII runs through the phone's clipboard and a paste key:
 that overwrites what the person copied (an image is lost outright), tells apps
 a paste happened, and races two writers. A process at shell UID has these
 routes to a focused field:
@@ -711,7 +704,7 @@ routes to a focused field:
 | A multi-character key event (`ACTION_MULTIPLE` with `KEYCODE_UNKNOWN`) | nothing on API 34: input injection takes only down and up key actions, and the native event carries no characters | — |
 | `ACTION_SET_TEXT` on the focused node, through the `UiAutomation` connection `ui_tree` holds | `EditText`, a WebView's editable field, a Compose `TextField`, most cross-platform toolkits | it sets the whole text, so the phone reads the field's text and selection and sets before + typed + after, then moves the cursor with `ACTION_SET_SELECTION`; a password field's text cannot be read, so it can only be replaced; the field's undo history and composing span reset; a view that draws its own text offers no such action |
 | Committing through an input connection | — | only the active input method has one; becoming it changes a phone setting (CONV-AND-04) |
-| The clipboard and a paste key (the person's `text` path until T14) | what pastes | the person's clip, apps notified, writers race (#173) |
+| The clipboard and a paste key (the person's own `text` path) | what pastes | the person's clip, apps notified, writers race (#173) |
 
 The tool takes the first and the third: text the key map can type goes as KEY
 events at the cursor, exactly as a keyboard would (`via: "keys"`); any other
@@ -723,7 +716,7 @@ that already holds text without `clear` — the call fails `not_supported` with 
 sentence naming the way through, and types nothing; with no focused field it
 fails `no_field`. There is no clipboard fallback. `submit` sends ENTER after.
 
-The person's own keyboard uses the `text` message, and since plan T14 its
+The person's own keyboard uses the `text` message, and its
 non-ASCII runs take the same `ACTION_SET_TEXT` route (WIN-80). Only a focused
 field with no set text gets a paste, and then the phone saves the person's whole
 clip, proves it can put it back, pastes one run at a time and puts the clip back
@@ -782,7 +775,6 @@ author can update in one pass.
 | `phone_status` `{connected, name, battery, charging, locked, windows}` | Plus `screen`, `lockSource`, `lockChangedAgoMs`, `input`, `foreground`, `maxWindows`; `locked` is null with no phone. |
 | `list_apps` always every app | Unchanged without `query`; with `query`, matches only and `total`. |
 | The shim exited 0 with no output on stdin EOF | It relays the replies; no reply to a relayed request is exit 1 with a sentence. `--help` exists. |
-| `close_window` closed any window | A window `openedBy: person` needs `force: true`. |
 
 ## Threat model
 

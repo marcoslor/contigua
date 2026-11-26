@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # settle: the phone's `ui.settle` and loading signal on a real shell server
-# (MCP-81, MCP-103, MCP-107; docs/design/mcp-plan.md B1).
+# (MCP-81, MCP-103, MCP-107).
 #
 #   bash tools/emulator/settle.sh --check   # rehearse: no device, no boot
 #   bash tools/emulator/settle.sh           # boot, pair, prove, kill (one boot)

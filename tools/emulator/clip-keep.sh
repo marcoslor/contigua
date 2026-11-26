@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# clip-keep: the person's typing never loses their clip (WIN-80; docs/design/mcp-plan.md T14).
+# clip-keep: the person's typing never loses their clip (WIN-80).
 #
 #   bash tools/emulator/clip-keep.sh --check   # rehearse: no device, no boot
 #   bash tools/emulator/clip-keep.sh           # boot, pair, prove, kill (one boot)

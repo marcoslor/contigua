@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ui-press: `ui.press` on a real shell server (MCP-86/MCP-108; docs/design/mcp-plan.md B3).
+# ui-press: `ui.press` on a real shell server (MCP-86, MCP-108).
 #
 #   bash tools/emulator/ui-press.sh --check   # rehearse: no device, no boot
 #   bash tools/emulator/ui-press.sh           # boot, pair, prove, kill (one boot)
