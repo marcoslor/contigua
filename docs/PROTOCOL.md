@@ -1592,7 +1592,8 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
    share item 4's rule: one per session. The phone answers a second one while the first runs
    with `ok: false`, `busy`; the Mac queues its own requests so it never sends one
    (docs/specs/mcp.md MCP-9). The Mac waits at most its read deadline past the request's own
-   time (for `ui.settle`, its `timeoutMs`).
+   time (for `ui.settle`, its `timeoutMs`; for `ui.type`, 10 ms per code point of its text,
+   item 10).
 7. **`ui.settle` (B1).** Mac → `{"t":"ui.settle","stream":N,"seq":S,"quietMs":Q,"timeoutMs":T}`,
    `Q` 100–2000 and `T` 200–10000 (the MCP tools send 300 and 2000); a value outside its
    range is clamped, and then `Q` is clamped to at most `T`. The phone listens to `UiAutomation`'s accessibility events and counts
@@ -1722,7 +1723,11 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
     `busy` or `failed` (the app refused the action, the phone could not read the focused field,
     or `text` is missing or outside 1–2000 characters). Characters are counted as code points. The
     phone logs the stream, the outcome,
-    `via`, the character count and the duration, never the text.
+    `via`, the character count and the duration, never the text. The Mac waits for the answer
+    its read deadline (5 s) plus 10 ms per code point of `text`, from the send (25 s at 2000
+    code points), because text sent as keys can take longer than the read deadline; the
+    display's window closing or the link dropping ends the wait sooner, and an answer after it
+    is ignored.
 
 ## Secure screens
 

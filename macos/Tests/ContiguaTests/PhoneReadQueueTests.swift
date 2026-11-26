@@ -178,4 +178,63 @@ final class PhoneReadQueueTests: XCTestCase {
     func testTheSettleGraceIsThePhonesPlusThree_MCP9() {
         XCTAssertEqual(UISettleBroker.grace, 5.5)
     }
+
+    // MARK: ui.type's own bound (#262 item 14)
+
+    /// [MCP-109] The Mac waits for `ui.type` the read deadline plus 10 ms per
+    /// code point: 25 s at the 2000 code-point limit.
+    func testATextsBoundGrowsWithItsLength_MCP109() {
+        XCTAssertEqual(UITypeBroker.bound(codePoints: 0), 5, accuracy: 0.0001)
+        XCTAssertEqual(UITypeBroker.bound(codePoints: 300), 8, accuracy: 0.0001)
+        XCTAssertEqual(UITypeBroker.bound(codePoints: 2000), 25, accuracy: 0.0001)
+    }
+
+    /// [MCP-109] The window's close ends a `ui.type` wait at once with
+    /// `no_window`; another window's text keeps waiting.
+    func testAWindowsCloseEndsItsTextsWait_MCP109() async throws {
+        let broker = UITypeBroker()
+        var sent: [Int] = []
+        let closing = Task { try await broker.type(stream: 3, codePoints: 4) { sent.append($0) } }
+        let other = Task { try await broker.type(stream: 4, codePoints: 4) { sent.append($0) } }
+        await yieldALot()
+        XCTAssertEqual(sent, [1, 2])
+        broker.windowClosed(stream: 3)
+        let reply = try await closing.value
+        XCTAssertFalse(reply.ok)
+        XCTAssertEqual(reply.code, "no_window")
+        broker.reply(UITypeReply(seq: 2, stream: 4, ok: true, entry: "inserted", via: "keys", characters: 4))
+        let typed = try await other.value
+        XCTAssertTrue(typed.ok, "another window's text ended with the close")
+    }
+
+    /// [MCP-84] [MCP-109] `run(queuedUntil:)`: once sent, the caller waits for
+    /// the request past that bound; still queued at it, it leaves unsent.
+    func testATextsCallerWaitsForItOnceSent_MCP109() async throws {
+        let queue = PhoneReadQueue()
+        let broker = UITypeBroker()
+        var sent: [Int] = []
+        let first = Task {
+            try await queue.run(queuedUntil: .now + .milliseconds(100)) {
+                try await broker.type(stream: 3, codePoints: 4) { sent.append($0) }
+            }
+        }
+        await yieldALot()
+        let queued = Task {
+            try await queue.run(queuedUntil: .now + .milliseconds(100)) {
+                try await broker.type(stream: 3, codePoints: 4) { sent.append($0) }
+            }
+        }
+        do {
+            _ = try await queued.value
+            XCTFail("a text still queued at its bound is sent")
+        } catch {
+            XCTAssertEqual(error as? UITreeError, .timedOut)
+        }
+        try await Task.sleep(for: .milliseconds(100))  // real-time: past the first's queue bound too
+        XCTAssertEqual(sent, [1], "the queued text went out")
+        broker.reply(UITypeReply(seq: 1, stream: 3, ok: true, entry: "inserted", via: "keys", characters: 4))
+        let reply = try await first.value
+        XCTAssertTrue(reply.ok, "the sent text's caller stopped waiting at its queue bound")
+    }
+
 }

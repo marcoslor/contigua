@@ -99,7 +99,7 @@ class UiPressTest {
     }
 
     @Test
-    fun testAnInvisibleNodeIsNotPressed() {
+    fun testAnInvisibleNodeIsNotPressed() { // [MCP-86]
         val hidden = button("Add to cart", UiTree.Box(0, 500, 100, 600), visible = false)
         assertEquals("not_visible", refused(UiPress.decide(Fake(true, hidden), size, "Add to cart", ::nobody)).code)
     }

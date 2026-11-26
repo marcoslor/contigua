@@ -109,7 +109,7 @@ extension MCPToolHost {
         let ignored = (key == .home || key == .recents)
             && !(controller.windows.controller(for: UInt32(id)) is PhoneWindowController)
         if ignored {
-            return try await act(id, wait: wait, observe: observe, sendsInput: false,
+            return try await act(id, wait: wait, observe: observe,
                                  did: { MCPActDid.key(key.rawValue, ignored: true) },
                                  input: { _ in })
         }
@@ -142,21 +142,15 @@ extension MCPToolHost {
     /// Run one input call through its machine and build the envelope. `did`
     /// is computed when the call's turn comes (from the window's latest tree
     /// then), `input` sends it.
-    /// `sendsInput: false` is a call that reaches nothing on the window (an
-    /// ignored key): no other client is told this one acted (MCP-84).
     private func act(_ id: Int, wait: MCPWait, observe: MCPObserve, ref: String? = nil,
                      path: MCPActMachine.Path = .input, typing: MCPTyping? = nil, holdMs: Int? = nil,
-                     gestureMs: Int = 0, sendsInput: Bool = true,
+                     gestureMs: Int = 0,
                      did: @escaping @MainActor () -> MCPActDid,
                      input: @escaping @MainActor (StreamWindowController) async -> Void) async throws -> [String: Any] {
         let client = self.client
         let acts = controller.windowActs
         let env = MCPHostActEnvironment(host: self, id: id, ref: ref, holdMs: holdMs, typing: typing, client: client,
-                                        did: did, input: { window in
-            // MCP-84: another_agent for any other holder.
-            if sendsInput { acts.agentInput(window: UInt32(id), client: client) }
-            await input(window)
-        })
+                                        did: did, input: input)
         let outcome = await MCPActRunner.run(MCPActMachine(path: path, wait: wait, observe: observe),
                                              window: UInt32(id), queue: acts,
                                              deadline: Self.actDeadline(gestureMs: gestureMs), env: env,
@@ -318,8 +312,6 @@ final class MCPHostActEnvironment: MCPActEnvironment {
         } catch {
             result = .failed("failed")
         }
-        // MCP-84: only a press that happened, or may have, is input on the window.
-        if result.mayHaveActed { host.controller.windowActs.agentInput(window: stream, client: client) }
         switch result {
         case .failed(UIPressResult.cancelled):
             return .pressFailed("failed")  // the machine knows no cancelled code
@@ -351,8 +343,7 @@ final class MCPHostActEnvironment: MCPActEnvironment {
                                                      submit: typing.submit,
                                                      until: .now + MCPToolHost.actDeadline())
         } catch {
-            // MCP-84: no answer, so the text may have gone in.
-            host.controller.windowActs.agentInput(window: stream, client: client)
+            // No answer: the text may have gone in.
             switch error {
             case UITreeError.timedOut: return .typeFailed("timeout")
             case UITreeError.notConnected: return .typeFailed("phone_offline")
@@ -364,7 +355,6 @@ final class MCPHostActEnvironment: MCPActEnvironment {
             refusalError = MCPToolError.typeRefusal(code: code, window: id)
             return .typeFailed(code)
         }
-        host.controller.windowActs.agentInput(window: stream, client: client)
         didNow = MCPActDid.type(characters: reply.characters ?? typing.text.unicodeScalars.count,
                                 clear: typing.clear, submit: typing.submit)
         // A phone always names both; "unknown"/"keys" only stand in for a torn reply.

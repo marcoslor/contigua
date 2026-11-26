@@ -225,9 +225,12 @@ final class FileDropSender {
     }
 
     /// A source that never became files (SHARE-18): the same pill, the same
-    /// five-second hide, and a closed outcome token for the log.
+    /// five-second hide, and a closed outcome token for the log. While a file
+    /// is sending, the refusal is a second gesture's: like `busy()`, it is
+    /// logged and leaves the running transfer, its pill and its end alone, so
+    /// an agent's `send_file` hears only its own drop's end (MCP-44).
     func refuse(_ text: String, outcome: Outcome = .nothing) {
-        finish(text, ok: false, outcome: outcome)
+        finish(text, ok: false, outcome: outcome, keepState: isBusy)
     }
 
     func send(_ urls: [URL], session: any DropChannel, target: String? = nil) {

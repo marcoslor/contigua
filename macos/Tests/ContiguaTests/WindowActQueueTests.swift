@@ -29,12 +29,20 @@ final class FakeActEnvironment: MCPActEnvironment {
     func refusal() -> String? { refusalCode }
     func sendInput() async {
         log.append("\(name).input")
+        shared?.lines.append("\(name).input")
         if inputMs > 0 { try? await Task.sleep(for: .milliseconds(inputMs)) } // real-time: an input that takes a while to send
         inputEnded = .now
     }
     var pressEvent: MCPActMachine.Event = .pressOK
+    /// How long the phone takes to answer a press.
+    var pressMs = 0
+    /// One order across several environments, when a test needs it.
+    var shared: SharedLog?
     func sendPress() async -> MCPActMachine.Event {
         log.append("\(name).press")
+        shared?.lines.append("\(name).press")
+        if pressMs > 0 { try? await Task.sleep(for: .milliseconds(pressMs)) } // real-time: a press the phone answers late
+        shared?.lines.append("\(name).pressed")
         return pressEvent
     }
     func sendType() async -> MCPActMachine.Event { .typeOK(entry: "inserted", via: "keys") }
@@ -263,26 +271,6 @@ final class WindowActQueueTests: XCTestCase {
         a.release()
         _ = await first.value
         XCTAssertEqual(b.log, [])
-    }
-
-    /// MCP-84: another MCP client's input on the window is `another_agent`;
-    /// the holder's own is not reported.
-    func testAnotherAgentsInputIsReported_MCP84() async {
-        let queue = WindowActQueue()
-        let a = FakeActEnvironment(name: "A")
-        a.holdSettle = true
-        let call = Task {
-            await MCPActRunner.run(MCPActMachine(path: .input, wait: .settle, observe: .none),
-                                   window: 3, queue: queue, deadline: .seconds(5), env: a,
-                                   client: MCPClientID(1))
-        }
-        await untilTrue { a.settleGate != nil }
-        queue.agentInput(window: 3, client: MCPClientID(1))
-        queue.agentInput(window: 3, client: MCPClientID(2))
-        a.release()
-        let outcome = await call.value
-        XCTAssertEqual(outcome, .answer(MCPActMachine.Answer(
-            settle: MCPActMachine.Settle(state: "settled", waitedMs: 300), alsoActed: ["another_agent"])))
     }
 
     /// MCP-84: input_probe holds the window's turn like an input call.

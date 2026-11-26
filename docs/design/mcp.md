@@ -121,17 +121,17 @@ that names the next step. Extra fields depend on the code:
 | `no_phone` | no phone is paired or in use | No phone is paired with Contigua. Pair one in Contigua's Settings, then try again. — or, with phones paired and none in use: No phone is in use: <n> phones are paired and none is connected. Connect one in Contigua, then call phone_status. | — |
 | `phone_offline` | the phone in use is connecting, reconnecting or offline; nothing was sent or queued | <phone> is not connected. Wait until phone_status says connected, then try again. | — |
 | `no_window` | the window is not open | No window <id>. Call list_windows to see what is open. — or, when it closed recently: Window <id> closed <n> s ago: <reason sentence>. Call list_windows to see what is open. | `window`, `closed` when it closed recently (MCP-53) |
-| `not_ready` | the window is `opening` or `stalled`, or the app list has not arrived | Window <id> is <opening: still opening \| stalled: not responding>. Call wait on it, then try again. — or: The phone's app list has not arrived yet; try again in a few seconds. — or, for `ui_tree` on a display with nothing to read yet: Window <id> has nothing on screen to read yet: its app may still be opening. Try again in a moment. | `window`, `state` |
+| `not_ready` | the window is `opening` or `stalled` (also `open_app` with `newWindow` while the app's window is still opening, naming that window), or the app list has not arrived | Window <id> is <opening: still opening \| stalled: not responding>. Call wait on it, then try again. — or: The phone's app list has not arrived yet; try again in a few seconds. — or, for `ui_tree` on a display with nothing to read yet: Window <id> has nothing on screen to read yet: its app may still be opening. Try again in a moment. | `window`, `state` |
 | `stale_ref` | `tap`: the ref's element is gone or not visible, or now reads differently from the label this client was given (#188), or the window has had no tree read; `screenshot`: the ref is not in the window's latest tree | gone or not visible: <ref> is no longer on window <id>: the screen changed after its latest tree (snapshot <m>). Call ui_tree and use a ref from it. — relabelled: <ref> now reads "<now>", not "<expect>". Call ui_tree and use the ref it gives. — no read since the window opened or the phone reconnected: <ref> names nothing: this window has had no tree read since it opened or since the phone reconnected. Call ui_tree first. — `screenshot` only: <ref> is not in the window's latest tree (s<m>). Use a ref from that tree, or call ui_tree again. | `window`, `ref`, `snapshot` (the latest) when there is one, `now` when relabelled |
 | `off_screen` | the ref's node is off the display (F9, MCP-106) | <ref> is off screen: scroll it into view and read the tree again. | `window`, `ref`, `in` (its scrollable's ref) when known |
 | `covered` | the ref's element is under another one at the press (MCP-89) | <ref> is covered by <cover ref \| another window>, so nothing was pressed. Close or move what covers it, then call ui_tree. | `window`, `ref`, `snapshot`, `coveredBy` (a ref or `"window"`) |
 | `no_field` | `type_text` needs a focused field and none has input focus (MCP-109) | Window <id> has no focused text field. Tap the field first. | `window` |
 | `not_found` | no app matches | No app on the phone matches "<query>". Call list_apps with a query to find it. | — |
 | `ambiguous` | several apps match | Several apps match "<query>". Pass one of these packages as app. — or, where no list is at hand: Several apps match "<query>". Call list_apps with a query to see them. | `matches: [{label, package}]` (empty in the second form) |
-| `too_many_windows` | the phone's window cap is reached | The phone allows <n> app windows at once. Close one with close_window, then try again. | `maxWindows` |
+| `too_many_windows` | the phone's window cap is reached (`open_app` with `newWindow`: whether the Mac or the phone finds it) | The phone allows <n> app windows at once. Close one with close_window, then try again. | `maxWindows` |
 | `bad_url` | LinkPolicy refused the URL | That link can't be opened: only http, https, geo, tel and mailto links up to 8 KiB are allowed. | — |
 | `bad_file` | the path is missing, unreadable, not a regular file or over the cap | That file can't be sent: it must be an absolute path to a readable regular file of at most <cap>. | — |
-| `no_frame` | no keyframe arrived within 2 s | Window <id> is <state word>: no new picture arrived in 2 s. Use ui_tree, or try again. | `window`, `state` |
+| `no_frame` | no keyframe arrived within 2 s | Window <id> is <state word>: no new picture arrived in 2 s. Use ui_tree, or try again. — or, for an `opening` window: Window <id> is opening: no picture yet. Try again in a few seconds. | `window`, `state` |
 | `not_supported` | this phone, or the focused field, cannot do it (no tree, no foreground read, a field that takes no set text) | <phone> can't <read this window's accessibility tree \| …>. — or, for `type_text`: The focused field on window <id> can't take this text: type only letters, digits and symbols a keyboard has, or pass clear: true to replace what is there. | `window` for a field |
 | `timeout` | the phone did not answer within the call's bound | <phone> did not answer in time. Try again; if it keeps failing, check phone_status. | — |
 | `failed` | anything else, and `close_window` on the person's window without `force` | The phone's or the app's own sentence. — or: Window <id> was opened by the person. Pass force: true to close it anyway. | `window` when one is named |
@@ -236,7 +236,7 @@ closed token is listed in the spec row cited.
 - `on.snapshot` is the tree the ref (or `hit`) came from, null when none was read; `on.frame` the frame `seq` when the input was sent.
 - `settle.state`: `settled`, `still_changing`, `not_waited`, `not_ready`, `unavailable`, `window_closed`, `interrupted` (MCP-81). `waitedMs` is absent for `not_waited`. A `still_changing` carries `reason`: `changes` (the screen kept changing) or `loading` (it went quiet but still showed a spinner or an empty web page, MCP-107). A call its deadline ended (MCP-8) says `reason: "deadline"`: `not_waited` when no settle was sent yet, else `still_changing` with `waitedMs` counted from the settle's send. A settle that finds the display gone answers `window_closed`, holding the answer up to 500 ms for the phone's close reason; a window the Mac closed itself answers `closed: {reason: "closed", closedBy: "person" | "you" | "another_agent"}`, the closer relative to the asking connection (MCP-52).
 - `state`: `opening`, `live`, `paused`, `stalled`, `offline`, `closed` (MCP-21).
-- `alsoActed?`: `person`, `another_agent` — other input that reached the window during this call (MCP-84).
+- `alsoActed?`: `["person"]` — the person's input reached the window during this call (MCP-84). Another agent's input cannot: calls on one window take turns, and each sends its input inside its own turn.
 - `closed?`: when the window closed during the call, `{reason, closedBy}` (MCP-83); then `state: "closed"`, `settle.state: "window_closed"`, and no `tree`.
 - `tree?` (observe `tree`), `text?` (observe `text`: the text view of that read, a string), `treeError?` (a code, when that read failed after the action: MCP-82).
 
@@ -336,6 +336,11 @@ Content: the PNG block, then the text block of
 display pixels, the ref's `box` plus 8 on each side, clamped to `size`; the
 Mac scales it by frame/`size` to cut the decoded frame. `crop` only with `ref`, `blank` only when true, `settle` only with
 `wait: "settle"`.
+
+A screenshot on a phone that is not online fails `phone_offline` at once,
+before its `ref` is judged, asking for no keyframe (MCP-61). No keyframe
+within 2 s fails `no_frame` with the window's `state`; a window closed at
+that bound fails `no_window`.
 
 ### `wait` (MCP-96, MCP-97, MCP-111)
 
@@ -490,8 +495,10 @@ Close reasons map from the wire as follows: `window.closed` `app_exited` →
 `app_exited`, `moved_to_phone` → `moved_to_phone`, `requested`/`error` →
 `phone_closed` (closedBy `phone`); the Mac's own `window.close` → `closed` with
 the closer that asked (an MCP connection, or `person` for ⌘W, the close light,
-Close All); an open the phone refused → `open_failed`; Use This Phone →
-`phone_switched`.
+Close All); an open the phone refused (`too_many_windows`, `cannot_adopt`, a
+handoff with `nothing_to_continue`) → `open_failed` (closedBy `phone`); a live
+window whose stream the phone forgot (`error no_stream`) → `phone_closed`
+(closedBy `phone`); Use This Phone → `phone_switched`.
 
 ## A window an agent opens (MCP-100, MCP-101)
 
@@ -632,6 +639,11 @@ are the session `nav` action (home and recents act only in a phone-mode
 window, WIN-47); the other keys are KEY down/up frames with Android keycodes
 (enter 66, delete 67, tab 61, escape 111, arrows 19–22). `type_text` is the
 `ui.type` exchange (MCP-109), and never touches the clipboard (MCP-110).
+The call answers by its 5 s bound (MCP-8), but the Mac waits for the phone's
+answer 5 s plus 10 ms per code point from the send (25 s for 2000), holding
+the window's turn and the phone's read queue meanwhile: text sent as keys can
+take longer than the read deadline, and the next call's input must not land
+inside it (MCP-84).
 
 **Typing without the clipboard (#173).** Before T13 the tool sent the `text`
 message, whose non-ASCII runs go through the phone's clipboard and a paste key:

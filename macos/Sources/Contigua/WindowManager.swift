@@ -522,15 +522,18 @@ final class WindowManager {
     /// The explicit "New <App> Window" (WIN-25): one more window of `pkg` on
     /// the phone in use, one `window.open` carrying `newInstance`, cascaded
     /// 28 pt from the app's front window and never remembered as the app's
-    /// frame (WIN-13, WIN-36). Nothing is sent when the item is disabled —
-    /// the cap, a single-window app, an opening window or a link that is down
-    /// (WIN-27, WIN-32, WIN-34).
+    /// frame (WIN-13, WIN-36). With no window of `pkg` open it opens the first
+    /// one, as `openOrRaise` does. Otherwise nothing is sent when the item is
+    /// disabled — the cap, a single-window app, an opening window or a link
+    /// that is down (WIN-27, WIN-32, WIN-34).
     @discardableResult
     func openAdditional(pkg: String, activity: String? = nil, deviceId: String? = nil) -> AppWindowController? {
         let phone = deviceId ?? activeDeviceId
         let existing = appWindows(pkg: pkg, deviceId: phone)
-        guard newWindowItem(for: pkg, deviceId: phone).enabled else { return nil }
+        // No window yet: the explicit ask opens the first one, as if it were
+        // absent, even for an app that opens one window at a time (MCP-40, WIN-36, #183).
         if existing.isEmpty { return openOrRaise(pkg: pkg, activity: activity, deviceId: phone) }
+        guard newWindowItem(for: pkg, deviceId: phone).enabled else { return nil }
         let label = appsByPkg[pkg]?.label ?? pkg.split(separator: ".").last.map(String.init) ?? pkg
         let stream = allocateStream()
         let controller = AppWindowController(stream: stream, pkg: pkg, activity: activity,
@@ -918,6 +921,7 @@ final class WindowManager {
     /// connection's session already answered with a phone error.
     func closeFailedHandoff(stream: UInt32) {
         guard let controller = controller(for: stream), controller is HandoffWindowController else { return }
+        recordClose(stream, cause: .openFailed)  // MCP-52: the phone refused the handoff
         controller.closeFromRemote()
     }
 
@@ -1301,6 +1305,7 @@ final class WindowManager {
             controller.refuseOpening("no_stream")
             return .refusedOpening
         }
+        recordClose(stream, cause: .phone("phone_closed"))  // MCP-52: as the phone's own close
         controller.closeFromRemote()
         return .closedWindow
     }

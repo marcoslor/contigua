@@ -285,7 +285,8 @@ final class MCPActMachineTests: XCTestCase {
     func testTheDeadlineAnswersTimeout_MCP8() {
         for start in [M.State.queued, .pressing, .typing] {
             let (state, actions, _) = step(machine(start), .deadline(waitedMs: 5000))
-            XCTAssertEqual(state, .done)
+            // MCP-84: a press or a text still out drains until the phone answers it.
+            XCTAssertEqual(state, start == .queued ? .done : .draining, "\(start)")
             XCTAssertEqual(actions, [.fail("timeout")], "\(start)")
         }
         let (state, actions, _) = step(machine(.settling(1), nextReq: 2), .deadline(waitedMs: 4990))
@@ -301,7 +302,8 @@ final class MCPActMachineTests: XCTestCase {
     func testAClientThatLeftGetsNoAnswer() {
         for start in [M.State.queued, .opening, .pressing, .typing, .sent, .settling(1), .observing(2)] {
             let (state, actions, _) = step(machine(start, nextReq: 3), .clientGone)
-            XCTAssertEqual(state, .done)
+            // MCP-84: a press or a text still out drains until the phone answers it.
+            XCTAssertEqual(state, start == .pressing || start == .typing ? .draining : .done, "\(start)")
             XCTAssertEqual(actions, [], "\(start)")
         }
     }
@@ -311,10 +313,9 @@ final class MCPActMachineTests: XCTestCase {
         XCTAssertEqual(state, .settling(1))
         XCTAssertEqual(actions, [])
         (_, _, m) = step(m, .otherInput("person"))
-        (_, _, m) = step(m, .otherInput("another_agent"))
         (state, actions, m) = step(m, .settleReply(req: 1, settled: true, waitedMs: 412, reason: nil))
-        XCTAssertEqual(actions, [.answer(M.Answer(settle: settled412,
-                                                  alsoActed: ["person", "another_agent"]))])
+        XCTAssertEqual(actions, [.answer(M.Answer(settle: settled412, alsoActed: ["person"]))],
+                       "a source is listed once")
     }
 
     func testLateRepliesAreIgnoredBySeq() {
@@ -637,6 +638,151 @@ final class MCPActMachineTests: XCTestCase {
         XCTAssertEqual(actions2, [.fail("phone_offline")])
     }
 
+    // MARK: Review follow-ups (#262): the turn drains while the phone acts
+
+    /// MCP-84: a deadline while the phone's `ui.press` is out fails the call at
+    /// once, but the window's turn is held until the phone answers (or the
+    /// request's own bound): the next call's input cannot land during the press.
+    func testADeadlineWhilePressingDrainsBeforeTheTurnIsFree_MCP84() {
+        for answer in [M.Event.pressOK, .pressFailed("timeout"), .pressFailed("gone")] {
+            var (state, actions, m) = step(machine(.pressing, path: .press), .deadline(waitedMs: nil))
+            XCTAssertEqual(state, .draining)
+            XCTAssertEqual(actions, [.fail("timeout")])
+            (state, actions, m) = step(m, .otherInput("person"))
+            XCTAssertEqual(state, .draining)
+            XCTAssertEqual(actions, [])
+            (state, actions, m) = step(m, answer)
+            XCTAssertEqual(state, .done, "\(answer)")
+            XCTAssertEqual(actions, [], "\(answer)")
+        }
+    }
+
+    /// MCP-84: the same for `ui.type`.
+    func testADeadlineWhileTypingDrainsBeforeTheTurnIsFree_MCP84() {
+        for answer in [M.Event.typeOK(entry: "inserted", via: "keys"), .typeFailed("timeout"),
+                       .typeFailed("no_field")] {
+            var (state, actions, m) = step(machine(.typing, path: .type), .deadline(waitedMs: nil))
+            XCTAssertEqual(state, .draining)
+            XCTAssertEqual(actions, [.fail("timeout")])
+            (state, actions, m) = step(m, answer)
+            XCTAssertEqual(state, .done, "\(answer)")
+            XCTAssertEqual(actions, [], "\(answer)")
+        }
+    }
+
+    /// MCP-84: a client that leaves while its press is out gets no answer, and
+    /// its turn is held until the phone answers the press.
+    func testAClientGoneWhilePressingDrainsBeforeTheTurnIsFree_MCP84() {
+        var (state, actions, m) = step(machine(.pressing, path: .press), .clientGone)
+        XCTAssertEqual(state, .draining)
+        XCTAssertEqual(actions, [])
+        (state, actions, m) = step(m, .deadline(waitedMs: nil))
+        XCTAssertEqual(state, .draining)
+        XCTAssertEqual(actions, [])
+        (state, actions, m) = step(m, .pressOK)
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [])
+    }
+
+    /// MCP-84: the same for `ui.type`.
+    func testAClientGoneWhileTypingDrainsBeforeTheTurnIsFree_MCP84() {
+        var (state, actions, m) = step(machine(.typing, path: .type), .clientGone)
+        XCTAssertEqual(state, .draining)
+        XCTAssertEqual(actions, [])
+        (state, actions, m) = step(m, .typeFailed("phone_offline"))
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [])
+    }
+
+    /// MCP-84 through the runner: A's deadline ends its call while its
+    /// `ui.press` is still out; B's input waits until the phone has answered A.
+    @MainActor
+    func testTheNextCallWaitsForAPressInFlight_MCP84() async {
+        let queue = WindowActQueue()
+        let shared = SharedLog()
+        let a = FakeActEnvironment(name: "A")
+        a.pressMs = 300
+        a.shared = shared
+        let b = FakeActEnvironment(name: "B")
+        b.shared = shared
+        let first = Task {
+            await MCPActRunner.run(MCPActMachine(path: .press, wait: .settle, observe: .none),
+                                   window: 3, queue: queue, deadline: .milliseconds(100), env: a, ref: true)
+        }
+        for _ in 0..<500 where a.log.isEmpty {
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(2)) // real-time: let A's press go out
+        }
+        let second = Task {
+            await MCPActRunner.run(MCPActMachine(path: .input, wait: .none, observe: .none),
+                                   window: 3, queue: queue, deadline: .seconds(5), env: b)
+        }
+        let outcome = await first.value
+        XCTAssertEqual(outcome, .fail("timeout"))
+        _ = await second.value
+        XCTAssertEqual(shared.lines, ["A.press", "A.pressed", "B.input"],
+                       "B's input went out while A's press was on the phone")
+    }
+
+    // MARK: Review follow-ups (#262): one test per untested row
+
+    /// Row "Queued · Opening · Pressing · Typing | `windowClosed`": a call still
+    /// queued when its window closes fails `no_window` and sends nothing.
+    func testQueuedWindowClosedFailsNoWindow_MCP85() {
+        let (state, actions, _) = step(machine(.queued), .windowClosed(reason: "app_exited", by: "phone"))
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [.fail("no_window")])
+    }
+
+    /// Row "any but Done, Sending, Draining, Pressing, Typing | `clientGone`" in Closing.
+    func testClosingClientGoneEndsWithNoAnswer_MCP83() {
+        let (state, actions, _) = step(machine(.closing, nextReq: 2), .clientGone)
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [])
+    }
+
+    /// Row "any but Draining, Done | `otherInput`" in Closing: the source is
+    /// kept and the close's answer carries it.
+    func testClosingOtherInputIsAlsoActed_MCP84() {
+        var (state, actions, m) = step(machine(.closing, nextReq: 2), .otherInput("person"))
+        XCTAssertEqual(state, .closing)
+        XCTAssertEqual(actions, [])
+        (state, actions, m) = step(m, .closeWaitOver)
+        XCTAssertEqual(state, .done)
+        XCTAssertEqual(actions, [.answer(M.Answer(settle: M.Settle(state: "window_closed"), state: "closed",
+                                                  alsoActed: ["person"]))])
+    }
+
+    /// Row "Draining | anything else": a window closing while the call drains
+    /// is ignored; the turn is still held.
+    func testDrainingIgnoresWindowClosed_MCP84() {
+        let (state, actions, _) = step(machine(.draining), .windowClosed(reason: "app_exited", by: "phone"))
+        XCTAssertEqual(state, .draining)
+        XCTAssertEqual(actions, [])
+    }
+
+    /// Row "Draining | anything else": the link's loss is ignored.
+    func testDrainingIgnoresLinkLost_MCP84() {
+        let (state, actions, _) = step(machine(.draining), .linkLost)
+        XCTAssertEqual(state, .draining)
+        XCTAssertEqual(actions, [])
+    }
+
+    /// Row "Draining | anything else": a second deadline is ignored.
+    func testDrainingIgnoresTheDeadline_MCP84() {
+        let (state, actions, _) = step(machine(.draining), .deadline(waitedMs: 100))
+        XCTAssertEqual(state, .draining)
+        XCTAssertEqual(actions, [])
+    }
+
+    /// Row "Draining | anything else": a client that leaves while its call
+    /// drains changes nothing.
+    func testDrainingIgnoresClientGone_MCP84() {
+        let (state, actions, _) = step(machine(.draining), .clientGone)
+        XCTAssertEqual(state, .draining)
+        XCTAssertEqual(actions, [])
+    }
+
     // [MCP-86] T10: the phone answers `ui.press` gone → stale_ref, and no
     // input frame went out.
     @MainActor
@@ -648,21 +794,5 @@ final class MCPActMachineTests: XCTestCase {
                                              deadline: .seconds(5), env: env, ref: true)
         XCTAssertEqual(outcome, .fail("stale_ref"))
         XCTAssertEqual(env.log, ["a.press"], "a gone ref sends no TOUCH and no settle")
-    }
-
-    // [MCP-84] Review: only a press the phone made, or may have made, is an
-    // agent's input on the window.
-    func testARefusedPressIsNotAnotherAgentsInput_MCP84() {
-        let pressed = UIPressReply(seq: 1, stream: 3, ok: true, box: [0, 0, 1, 1], at: [0.5, 0.5], role: "Button")
-        XCTAssertTrue(UIPressResult.reply(pressed).mayHaveActed)
-        for code in ["gone", "not_visible", "off_screen", "changed", "covered", "no_window", "busy", "failed"] {
-            let refused = UIPressReply(seq: 1, stream: 3, ok: false, code: code)
-            XCTAssertFalse(UIPressResult.reply(refused).mayHaveActed, code)
-        }
-        XCTAssertTrue(UIPressResult.failed("timeout").mayHaveActed)
-        XCTAssertTrue(UIPressResult.failed("phone_offline").mayHaveActed)
-        XCTAssertFalse(UIPressResult.failed("failed").mayHaveActed)
-        // Review C: a client that left while its press was out may have pressed.
-        XCTAssertTrue(UIPressResult.failed("cancelled").mayHaveActed)
     }
 }

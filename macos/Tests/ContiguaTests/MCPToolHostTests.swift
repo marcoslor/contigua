@@ -276,7 +276,7 @@ final class MCPToolHostTests: XCTestCase {
         }
         XCTAssertEqual(controller.windows.openStreams, [stream], "a refused URL opens nothing")
 
-        let failed = MCPOpenAnswer.failure(code: "launch_failed", window: Int(stream))
+        let failed = MCPOpenAnswer.failure(code: "launch_failed", window: Int(stream), maxWindows: 4)
         XCTAssertEqual(failed.code, .failed)
         XCTAssertEqual(failed.extra["window"] as? Int, Int(stream))
         XCTAssertTrue(failed.message.contains("window \(stream)"), failed.message)
@@ -459,6 +459,417 @@ final class MCPToolHostTests: XCTestCase {
             XCTAssertNil(windows.controller(for: window.stream), "an agent's window stayed open")
         }
     }
+    // MARK: Review follow-ups (#262)
+
+    /// The `{"error": {...}}` object of a failed tool call.
+    private func error(_ result: [String: Any]) -> [String: Any]? {
+        guard result["isError"] as? Bool == true,
+              let text = (result["content"] as? [[String: Any]])?.first?["text"] as? String,
+              let object = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any]
+        else { return nil }
+        return object["error"] as? [String: Any]
+    }
+
+    /// [MCP-20] [MCP-21] A `ui_tree` whose window closes while the phone reads
+    /// it answers `state: "closed"` and the frame the window last had; the
+    /// window is the one the call named, looked up before the read.
+    @MainActor
+    func testATreeWhoseWindowClosedDuringTheCallSaysClosed_MCP20() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        let window = try await fixture.liveWindow()
+        let stream = window.stream
+        fixture.hold("ui.tree")
+        let call = Task { await fixture.call("ui_tree", ["window": Int(stream)]) }
+        let asked = await fixture.wait { !fixture.sent("ui.tree").isEmpty }
+        XCTAssertTrue(asked, "no ui.tree went out: \(fixture.sentTypes())")
+        fixture.phoneSends(["t": "window.closed", "stream": Int(stream), "reason": "app_exited"])
+        let gone = await fixture.wait { fixture.controller.windows.controller(for: stream) == nil }
+        XCTAssertTrue(gone, "the window never closed")
+        fixture.release("ui.tree")
+        let (answer, _) = await call.value
+
+        XCTAssertEqual(answer["isError"] as? Bool, false, "ui_tree failed: \(answer)")
+        let structured = try XCTUnwrap(answer["structuredContent"] as? [String: Any])
+        XCTAssertEqual(structured["state"] as? String, "closed")
+        let frame = try XCTUnwrap(structured["frame"] as? [String: Any], "no frame: \(structured)")
+        XCTAssertNotNil(frame["seq"] as? Int)
+    }
+
+    /// [MCP-61] An offline phone fails `screenshot` with `phone_offline` before
+    /// its ref is judged: a ref the window's tree never named is not `stale_ref`.
+    @MainActor
+    func testAnOfflinePhoneWinsOverAStaleRef_MCP61() async throws {
+        let (controller, profile) = offlineController()
+        defer { dispose(controller, profile) }
+        controller.remembered.remember(PhoneRef(id: "mcp-shot-1", name: "Pixel 9", model: "Pixel 9"))
+        let window = controller.windows.openOrRaise(pkg: "com.android.settings")
+        window.noteFirstFrame()
+        XCTAssertFalse(controller.link.isOnline)
+        let host = MCPToolHost(controller: controller)
+        let shot = await host.perform(.screenshot(window: Int(window.stream), ref: "e5"), client: MCPClientID(1))
+        XCTAssertEqual(code(shot), .phoneOffline)
+    }
+
+    /// [MCP-84] Two agents on one window: the second call waits for the
+    /// first's turn, and neither answer names the other in `alsoActed`, since
+    /// every agent input is sent by the call that holds the window's turn.
+    @MainActor
+    func testTwoAgentsOnOneWindowNeverReportEachOther_MCP84() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        let window = try await fixture.liveWindow()
+        let id = Int(window.stream)
+        fixture.hold("ui.type")
+        let first = Task {
+            await fixture.call("type_text", ["window": id, "text": "one", "observe": "none"],
+                               client: MCPClientID(1))
+        }
+        let typed = await fixture.wait { fixture.sent("ui.type").count == 1 }
+        XCTAssertTrue(typed, "the first call sent no ui.type: \(fixture.sentTypes())")
+        let second = Task {
+            await fixture.call("type_text", ["window": id, "text": "two", "observe": "none"],
+                               client: MCPClientID(2), clearSent: false)
+        }
+        let tapped = Task {
+            await fixture.call("tap", ["window": id, "x": 0.5, "y": 0.5, "observe": "none"],
+                               client: MCPClientID(3), clearSent: false)
+        }
+        try await Task.sleep(for: .milliseconds(200))  // real-time: give the queued calls time to (wrongly) go out
+        XCTAssertEqual(fixture.sent("ui.type").count, 1, "a second call typed during the first's turn")
+        fixture.release("ui.type")
+        let answers = [await first.value.0, await second.value.0, await tapped.value.0]
+        XCTAssertEqual(fixture.sent("ui.type").count, 2)
+        for answer in answers {
+            XCTAssertEqual(answer["isError"] as? Bool, false, "\(answer)")
+            let structured = answer["structuredContent"] as? [String: Any] ?? [:]
+            XCTAssertNil(structured["alsoActed"], "an agent was reported: \(structured)")
+        }
+    }
+
+    /// [MCP-52] [MCP-53] A live window the phone forgot (`no_stream`) closes
+    /// with a close record, `phone_closed` by `phone`, and leaves the ledger's
+    /// open windows.
+    @MainActor
+    func testAWindowThePhoneForgotKeepsItsClose_MCP52() throws {
+        let (controller, profile) = offlineController()
+        defer { dispose(controller, profile) }
+        let window = controller.windows.openOrRaise(pkg: "com.android.settings")
+        window.noteFirstFrame()
+        let stream = window.stream
+        controller.windows.handle(.phoneError(code: "no_stream", message: nil, stream: stream))
+        XCTAssertNil(controller.windows.controller(for: stream), "the forgotten window stayed open")
+
+        let now = ProcessInfo.processInfo.systemUptime
+        let ledger = controller.windows.ledger
+        XCTAssertNil(ledger.row(stream, asker: MCPClientID(1), now: now), "its open entry stayed")
+        let record = try XCTUnwrap(ledger.closeRecord(stream, asker: MCPClientID(1), now: now), "no close record")
+        XCTAssertEqual(record.reason, "phone_closed")
+        XCTAssertEqual(record.closedBy, "phone")
+        let closed = MCPToolHost(controller: controller, client: MCPClientID(1)).noWindow(Int(stream))
+        XCTAssertEqual((closed.extra["closed"] as? [String: Any])?["reason"] as? String, "phone_closed")
+    }
+
+    /// [MCP-52] [MCP-53] A handoff the phone refused (`nothing_to_continue`)
+    /// closes with a close record, `open_failed` by `phone`, and leaves the
+    /// ledger's open windows.
+    @MainActor
+    func testARefusedHandoffKeepsItsClose_MCP52() throws {
+        let (controller, profile) = offlineController()
+        defer { dispose(controller, profile) }
+        let stream = controller.windows.openHandoffWindow().stream
+        controller.windows.closeFailedHandoff(stream: stream)
+        XCTAssertNil(controller.windows.controller(for: stream), "the refused handoff stayed open")
+
+        let now = ProcessInfo.processInfo.systemUptime
+        let ledger = controller.windows.ledger
+        XCTAssertNil(ledger.row(stream, asker: MCPClientID(1), now: now), "its open entry stayed")
+        let record = try XCTUnwrap(ledger.closeRecord(stream, asker: MCPClientID(1), now: now), "no close record")
+        XCTAssertEqual(record.reason, "open_failed")
+        XCTAssertEqual(record.closedBy, "phone")
+        let rows = MCPToolHost(controller: controller, client: MCPClientID(1)).listWindows()["recentlyClosed"]
+            as? [[String: Any]] ?? []
+        XCTAssertEqual(rows.first?["id"] as? Int, Int(stream))
+    }
+
+    private static let settingsMulti: [String: Any] = ["pkg": "com.android.settings", "label": "Settings",
+                                                       "multi": true]
+    private static let clockOne: [String: Any] = ["pkg": "com.android.deskclock", "label": "Clock",
+                                                  "multi": false]
+
+    /// [MCP-41] With two windows of one app, `open_app` raises the front one
+    /// and answers that window, not the newest.
+    @MainActor
+    func testOpenAppAnswersTheWindowItRaised_MCP41() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        let front = try await fixture.liveWindow()
+        await fixture.sendApps([Self.settingsMulti])
+        let windows = fixture.controller.windows
+        let newer = try XCTUnwrap(windows.openAdditional(pkg: "com.android.settings"), "no second window")
+        newer.noteFirstFrame()
+        XCTAssertGreaterThan(newer.stream, front.stream)
+        windows.noteFront(front.stream)
+        XCTAssertEqual(windows.appWindows(pkg: "com.android.settings").first?.stream, front.stream)
+
+        let (answer, _) = await fixture.call("open_app", ["app": "Settings", "wait": "none", "observe": "none"])
+        XCTAssertEqual(answer["isError"] as? Bool, false, "open_app failed: \(answer)")
+        let structured = try XCTUnwrap(answer["structuredContent"] as? [String: Any])
+        XCTAssertEqual(structured["window"] as? Int, Int(front.stream), "answered a window it did not raise")
+        XCTAssertEqual(structured["opened"] as? String, "raised")
+        XCTAssertEqual(windows.appWindows(pkg: "com.android.settings").first?.stream, front.stream)
+    }
+
+    /// [MCP-42] `newWindow: true` at the window cap fails `too_many_windows`,
+    /// as the phone's own refusal does, and opens nothing.
+    @MainActor
+    func testANewWindowAtTheCapFailsTooManyWindows_MCP42() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        let first = try await fixture.liveWindow()
+        await fixture.sendApps([Self.settingsMulti])
+        let windows = fixture.controller.windows
+        let second = try XCTUnwrap(windows.openAdditional(pkg: "com.android.settings"))
+        second.noteFirstFrame()
+        windows.setMaxWindows(2)
+        let before = windows.openStreams
+
+        let (answer, _) = await fixture.call("open_app", ["app": "Settings", "newWindow": true,
+                                                          "wait": "none", "observe": "none"])
+        let failure = try XCTUnwrap(error(answer), "open_app at the cap did not fail: \(answer)")
+        XCTAssertEqual(failure["code"] as? String, "too_many_windows")
+        XCTAssertEqual(failure["maxWindows"] as? Int, 2)
+        XCTAssertEqual(failure["message"] as? String,
+                       "The phone allows 2 app windows at once. Close one with close_window, then try again.")
+        XCTAssertEqual(windows.openStreams, before, "a window opened at the cap")
+        XCTAssertNotEqual(first.stream, 0)
+    }
+
+    /// [MCP-42] The phone's own refusal at its window cap answers as the
+    /// Mac's does: `too_many_windows` with `maxWindows` and the table's sentence.
+    @MainActor
+    func testThePhonesCapRefusalCarriesMaxWindows_MCP42() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        _ = try await fixture.liveWindow()
+        await fixture.sendApps([Self.settingsMulti])
+        let windows = fixture.controller.windows
+        windows.setMaxWindows(3)
+        let before = Set(windows.openStreams)
+
+        let opening = Task {
+            await fixture.call("open_app", ["app": "Settings", "newWindow": true,
+                                            "wait": "none", "observe": "none"])
+        }
+        let asked = await fixture.wait { windows.openStreams.count == before.count + 1 }
+        XCTAssertTrue(asked, "no second window was opened: \(fixture.sentTypes())")
+        let stream = try XCTUnwrap(Set(windows.openStreams).subtracting(before).first)
+        fixture.phoneSends(["t": "error", "code": "too_many_windows", "stream": Int(stream)])
+        let (answer, _) = await opening.value
+        let failure = try XCTUnwrap(error(answer), "the phone's refusal did not fail the call: \(answer)")
+        XCTAssertEqual(failure["code"] as? String, "too_many_windows")
+        XCTAssertEqual(failure["maxWindows"] as? Int, 3)
+        XCTAssertEqual(failure["message"] as? String,
+                       "The phone allows 3 app windows at once. Close one with close_window, then try again.")
+    }
+
+    /// [MCP-42] `newWindow: true` while a window of the app is still opening
+    /// fails `not_ready` naming that window, and opens nothing.
+    @MainActor
+    func testANewWindowWhileOneIsOpeningFailsNotReady_MCP42() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        _ = try await fixture.liveWindow()
+        await fixture.sendApps([Self.settingsMulti])
+        let windows = fixture.controller.windows
+        let opening = try XCTUnwrap(windows.openAdditional(pkg: "com.android.settings"))
+        XCTAssertEqual(opening.mcpLifecycle, .opening)
+        let before = windows.openStreams
+
+        let (answer, _) = await fixture.call("open_app", ["app": "Settings", "newWindow": true,
+                                                          "wait": "none", "observe": "none"])
+        let failure = try XCTUnwrap(error(answer), "open_app while opening did not fail: \(answer)")
+        XCTAssertEqual(failure["code"] as? String, "not_ready")
+        XCTAssertEqual(failure["window"] as? Int, Int(opening.stream))
+        XCTAssertEqual(failure["state"] as? String, "opening")
+        XCTAssertEqual(windows.openStreams, before, "a window opened while one was opening")
+    }
+
+    /// [MCP-42] `newWindow: true` for an app that opens one window raises the
+    /// window it has, and says `opened: "raised"` because it raised it.
+    @MainActor
+    func testANewWindowOfAOneWindowAppRaisesItsWindow_MCP42() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        let other = try await fixture.liveWindow()
+        await fixture.sendApps([Self.settingsMulti, Self.clockOne])
+        let windows = fixture.controller.windows
+        let clock = windows.openOrRaise(pkg: "com.android.deskclock")
+        clock.noteFirstFrame()
+        windows.noteFront(other.stream)
+        XCTAssertEqual(windows.appWindows().first?.stream, other.stream)
+        let before = windows.openStreams
+
+        let (answer, _) = await fixture.call("open_app", ["app": "Clock", "newWindow": true,
+                                                          "wait": "none", "observe": "none"])
+        XCTAssertEqual(answer["isError"] as? Bool, false, "open_app failed: \(answer)")
+        let structured = try XCTUnwrap(answer["structuredContent"] as? [String: Any])
+        XCTAssertEqual(structured["window"] as? Int, Int(clock.stream))
+        XCTAssertEqual(structured["opened"] as? String, "raised")
+        XCTAssertEqual(windows.appWindows().first?.stream, clock.stream, "it said raised but raised nothing")
+        XCTAssertEqual(windows.openStreams, before)
+    }
+
+    /// [MCP-40] (#183, folded in from #185 and answered as #262 item 9
+    /// decides): `newWindow: true` for an app with no window open opens its
+    /// first window, as without the flag, even for an app that opens one
+    /// window at a time; the answer is `opened: "new"` and no answer sends the
+    /// client to list_windows and a retry.
+    @MainActor
+    func testMCP40NewWindowOnASingleWindowAppWithNoWindowOpensTheFirst() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        _ = try await fixture.liveWindow()
+        await fixture.sendApps([Self.settingsMulti, Self.clockOne])
+        let windows = fixture.controller.windows
+        XCTAssertTrue(windows.appWindows(pkg: "com.android.deskclock").isEmpty)
+
+        let (answer, _) = await fixture.call("open_app", ["app": "Clock", "newWindow": true,
+                                                          "wait": "none", "observe": "none"])
+        let clocks = windows.appWindows(pkg: "com.android.deskclock")
+        XCTAssertEqual(clocks.count, 1, "the first window did not open: \(answer)")
+        // The fake phone sends no video: the open answers at its 10 s bound, `opening`.
+        XCTAssertEqual(answer["isError"] as? Bool, false, "open_app failed: \(answer)")
+        let structured = answer["structuredContent"] as? [String: Any] ?? [:]
+        XCTAssertEqual(structured["window"] as? Int, clocks.first.map { Int($0.stream) })
+        XCTAssertEqual(structured["opened"] as? String, "new")
+        let opens = fixture.sent("window.open")
+        XCTAssertEqual(opens.count, 1)
+        XCTAssertNil(opens.first?.bool("newInstance"), "the first window is a plain open")
+    }
+
+    /// [WIN-36] Shortcuts' (and the debug route's) explicit `newInstance` for
+    /// an app with no window open opens its first window, as without the
+    /// argument, even for an app that opens one window at a time.
+    @MainActor
+    func testShortcutsNewInstanceWithNoWindowOpensTheFirst_WIN36() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        _ = try await fixture.liveWindow()
+        await fixture.sendApps([Self.settingsMulti, Self.clockOne])
+        let controller = fixture.controller
+        let phone = try XCTUnwrap(controller.link.phone?.id)
+        let before = controller.windows.openStreams.count
+
+        controller.intentsOpenApp("com.android.deskclock", on: phone, newWindow: true)
+        XCTAssertEqual(controller.windows.appWindows(pkg: "com.android.deskclock").count, 1,
+                       "newInstance with no window open opened nothing")
+        XCTAssertEqual(controller.windows.openStreams.count, before + 1)
+        XCTAssertNil(controller.pendingOpen)
+    }
+
+    /// [MCP-44] A person's drag that fails while an agent's file is sending
+    /// does not end the agent's `send_file`: the wait hears only its own
+    /// drop's end, and the file still arrives.
+    @MainActor
+    func testAPersonsFailedDragDoesNotEndAnAgentsSendFile_MCP44() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        _ = try await fixture.liveWindow()
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("mcp-drop-\(UUID().uuidString).bin")
+        try Data(repeating: 7, count: 4096).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+
+        let call = Task { await fixture.call("send_file", ["path": file.path]) }
+        let started = await fixture.wait { !fixture.sent("drop.start").isEmpty }
+        XCTAssertTrue(started, "no drop.start went out: \(fixture.sentTypes())")
+        let id = try XCTUnwrap(fixture.sent("drop.start").first?.int("id"))
+        // The person's earlier drag resolves to nothing while the agent's file sends.
+        fixture.controller.dropSender.refuse("Couldn't read that image.", outcome: .phone("source_unreadable"))
+        try await Task.sleep(for: .milliseconds(100))  // real-time: a wrongly ended wait would answer now
+        fixture.phoneSends(["t": "drop.result", "id": id, "ok": true, "path": "Download/Contigua/x.bin"])
+        let (answer, _) = await call.value
+
+        XCTAssertEqual(answer["isError"] as? Bool, false, "send_file failed: \(answer)")
+        let structured = try XCTUnwrap(answer["structuredContent"] as? [String: Any])
+        XCTAssertEqual(structured["state"] as? String, "delivered")
+        XCTAssertEqual(structured["bytes"] as? Int, 4096)
+    }
+
+    /// [MCP-84] [MCP-109] (#262 item 14) A `ui.type` the phone answers only
+    /// after the Mac's 5 s read deadline: the call still answers `timeout` on
+    /// time, and the window's turn is held until the phone's late answer (here
+    /// before the text's own bound, 5 s + 300 × 10 ms), so a tap queued behind
+    /// it sends no TOUCH while the phone may still be typing.
+    @MainActor
+    func testATypeTextReplyTimeoutDrainsBeforeTheTurnIsFree_MCP84() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        let id = Int(try await fixture.liveWindow().stream)
+        fixture.hold("ui.type")
+        let typed = Task {
+            await fixture.call("type_text", ["window": id, "text": String(repeating: "a", count: 300),
+                                             "wait": "none", "observe": "none"])
+        }
+        let asked = await fixture.wait { !fixture.sent("ui.type").isEmpty }
+        XCTAssertTrue(asked, "no ui.type went out: \(fixture.sentTypes())")
+        let sentAt = ContinuousClock.now
+        let (answer, _) = await typed.value
+        XCTAssertEqual(error(answer)?["code"] as? String, "timeout", "\(answer)")
+        XCTAssertLessThan(ContinuousClock.now - sentAt, .milliseconds(5600), "the call did not answer on time")
+
+        let tapped = Task {
+            await fixture.call("tap", ["window": id, "x": 0.5, "y": 0.5, "wait": "none", "observe": "none"],
+                               client: MCPClientID(2), clearSent: false)
+        }
+        try await Task.sleep(until: sentAt + .milliseconds(6500), clock: .continuous)  // real-time: past the 5 s read deadline
+        XCTAssertEqual(fixture.touches, 0, "a tap went out while the phone may still be typing")
+        fixture.release("ui.type")
+        let (tap, _) = await tapped.value
+        let tappedAt = ContinuousClock.now
+        XCTAssertEqual(tap["isError"] as? Bool, false, "\(tap)")
+        // The answer comes once both TOUCH frames are sent; the fake phone
+        // counts them as they arrive on its own connection.
+        let landed = await fixture.wait { fixture.touches == 2 }
+        XCTAssertTrue(landed, "touches: \(fixture.touches)")
+        XCTAssertLessThan(tappedAt - sentAt, .milliseconds(7800),
+                          "the turn waited for the bound, not for the phone's answer")
+    }
+
+    /// [MCP-84] [MCP-109] (#262 item 14) A `ui.type` the phone never answers:
+    /// the window's turn frees at the text's own bound, 5 s + 10 ms per code
+    /// point from the send (8 s for 300), and not before.
+    @MainActor
+    func testATypeTextThePhoneNeverAnswersFreesTheTurnAtItsBound_MCP84() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        let id = Int(try await fixture.liveWindow().stream)
+        fixture.hold("ui.type")
+        let typed = Task {
+            await fixture.call("type_text", ["window": id, "text": String(repeating: "a", count: 300),
+                                             "wait": "none", "observe": "none"])
+        }
+        let asked = await fixture.wait { !fixture.sent("ui.type").isEmpty }
+        XCTAssertTrue(asked, "no ui.type went out: \(fixture.sentTypes())")
+        let sentAt = ContinuousClock.now
+        let (answer, _) = await typed.value
+        XCTAssertEqual(error(answer)?["code"] as? String, "timeout", "\(answer)")
+
+        let tapped = Task {
+            await fixture.call("tap", ["window": id, "x": 0.5, "y": 0.5, "wait": "none", "observe": "none"],
+                               client: MCPClientID(2), clearSent: false)
+        }
+        try await Task.sleep(until: sentAt + .milliseconds(7500), clock: .continuous)  // real-time: short of the 8 s bound
+        XCTAssertEqual(fixture.touches, 0, "the turn freed before the text's bound")
+        let (tap, _) = await tapped.value
+        let tappedAt = ContinuousClock.now
+        XCTAssertEqual(tap["isError"] as? Bool, false, "\(tap)")
+        // The answer comes once both TOUCH frames are sent; the fake phone
+        // counts them as they arrive on its own connection.
+        let landed = await fixture.wait { fixture.touches == 2 }
+        XCTAssertTrue(landed, "touches: \(fixture.touches)")
+        XCTAssertGreaterThanOrEqual(tappedAt - sentAt, .milliseconds(7900))
+    }
 }
 
 /// A real controller online with the fake phone server, which answers
@@ -493,15 +904,70 @@ final class TypeTextFixture {
         brain.autoAllow = true
         server.brain = brain
         server.onFrame = { [weak self] connection, frame in
+            if frame.messageType == .touch { self?.recordTouch() }
             guard frame.messageType == .json,
                   let message = JSONFrame.decode(payload: frame.payload) else { return }
-            self?.record(message)
-            self?.answer(message, on: connection)
+            guard let self else { return }
+            self.record(message, from: connection)
+            if !self.held(message, on: connection) { self.answer(message, on: connection) }
         }
     }
 
-    nonisolated private func record(_ message: JSONMessage) {
-        lock.lock(); received.append(message); lock.unlock()
+    nonisolated private func record(_ message: JSONMessage, from connection: FakeServer.Connection) {
+        lock.lock(); received.append(message); phone = connection; lock.unlock()
+    }
+
+    nonisolated(unsafe) private var touchCount = 0
+    nonisolated private func recordTouch() {
+        lock.lock(); touchCount += 1; lock.unlock()
+    }
+
+    /// TOUCH frames the Mac has sent since the fixture started.
+    var touches: Int {
+        lock.lock(); defer { lock.unlock() }
+        return touchCount
+    }
+
+    /// The phone's side of the link, once the Mac has sent anything.
+    nonisolated(unsafe) private var phone: FakeServer.Connection?
+    /// Message types the fake phone holds its answer to until `release`.
+    nonisolated(unsafe) private var holding: Set<String> = []
+    nonisolated(unsafe) private var heldMessages: [(JSONMessage, FakeServer.Connection)] = []
+
+    nonisolated private func held(_ message: JSONMessage, on connection: FakeServer.Connection) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard holding.contains(message.t) else { return false }
+        heldMessages.append((message, connection))
+        return true
+    }
+
+    /// Hold the fake phone's answers to `type` until `release(type)`.
+    func hold(_ type: String) {
+        lock.lock(); holding.insert(type); lock.unlock()
+    }
+
+    /// Answer every held `type` request, and stop holding it.
+    func release(_ type: String) {
+        lock.lock()
+        holding.remove(type)
+        let due = heldMessages.filter { $0.0.t == type }
+        heldMessages.removeAll { $0.0.t == type }
+        lock.unlock()
+        for (message, connection) in due { answer(message, on: connection) }
+    }
+
+    /// A message from the phone, unasked (`window.closed`, `apps`, `drop.result`).
+    func phoneSends(_ object: [String: Any]) {
+        lock.lock(); let connection = phone; lock.unlock()
+        XCTAssertNotNil(connection, "the Mac has not spoken to the fake phone yet")
+        connection?.sendJSON(object)
+    }
+
+    /// The phone's app list (MCP-33); waits until the controller has it.
+    func sendApps(_ apps: [[String: Any]]) async {
+        phoneSends(["t": "apps", "apps": apps])
+        let loaded = await wait { self.controller.appsLoaded && self.controller.apps.count == apps.count }
+        XCTAssertTrue(loaded, "the app list never arrived")
     }
 
     nonisolated private func answer(_ message: JSONMessage, on connection: FakeServer.Connection) {
@@ -532,7 +998,7 @@ final class TypeTextFixture {
 
     /// Polls while yielding the main actor, so the controller's own main-actor
     /// work runs (an async test cannot spin the run loop for it).
-    private func wait(until condition: () -> Bool, timeout: TimeInterval = 10) async -> Bool {
+    func wait(until condition: () -> Bool, timeout: TimeInterval = 10) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while !condition(), Date() < deadline { try? await Task.sleep(for: .milliseconds(20)) }  // real-time: polls the live controller's pairing with the fake server, to the deadline
         return condition()
@@ -553,14 +1019,15 @@ final class TypeTextFixture {
 
     /// One `tools/call` through the dispatcher and the host: the JSON-RPC
     /// `result`, and the log lines the dispatcher's hook formatted.
-    func call(_ name: String, _ arguments: [String: Any]) async -> ([String: Any], [String]) {
-        lock.lock(); received.removeAll(); lock.unlock()
+    func call(_ name: String, _ arguments: [String: Any], client: MCPClientID = MCPClientID(1),
+              clearSent: Bool = true) async -> ([String: Any], [String]) {
+        if clearSent { lock.withLock { received.removeAll() } }
         let host = MCPToolHost(controller: controller)
         let lines = LogLines()
         let request: [String: Any] = ["jsonrpc": "2.0", "id": 1, "method": "tools/call",
                                       "params": ["name": name, "arguments": arguments]]
         let line = (try? JSONSerialization.data(withJSONObject: request)) ?? Data()
-        let data = await MCPDispatcher.handle(line: line, client: MCPClientID(1), perform: { call, client in
+        let data = await MCPDispatcher.handle(line: line, client: client, perform: { call, client in
             await host.perform(call, client: client)
         }, log: { tool, seconds, code, window in
             lines.all.append(MCPLogLine.format(tool: tool, duration: seconds, code: code, window: window))
