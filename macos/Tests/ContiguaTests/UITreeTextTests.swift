@@ -77,7 +77,7 @@ final class UITreeTextTests: XCTestCase {
              "edit": true, "box": box(3), "at": [0.5, 0.03]],
         ])
         XCTAssertEqual(UITreeText.text(read.nodes),
-                       "R$ 36 69 — 36 reais com 69 centavos\nSettings\nPrice [e33 EditText edit]")
+                       "R$ 36 69 — 36 reais com 69 centavos\nSettings\n36 — Price [e33 EditText edit]")
     }
 
     // [MCP-74] An unlabelled clickable wrapper adopts the labels of its
@@ -98,7 +98,11 @@ final class UITreeTextTests: XCTestCase {
             ["i": 5, "k": 21, "role": "View", "click": true, "box": box(5), "at": [0.5, 0.05]],
             ["i": 6, "k": 22, "p": 5, "role": "TextView", "text": "Row 7", "off": true],
         ])
-        let expected = "Settings [e16 View]\nItem 3\nAdd to cart [e20 Button]\nRow 7 [e22 TextView off]"
+        // A clickable card keeps its own line and its inner button: an
+        // actionable descendant is never swallowed, and the card itself stays
+        // pressable by its ref.
+        let expected = "Settings [e16 View]\n[e18 View]\nItem 3\nAdd to cart [e20 Button]\n"
+            + "[e21 View]\nRow 7 [e22 TextView off]"
         XCTAssertEqual(UITreeText.text(read.nodes), expected)
         // The encoded answer's rows read the same way.
         XCTAssertEqual(UITreeText.text(answer: try answer(read)), expected)
