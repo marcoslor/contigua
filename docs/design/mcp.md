@@ -638,7 +638,7 @@ clients learned the hard way:
   window above it, naming the cover: the promo banner's close button sitting on
   a link is visible as such before a tap lands on the wrong one. Only a
   clickable, editable or checkable node covers in its own window: a plain
-  label sibling — iFood's rotating placeholder over its search field — takes
+  label sibling — a rotating placeholder drawn over a search field — takes
   no touch, so the platform lets the press through and it covers nothing.
 - **A text view and a filter (MCP-74, MCP-75).** `format: "text"` answers "what
   does this screen say" in reading order, one line per label, headings as `# `

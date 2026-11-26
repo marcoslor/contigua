@@ -81,7 +81,8 @@ final class UITreeTextTests: XCTestCase {
     }
 
     // [MCP-74] An unlabelled clickable wrapper adopts the labels of its
-    // non-actionable children, so a Flutter icon button reads as one line.
+    // non-actionable children, so a cross-platform toolkit's icon button reads
+    // as one line.
     func testUnlabelledClickableWrapperAdoptsNonActionableChildLabels_MCP74() throws {
         let read = try tree([
             ["i": 0, "k": 16, "role": "View", "click": true, "box": box(0), "at": [0.5, 0.0]],

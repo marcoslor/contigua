@@ -444,7 +444,7 @@ class UiTreeTest {
     fun testANonClickableSiblingLabelDoesNotCoverAnEditText() { // [MCP-73]
         // A search field with a rotating placeholder drawn over its centre in
         // the same FrameLayout: the TextView takes no touch, so Android lets
-        // the press through and the field is not covered (iFood's search box).
+        // the press through and the field is not covered (a food app's search box).
         val field = UiTree.Node(
             role = "android.widget.EditText", text = "Search", editable = true, drawingOrder = 1,
             box = UiTree.Box(0, 100, 1_000, 200),
