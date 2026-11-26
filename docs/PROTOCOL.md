@@ -1612,7 +1612,9 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
    only when `settled` is false: `"loading"` (the last check found a loading signal and no
    change came after it) or `"changes"`; `waitedMs` from the request's arrival; `events` the
    counted events. The whole request answers by its arrival + `T` + 2.5 s, under the Mac's
-   `T` + 5 s. A session that ends during its watch, or before its watch starts (the phone still connecting), stops it, and nothing is sent. The watch starts when the phone reads the request: input frames sent
+   `T` + 5 s. A session that ends during its watch, or before its watch starts — the phone still
+   connecting, or no `ui.tree` or `ui.settle` has started the watch thread yet — stops it, and
+   nothing is sent. The watch starts when the phone reads the request: input frames sent
    before it on the session's ordered reliable lane have been injected by then. A watch that
    cannot happen answers
    `{"t":"ui.settle","stream":N,"seq":S,"ok":false,"code":C,"message":"…"}` with `no_window`,
