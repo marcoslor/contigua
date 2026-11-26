@@ -107,7 +107,13 @@ schema change is then a validation failure for every client that checks, rather
 than a key nobody declared. So `ui_tree`'s `omitted` (and its `ok`,
 `snapshot`, `truncated`, `layers`, `nodes`, `note`, `loading`, `matched` and
 `total`), the `tree` an act, an open or a wait observes, and the act envelope's
-`did` per action are named too.
+`did` per action are named too. A field whose name alone misreads carries a
+`description` saying what it is: `screenshot`'s `image` is the PNG's pixel
+dimensions (`[w, h]`, the PNG itself is the `image` content block), `size` is
+the window's display pixels — the space of `ui_tree`'s `box` —, `blank` is
+present only for a single flat colour, and `frame.still` only when the window
+was still and answered its displayed frame. Round 1's agents read `image:
+[590, 1280]` as "2 bytes".
 
 **Errors (MCP-6).** A failure of the moment (no phone, a window that closed, a
 ref whose element is gone) is a tool result with `isError: true` and one text

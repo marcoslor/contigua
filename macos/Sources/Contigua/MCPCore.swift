@@ -411,6 +411,13 @@ enum MCPOutputSchemas {
     private static let string: [String: Any] = ["type": "string"]
     private static func nullable(_ type: String) -> [String: Any] { ["type": [type, "null"]] }
     private static func array(_ items: [String: Any]) -> [String: Any] { ["type": "array", "items": items] }
+    /// The same schema with one sentence a client reads: a field whose name
+    /// alone misreads (`image` is pixels, never bytes; MCP-62).
+    private static func describing(_ schema: [String: Any], _ description: String) -> [String: Any] {
+        var out = schema
+        out["description"] = description
+        return out
+    }
 
     /// MCP-20's `frame` object, carried by every answer that reflects a screen.
     private static let frameObject = object(["seq": integer, "ageMs": nullable("integer")],
@@ -419,7 +426,9 @@ enum MCPOutputSchemas {
     /// made from the frame the window shows rather than a keyframe from after
     /// the call, so the flag explains why `ageMs` is older than the call.
     private static let screenshotFrameObject = object(
-        ["seq": integer, "ageMs": nullable("integer"), "still": boolean],
+        ["seq": integer, "ageMs": nullable("integer"),
+         "still": describing(boolean,
+                             "Present and true when the window was still and answered its displayed frame.")],
         required: ["seq", "ageMs"])
     /// MCP-21's closed state token.
     private static let stateToken: [String: Any] = [
@@ -587,8 +596,16 @@ enum MCPOutputSchemas {
                           required: ["windows", "recentlyClosed"])
         case .screenshot:
             return object(["window": integer, "state": stateToken, "frame": screenshotFrameObject,
-                           "image": array(integer), "size": array(integer),
-                           "blank": boolean, "crop": array(integer), "settle": settleObject],
+                           "image": describing(
+                               array(integer),
+                               "PNG pixel dimensions [width, height]; the PNG itself is returned in the image content block."),
+                           "size": describing(
+                               array(integer),
+                               "Window display pixel dimensions [width, height] (the coordinate space of ui_tree box)."),
+                           "blank": describing(
+                               boolean,
+                               "Present and true only when the frame is a single flat colour (e.g. a blank splash or secure screen)."),
+                           "crop": array(integer), "settle": settleObject],
                           required: ["window", "state", "frame", "image", "size"])
         case .uiTree:
             // `format: text` answers `text` in place of the rows (MCP-74);
