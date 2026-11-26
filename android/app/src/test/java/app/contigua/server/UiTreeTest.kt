@@ -441,6 +441,36 @@ class UiTreeTest {
     }
 
     @Test
+    fun testANonClickableSiblingLabelDoesNotCoverAnEditText() { // [MCP-73]
+        // A search field with a rotating placeholder drawn over its centre in
+        // the same FrameLayout: the TextView takes no touch, so Android lets
+        // the press through and the field is not covered (iFood's search box).
+        val field = UiTree.Node(
+            role = "android.widget.EditText", text = "Search", editable = true, drawingOrder = 1,
+            box = UiTree.Box(0, 100, 1_000, 200),
+        )
+        val placeholder = UiTree.Node(
+            role = "android.widget.TextView", text = "Search products", drawingOrder = 2,
+            box = UiTree.Box(0, 100, 1_000, 200),
+        )
+        val root = UiTree.Node(
+            role = "android.widget.FrameLayout", box = UiTree.Box(0, 0, 1_000, 2_000),
+            children = listOf(field, placeholder),
+        )
+        val rows = nodes(reply(listOf(layer(root))))
+        val edit = rows.single { it["edit"] == true }
+        assertFalse("a non-clickable label covered the field", edit.containsKey("covered"))
+        // A later clickable sibling at the same point still covers it: a
+        // scrim or a button intercepts the touch.
+        val scrim = UiTree.Node(
+            role = "android.widget.FrameLayout", clickable = true, drawingOrder = 2,
+            box = UiTree.Box(0, 100, 1_000, 200),
+        )
+        val over = nodes(reply(listOf(layer(root.copy(children = listOf(field, scrim))))))
+        assertEquals(over.single { it["click"] == true }["k"], over.single { it["edit"] == true }["covered"])
+    }
+
+    @Test
     fun testAChildIsNotCoveredByItsOwnParent() { // [MCP-73]
         val label = UiTree.Node(role = "TextView", text = "Send", drawingOrder = 3, box = UiTree.Box(100, 100, 300, 200))
         val button = UiTree.Node(
