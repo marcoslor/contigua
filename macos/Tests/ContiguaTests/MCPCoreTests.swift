@@ -235,6 +235,30 @@ final class MCPCoreTests: XCTestCase {
         XCTAssertThrowsError(try MCPArguments.call("type_text", ["window": 1, "text": 7]))
     }
 
+    /// MCP-92's 2000 is the phone's unit: code points, not grapheme clusters.
+    /// A thumbs-up with a skin tone is one character to a reader and two code
+    /// points to the phone, so 1500 of them passed this side and then failed
+    /// on the phone with a generic `failed`; 1000 fits, 1500 is `-32602` here.
+    /// Empty text is refused too: the phone answers `failed` for it.
+    func testTextIsCountedInCodePointsAndIsNeverEmpty() async throws {
+        let thumbsUp = "👍🏽"
+        XCTAssertEqual(thumbsUp.unicodeScalars.count, 2)
+        XCTAssertEqual(thumbsUp.count, 1)
+        XCTAssertNoThrow(try MCPArguments.call("type_text",
+            ["window": 1, "text": String(repeating: thumbsUp, count: 1000)]))
+        XCTAssertThrowsError(try MCPArguments.call("type_text",
+            ["window": 1, "text": String(repeating: thumbsUp, count: 1500)]))
+        // Through the dispatcher: an argument error is `-32602`, not a tool
+        // failure the client only learns by reading the answer.
+        for text in [String(repeating: thumbsUp, count: 1500), ""] {
+            let data = await MCPDispatcher.handle(
+                line: callRequest("type_text", ["window": 1, "text": text]),
+                client: MCPClientID(1), perform: { _, _ in .answer([:]) })
+            XCTAssertEqual(try errorCode(data), -32602)
+        }
+        XCTAssertNoThrow(try MCPArguments.call("type_text", ["window": 1, "text": "a"]))
+    }
+
     func testPressKeyOnlyAcceptsTheDocumentedKeys() {
         for key in MCPKey.allCases {
             XCTAssertNoThrow(try MCPArguments.call("press_key", ["window": 1, "key": key.rawValue]))
