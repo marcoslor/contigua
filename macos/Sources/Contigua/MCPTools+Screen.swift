@@ -97,24 +97,61 @@ extension MCPToolHost {
 
 // MARK: - The screenshot source (MCP-60)
 
-/// A decoded frame from after the call, its count on the window's clock and
-/// when it arrived (uptime). Its age is taken when the answer is made (MCP-20).
-struct SnapshotFrame {
+/// A decoded frame: the buffer, its count on the window's clock (MCP-20) and
+/// when it arrived (uptime). Its age is taken when the answer is made.
+struct SnapshotFrame: Equatable {
+    /// Where the frame came from.
+    enum Origin: Equatable {
+        /// MCP-60's normal route: a keyframe counted after the call.
+        case keyframe
+        /// MCP-60's still route: the frame on the display, answered because the
+        /// phone said the window is still since it.
+        case displayed
+    }
     let buffer: CVPixelBuffer
     let seq: Int
     let at: TimeInterval
+    var origin: Origin = .keyframe
+
+    /// Same frame means same count at the same instant from the same route:
+    /// the pixel buffer is not comparable.
+    static func == (left: Self, right: Self) -> Bool {
+        left.seq == right.seq && left.at == right.at && left.origin == right.origin
+    }
 }
 
+/// What an `window.keyframe` request began: its decode is cancelled by this.
+typealias SnapshotTicket = SnapshotSlot.Token
+
 /// What a screenshot reads its frame from: a window, or a fake in the tests.
-/// `copyDisplayedFrame` is here so a fake can prove it is never read.
+/// `copyDisplayedFrame` is here so a fake can prove it is never read unless the
+/// phone itself said the window is still (MCP-60).
 @MainActor
 protocol ScreenshotSource: AnyObject {
-    /// The newest counted frame when the call starts.
+    /// The newest counted frame when the call starts (MCP-20).
     var newestSeq: Int { get }
+    /// When that frame arrived; nil before the first.
+    var newestAt: TimeInterval? { get }
     /// Live Text's freeze holds the one snapshot decoder.
     var isCapturing: Bool { get }
-    /// The display layer's buffer: never a screenshot's answer (MCP-60).
+    /// The last `window.still` (PHONE-21) seen after the newest frame: the
+    /// phone itself says nothing has changed since then.
+    var stillSince: TimeInterval? { get }
+    /// The display layer's buffer: never a screenshot's answer unless the phone
+    /// said the window is still (MCP-60).
     func copyDisplayedFrame() -> CVPixelBuffer?
+    /// Asks the phone for a keyframe and decodes the first one counted later
+    /// than `seq`; `handler` runs once, with the frame or nil.
+    func beginSnapshot(after seq: Int,
+                       handler: @escaping (SnapshotFrame?) -> Void) -> SnapshotTicket
+    /// Asks again while that decode still waits: the phone answers a request
+    /// made within 250 ms of an IDR it sent with that IDR and sends nothing
+    /// (PATH-41), so one ask can be answered by silence.
+    func askKeyframeAgain()
+    /// Drops the decode `ticket` began, only if it is still the current one.
+    func cancelSnapshot(_ ticket: SnapshotTicket)
+    /// Hands the call back to the run loop for one poll of its bound.
+    func poll(_ seconds: TimeInterval) async
     /// The first keyframe counted after `seq`, decoded; nil after `timeout`.
     /// Called only once Live Text no longer holds the decoder.
     func nextKeyframe(after seq: Int, timeout: TimeInterval) async -> SnapshotFrame?
@@ -123,9 +160,31 @@ protocol ScreenshotSource: AnyObject {
 extension StreamWindowController: ScreenshotSource {
     var newestSeq: Int { frameClock.newest }
 
+    var newestAt: TimeInterval? { frameClock.lastFrame }
+
     var isCapturing: Bool { liveText.state == .capturing }
 
+    var stillSince: TimeInterval? { stillAfterFrame }
+
     func copyDisplayedFrame() -> CVPixelBuffer? { videoView.copyDisplayedFrame() }
+
+    func beginSnapshot(after seq: Int,
+                       handler: @escaping (SnapshotFrame?) -> Void) -> SnapshotTicket {
+        videoView.beginFrameSnapshot(after: seq) { buffer, stamp in
+            MainActor.assumeIsolated {
+                guard let buffer, let stamp else { handler(nil); return }
+                handler(SnapshotFrame(buffer: buffer, seq: stamp.seq, at: stamp.at))
+            }
+        }
+    }
+
+    func askKeyframeAgain() { videoView.requestKeyframeNow() }
+
+    func cancelSnapshot(_ ticket: SnapshotTicket) { videoView.cancelFrameSnapshot(ticket) }
+
+    func poll(_ seconds: TimeInterval) async {
+        try? await Task.sleep(for: .seconds(seconds))
+    }
 
     func nextKeyframe(after seq: Int, timeout: TimeInterval) async -> SnapshotFrame? {
         final class Once {

@@ -58,9 +58,22 @@ final class ScreenshotSourceTests: XCTestCase {
             self.capturingUntil = ProcessInfo.processInfo.systemUptime + capturingFor
         }
         var isCapturing: Bool { ProcessInfo.processInfo.systemUptime < capturingUntil }
+        var newestAt: TimeInterval? { nil }
+        var stillSince: TimeInterval? { nil }
         func copyDisplayedFrame() -> CVPixelBuffer? {
             XCTFail("a screenshot read the display layer's buffer")
             return nil
+        }
+        func beginSnapshot(after seq: Int,
+                           handler: @escaping (SnapshotFrame?) -> Void) -> SnapshotTicket {
+            askedAfter = seq
+            Task { @MainActor in handler(self.deliver) }
+            return SnapshotTicket(id: 1)
+        }
+        func askKeyframeAgain() {}
+        func cancelSnapshot(_ ticket: SnapshotTicket) {}
+        func poll(_ seconds: TimeInterval) async {
+            try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))  // real-time: the bound under test is wall-clock (MCP-61)
         }
         func nextKeyframe(after seq: Int, timeout: TimeInterval) async -> SnapshotFrame? {
             askedAfter = seq
@@ -86,9 +99,187 @@ final class ScreenshotSourceTests: XCTestCase {
         return answer
     }
 
+    // MARK: A phone that behaves as the wire does (#274)
+
+    /// What one `window.keyframe` ask is answered with, and how long that takes.
+    private struct Ask {
+        var deliver: CVPixelBuffer?
+        var after: TimeInterval = 0
+    }
+
+    /// A phone at the other end of the wire, as #274 found it: one ask can be
+    /// answered by silence (the phone had just sent that IDR, PATH-41), a still
+    /// window sends `window.still` instead of a frame, and a window that is
+    /// neither still nor sending sends nothing at all.
+    @MainActor
+    private final class PhoneSource: ScreenshotSource {
+        let newestSeq: Int
+        let newestAt: TimeInterval?
+        let asks: [Ask]
+        let displayed: CVPixelBuffer?
+        /// `window.still` arrives this long after the call; nil never.
+        let stillAfter: TimeInterval?
+        /// The window was already quiet at the call (a still repeats each second).
+        let stillBefore: Bool
+        private let started = ProcessInfo.processInfo.systemUptime
+        private(set) var asked = 0
+        private(set) var displays = 0
+        private var handler: ((SnapshotFrame?) -> Void)?
+
+        init(newestSeq: Int, newestAt: TimeInterval? = nil, asks: [Ask] = [],
+             displayed: CVPixelBuffer? = nil, stillAfter: TimeInterval? = nil,
+             stillBefore: Bool = false) {
+            self.newestSeq = newestSeq
+            self.newestAt = newestAt
+            self.asks = asks
+            self.displayed = displayed
+            self.stillAfter = stillAfter
+            self.stillBefore = stillBefore
+        }
+
+        var isCapturing: Bool { false }
+
+        var stillSince: TimeInterval? {
+            if stillBefore { return started - 0.5 }
+            guard let stillAfter else { return nil }
+            let at = started + stillAfter
+            return ProcessInfo.processInfo.systemUptime >= at ? at : nil
+        }
+
+        func copyDisplayedFrame() -> CVPixelBuffer? {
+            displays += 1
+            return displayed
+        }
+
+        func beginSnapshot(after seq: Int,
+                           handler: @escaping (SnapshotFrame?) -> Void) -> SnapshotTicket {
+            self.handler = handler
+            ask(seq: seq)
+            return SnapshotTicket(id: 1)
+        }
+
+        func askKeyframeAgain() { ask(seq: newestSeq) }
+
+        func cancelSnapshot(_ ticket: SnapshotTicket) { handler = nil }
+
+        func poll(_ seconds: TimeInterval) async {
+            try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))  // real-time: the bound under test is wall-clock (MCP-61)
+        }
+
+        func nextKeyframe(after seq: Int, timeout: TimeInterval) async -> SnapshotFrame? {
+            asked += 1
+            let ask = asked <= asks.count ? asks[asked - 1] : nil
+            if let ask, ask.after > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(ask.after * 1_000_000_000))  // real-time: the phone's own latency
+            }
+            return ask?.deliver.map {
+                SnapshotFrame(buffer: $0, seq: seq + 1, at: ProcessInfo.processInfo.systemUptime)
+            }
+        }
+
+        private func ask(seq: Int) {
+            let entry = asked < asks.count ? asks[asked] : nil
+            asked += 1
+            guard let entry else { return }
+            Task { @MainActor in
+                if entry.after > 0 {
+                    try? await Task.sleep(nanoseconds: UInt64(entry.after * 1_000_000_000))  // real-time: the phone's own latency
+                }
+                guard let handler = self.handler else { return }
+                handler(entry.deliver.map {
+                    SnapshotFrame(buffer: $0, seq: seq + 1,
+                                  at: ProcessInfo.processInfo.systemUptime)
+                })
+            }
+        }
+    }
+
     /// A frame stamped `ago` seconds before now.
     private func frame(_ buffer: CVPixelBuffer, seq: Int, ago: TimeInterval = 0) -> SnapshotFrame {
-        SnapshotFrame(buffer: buffer, seq: seq, at: ProcessInfo.processInfo.systemUptime - ago)
+        SnapshotFrame(buffer: buffer, seq: seq, at: ProcessInfo.processInfo.systemUptime - ago,
+                      origin: .keyframe)
+    }
+    func testAPhoneThatAnswersWithAnOldIdrIsAskedAgain_MCP60() async throws {
+        let source = PhoneSource(
+            newestSeq: 40,
+            asks: [Ask(deliver: nil), Ask(deliver: makeBuffer(width: 64, height: 64, value: 90),
+                                          after: 0.3)],
+            displayed: makeBuffer(width: 64, height: 64, value: 90))
+        let started = ProcessInfo.processInfo.systemUptime
+        let answer = try await shot(id: 3, state: "live", source: source, size: (64, 64), crop: nil)
+        XCTAssertEqual(source.asked, 2, "the Mac asked a second time")
+        XCTAssertEqual(answer["still"] as? Bool, nil, "a keyframe needs no still flag")
+        let frame = try XCTUnwrap(answer["frame"] as? [String: Any])
+        XCTAssertEqual(frame["seq"] as? Int, 41)
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - started, 2,
+                          "the second ask lands well inside the one 2 s bound")
+    }
+
+    // [MCP-60] #274: a still window sends no frame and says so (`window.still`)
+    // instead; the call answers the shown frame, marked still, with its real
+    // age, and at once rather than wait out the bound.
+    func testAStillWindowAnswersTheShownFrame_MCP60() async throws {
+        let shown = makeBuffer(width: 64, height: 64, value: 90)
+        let source = PhoneSource(newestSeq: 12, newestAt: ProcessInfo.processInfo.systemUptime - 30,
+                                  asks: [], displayed: shown, stillAfter: 0.1)
+        let started = ProcessInfo.processInfo.systemUptime
+        let answer = try await shot(id: 3, state: "live", source: source, size: (64, 64), crop: nil)
+        XCTAssertEqual(answer["still"] as? Bool, true)
+        let frame = try XCTUnwrap(answer["frame"] as? [String: Any])
+        XCTAssertEqual(frame["seq"] as? Int, 12, "the answer is the frame the phone vouched for")
+        XCTAssertGreaterThanOrEqual(frame["ageMs"] as? Int ?? -1, 30_000, "its real age")
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - started, 1,
+                          "answered at once, well under the 2 s bound")
+    }
+
+    // [MCP-60] #274: the window was already still before the call (the phone
+    // repeats `still` once a second), so the call sees one almost at once.
+    func testAnAlreadyStillWindowAnswersAtOnce_MCP60() async throws {
+        let source = PhoneSource(newestSeq: 12, newestAt: ProcessInfo.processInfo.systemUptime - 4,
+                                  asks: [], displayed: makeBuffer(width: 64, height: 64, value: 8),
+                                  stillBefore: true)
+        let started = ProcessInfo.processInfo.systemUptime
+        let answer = try await shot(id: 3, state: "live", source: source, size: (64, 64), crop: nil)
+        XCTAssertEqual(answer["still"] as? Bool, true)
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - started, 1)
+    }
+
+    // [MCP-60] A fresh keyframe that arrives before the still wins.
+    func testAFreshKeyframeBeatsTheStill_MCP60() async throws {
+        let source = PhoneSource(
+            newestSeq: 40, asks: [Ask(deliver: makeBuffer(width: 64, height: 64, value: 90))],
+            displayed: makeBuffer(width: 64, height: 64, value: 8), stillAfter: 0.05)
+        let answer = try await shot(id: 3, state: "live", source: source, size: (64, 64), crop: nil)
+        XCTAssertNil(answer["still"], "the answer is a keyframe, not a still")
+        XCTAssertEqual((answer["frame"] as? [String: Any])?["seq"] as? Int, 41)
+    }
+
+    // [MCP-61] A window with no displayed frame at all is still `no_frame`,
+    // even when the phone says it is still: there is no picture to show.
+    func testAStillWithNoDisplayedFrameIsNoFrame_MCP61() async throws {
+        let source = PhoneSource(newestSeq: 0, asks: [], stillAfter: 0.05)
+        do {
+            _ = try await Screenshot.result(id: 3, state: { "live" }, source: source,
+                                            size: (64, 64), crop: nil)
+            XCTFail("expected no_frame")
+        } catch let error as MCPToolError {
+            XCTAssertEqual(error.code, .noFrame)
+        }
+        XCTAssertEqual(source.displays, 0, "the display layer was never read")
+    }
+
+    // [MCP-61] Neither still nor sending: `no_frame`, as it always was.
+    func testANeitherStillNorSendingPhoneIsNoFrame_MCP61() async throws {
+        let source = PhoneSource(newestSeq: 5, asks: [], displayed: makeBuffer(width: 64, height: 64,
+                                                                             value: 9))
+        do {
+            _ = try await Screenshot.result(id: 3, state: { "live" }, source: source,
+                                            size: (64, 64), crop: nil)
+            XCTFail("expected no_frame")
+        } catch let error as MCPToolError {
+            XCTAssertEqual(error.code, .noFrame)
+            XCTAssertEqual(source.displays, 0, "a still that never came reads no buffer")
+        }
     }
 
     // [MCP-61] An offline window can't make a picture: say so at once,

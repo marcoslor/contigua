@@ -127,6 +127,16 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     private var watchdog = FrameWatchdog()
     /// `window.still` messages seen for this stream: a count, never content.
     private(set) var stills = 0
+    /// When the last `window.still` (PHONE-21) arrived, and the window's frame
+    /// count at that moment: the phone then said the window has not changed
+    /// since that frame (MCP-60's still route).
+    private(set) var lastStillAt: TimeInterval?
+    private var stillsAtSeq = 0
+    /// The last still that came after the newest counted frame, if any.
+    var stillAfterFrame: TimeInterval? {
+        guard let lastStillAt, stillsAtSeq >= frameClock.newest else { return nil }
+        return lastStillAt
+    }
     private var stallTimer: Timer?
     /// The local key monitor that gives the bar its keys before AppKit's own
     /// Tab handling (see `handleBarKey`).
@@ -1888,6 +1898,8 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// The clock-explicit half, so a test drives it without waiting.
     func noteStill(at now: TimeInterval) {
         stills += 1
+        lastStillAt = now
+        stillsAtSeq = frameClock.newest
         if watchdog.still(at: now) { setStalled(false) }
         writeChromeState()
     }
