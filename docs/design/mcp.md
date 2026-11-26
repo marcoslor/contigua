@@ -100,7 +100,14 @@ the tool's schema (`-32602`) (MCP-4).
 
 with one extra `{"type": "image", "mimeType": "image/png", "data": …}` block
 first for `screenshot`. `tools/list` declares each tool's `outputSchema`, the
-answer shapes below.
+answer shapes below. A schema names every key its tool may answer and says so
+(`additionalProperties: false`), and a nested one (`tree`, `did`, `foreground`,
+a row) is the one its shape shares: a field a tool starts answering without its
+schema change is then a validation failure for every client that checks, rather
+than a key nobody declared. So `ui_tree`'s `omitted` (and its `ok`,
+`snapshot`, `truncated`, `layers`, `nodes`, `note`, `loading`, `matched` and
+`total`), the `tree` an act, an open or a wait observes, and the act envelope's
+`did` per action are named too.
 
 **Errors (MCP-6).** A failure of the moment (no phone, a window that closed, a
 ref whose element is gone) is a tool result with `isError: true` and one text

@@ -366,6 +366,8 @@ final class MCPCoreTests: XCTestCase {
                        "a tool with no sample answer is never checked")
         for (tool, answer) in samples {
             let schema = MCPOutputSchemas.schema(for: tool)
+            XCTAssertEqual(schema["additionalProperties"] as? Bool, false,
+                           "\(tool.rawValue)'s outputSchema does not name its keys")
             XCTAssertEqual(MCPCoreTests.schemaProblems(answer, schema), [],
                            "\(tool.rawValue) breaks its outputSchema")
         }
@@ -434,13 +436,18 @@ final class MCPCoreTests: XCTestCase {
             "size": [1080, 2364], "omitted": 41, "loading": false, "note": "…",
             "matched": 1, "total": 87, "state": state, "frame": frame,
             "layers": [["i": 0, "title": "Wikipedia", "type": "app", "active": true]],
-            "nodes": [["i": 0, "ref": "e3", "role": "TextView", "text": "Ada Lovelace", "heading": true,
-                       "box": [48, 420, 1032, 520], "at": [0.5, 0.196]]],
+            "nodes": [["i": 0, "ref": "e3", "role": "TextView", "text": "Ada Lovelace", "desc": "…",
+                       "id": "…", "heading": true, "box": [48, 420, 1032, 520], "at": [0.5, 0.196],
+                       "off": true, "click": true, "edit": true, "scroll": true, "check": true,
+                       "sel": true, "focus": true, "disabled": true, "pwd": true, "p": 1, "l": 0,
+                       "loading": true, "hint": true, "hintText": "…", "hidden": [0, 41],
+                       "covered": "e31", "in": "e20"]],
         ]
+        let treeJSON = MCPJSON.string(tree)
         let acted = MCPActEnvelope.answer(
             window: 3, did: MCPActDid.swipe(from: [0.5, 0.9], to: [0.5, 0.2], ms: 300, direction: .up),
             frameAtInput: 1302,
-            result: MCPActMachine.Answer(settle: settle, state: state, tree: "{}"))
+            result: MCPActMachine.Answer(settle: settle, state: state, tree: treeJSON))
             .merging(["frame": frame]) { a, _ in a }
         let typed = MCPActEnvelope.answer(
             window: 3, did: MCPActDid.type(characters: 2, clear: false, submit: false), frameAtInput: nil,
@@ -451,7 +458,7 @@ final class MCPCoreTests: XCTestCase {
         waited.tree = tree
         let opened = MCPOpenAnswer.answer(window: 5, kind: .app, package: "com.example.shop", label: "Shop",
                                           opened: .new, openedBy: "you", size: [590, 1280],
-                                          result: MCPActMachine.Answer(settle: settle, state: state, tree: "{}"))
+                                          result: MCPActMachine.Answer(settle: settle, state: state, tree: treeJSON))
             .merging(["frame": frame]) { a, _ in a }
         let status = MCPToolHost.statusAnswer(
             MCPStatusInput(connected: true, name: "My phone", battery: 81, charging: false, windows: 2,
