@@ -1705,7 +1705,15 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
      when either is non-zero: its left-out descendants before its first on-screen descendant
      in reading order, and the rest. The reply carries `omitted`, the count of left-out rows.
      A request `{"t":"ui.tree","stream":N,"seq":S,"offscreen":true}` keeps them, marked `off`
-     as item 2 sends them; the Mac asks so only for the MCP `find` argument.
+     as item 2 sends them, and each carries `where`, one closed word for the way a swipe must
+     go: `above` when its box ends above the display, `below` when it starts below it, `left`
+     or `right` when it lies wholly to a side, `hidden` when its bounds do have their 8×8 px
+     on the display but the user cannot see it (a collapsed tab, a DOM node swiping cannot
+     reveal); a row whose box the platform clipped to nothing (item 2's empty screen box) is
+     `before` or `after` instead, whether it comes before or after its nearest open
+     scrollable's first on-screen row — the same split as that scrollable's `hidden` — and
+     `hidden` with no scrollable holding it. `where` is sent only on such a read; the Mac asks
+     so only for the MCP `find` argument, and passes it through.
 10. **`ui.type` (B5).** Mac → `{"t":"ui.type","stream":N,"seq":S,"text":"…","clear":B,"submit":B}`,
     `text` 1–2000 characters, `clear` and `submit` optional (false). The phone finds the node
     with input focus in the active layer (item 9) of the stream's display. Text made only of

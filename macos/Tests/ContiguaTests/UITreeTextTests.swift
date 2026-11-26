@@ -178,7 +178,7 @@ final class UITreeTextTests: XCTestCase {
              "off": true, "where": "hidden"],
             ["i": 3, "k": 35, "p": 0, "role": "TextView", "text": "Row 7", "off": true],
         ])
-        XCTAssertEqual(UITreeText.text(read.nodes),
+        XCTAssertEqual(UITreeText.text(read.nodes, within: [1: "e20", 2: "e20", 3: "e20"]),
                        "[e20 RecyclerView scroll]\nRow 50 [e33 TextView off below, in e20]\n"
                        + "Row 99 [e34 TextView off hidden, in e20]\nRow 7 [e35 TextView off, in e20]")
     }

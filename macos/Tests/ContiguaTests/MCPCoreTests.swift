@@ -462,7 +462,7 @@ final class MCPCoreTests: XCTestCase {
             "layers": [["i": 0, "title": "Wikipedia", "type": "app", "active": true]],
             "nodes": [["i": 0, "ref": "e3", "role": "TextView", "text": "Ada Lovelace", "desc": "…",
                        "id": "…", "heading": true, "box": [48, 420, 1032, 520], "at": [0.5, 0.196],
-                       "off": true, "click": true, "edit": true, "scroll": true, "check": true,
+                       "off": true, "where": "below", "click": true, "edit": true, "scroll": true, "check": true,
                        "sel": true, "focus": true, "disabled": true, "pwd": true, "p": 1, "l": 0,
                        "loading": true, "hint": true, "hintText": "…", "hidden": [0, 41],
                        "covered": "e31", "in": "e20"]],

@@ -395,7 +395,8 @@ object UiTree {
             return top?.let { nodes[it]["k"] }
         }
 
-        /** The row that draws last of [rows], all in one window: a later branch, or a descendant. */        private fun topmost(rows: List<Int>): Int? = rows.maxWithOrNull { a, b -> paint(placed[a].path, placed[b].path) }
+        /** The row that draws last of [rows], all in one window: a later branch, or a descendant. */
+        private fun topmost(rows: List<Int>): Int? = rows.maxWithOrNull { a, b -> paint(placed[a].path, placed[b].path) }
 
         private fun paint(a: List<Step>, b: List<Step>): Int {
             for (i in 0 until minOf(a.size, b.size)) {
@@ -420,6 +421,28 @@ object UiTree {
 
         private fun inside(box: Box, x: Double, y: Double): Boolean =
             x >= box.left && x < box.right && y >= box.top && y < box.bottom
+
+        /**
+         * Which way a swipe must go to reach an `off` row (MCP-75): `above`,
+         * `below`, `left` or `right` of the display, `hidden` when the box has
+         * its 8×8 px on the display and only the user cannot see it (a
+         * collapsed tab, a DOM node swiping cannot reveal), or — when the
+         * platform clipped its box to nothing — `before` or `after` the list's
+         * first on-screen row (`hidden`'s `[before, after]`), `hidden` with no
+         * list to swipe.
+         */
+        private fun where(node: Node, open: List<Hidden>): String {
+            val box = node.box
+            if (box != null && !box.empty) {
+                if (box.bottom <= MIN_VISIBLE) return "above"
+                if (box.top >= size.h - MIN_VISIBLE) return "below"
+                if (box.right <= MIN_VISIBLE) return "left"
+                if (box.left >= size.w - MIN_VISIBLE) return "right"
+                return "hidden"
+            }
+            val scroll = open.lastOrNull() ?: return "hidden"
+            return if (scroll.shown) "after" else "before"
+        }
 
         /**
          * Walks [list] under the row [parent]. [active] is whether the layer
@@ -457,9 +480,13 @@ object UiTree {
                     add(layer, node.children, parent, depth + 1, here, active, open)
                     continue
                 }
-                for (it in open) it.shown = true
+                // MCP-75: an `off` row on an off-screen read says which way a
+                // swipe must go. Zero bytes on a normal read, which leaves it out.
+                val away = off(node, size)
+                val where = if (offscreen && away) where(node, open) else null
+                if (!away) for (it in open) it.shown = true
                 val index = nodes.size
-                val row = row(layer, index, parent, node, active)
+                val row = row(layer, index, parent, node, active, where)
                 nodes.add(row)
                 val visible = (row["box"] as? List<*>)?.takeIf { row["at"] != null }
                     ?.let { Box(it[0] as Int, it[1] as Int, it[2] as Int, it[3] as Int) }
@@ -476,7 +503,8 @@ object UiTree {
             }
         }
 
-        private fun row(layer: Int, index: Int, parent: Int, node: Node, active: Boolean): LinkedHashMap<String, Any?> {
+        private fun row(layer: Int, index: Int, parent: Int, node: Node, active: Boolean,
+                        where: String? = null): LinkedHashMap<String, Any?> {
             val row = LinkedHashMap<String, Any?>()
             row["i"] = index
             // The display's key for the node, filled in by [key] (MCP-71).
@@ -511,6 +539,8 @@ object UiTree {
                 val visible = visible(node, size)
                 if (visible == null) row["off"] = true else row["at"] = at(visible)
             }
+            // MCP-75: which way an off-screen row is, so `find` never guesses.
+            where?.let { row["where"] = it }
             if (node.clickable) row["click"] = true
             if (node.editable) row["edit"] = true
             if (node.scrollable) row["scroll"] = true

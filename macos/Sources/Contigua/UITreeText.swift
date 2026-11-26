@@ -31,6 +31,9 @@ enum UITreeText {
         var heading = false, hint = false, click = false, edit = false, scroll = false
         var check: Bool?
         var selected = false, focused = false, disabled = false, password = false, off = false
+        /// Which way an off-screen row is (MCP-75): `above`, `below`, `left`,
+        /// `right`, `before`, `after` or `hidden`.
+        var whereOff: String?
         var hidden: [Int]?
 
         init(_ node: UITree.Node) {
@@ -38,7 +41,7 @@ enum UITreeText {
             hintText = node.hintText; heading = node.heading; hint = node.hint
             click = node.click; edit = node.edit; scroll = node.scroll; check = node.check
             selected = node.selected; focused = node.focused; disabled = node.disabled
-            password = node.password; off = node.off; hidden = node.hidden
+            password = node.password; off = node.off; whereOff = node.whereOff; hidden = node.hidden
         }
 
         /// A row as `UITree.encoded()` writes it.
@@ -49,7 +52,7 @@ enum UITreeText {
             hintText = row["hintText"] as? String; heading = flag("heading"); hint = flag("hint")
             click = flag("click"); edit = flag("edit"); scroll = flag("scroll"); check = row["check"] as? Bool
             selected = flag("sel"); focused = flag("focus"); disabled = flag("disabled")
-            password = flag("pwd"); off = flag("off")
+            password = flag("pwd"); off = flag("off"); whereOff = row["where"] as? String
             hidden = (row["hidden"] as? [Int]).flatMap { $0.count == 2 ? $0 : nil }
         }
     }
@@ -94,10 +97,12 @@ enum UITreeText {
         var words: [String] = row.ref.isEmpty ? [] : [row.ref]
         words.append(row.role)
         // The row's own keys, in the row's order (WIN-79), true ones only.
+        // MCP-75: an off-screen row names which way it is, right after `off`.
         let states: [(Bool, String)] = [
             (row.edit, "edit"), (row.scroll, "scroll"), (row.check == true, "check"),
             (row.selected, "sel"), (row.focused, "focus"), (row.disabled, "disabled"),
-            (row.password, "pwd"), (row.off, "off"),
+            (row.password, "pwd"),
+            (row.off, row.whereOff.map { "off \($0)" } ?? "off"),
         ]
         words += states.filter(\.0).map(\.1)
         var inside = words.joined(separator: " ")

@@ -5453,7 +5453,7 @@ class Session(object):
                 return {"k": 11 + n, "pk": 11, "l": 0, "role": "TextView", "text": "Row %d" % n,
                         "box": box, "at": at(box), "click": True}
             return {"k": 11 + n, "pk": 11, "l": 0, "role": "TextView", "text": "Row %d" % n,
-                    "click": True, "off": True}
+                    "click": True, "off": True, "where": "below"}
 
         # `k` is each node's key (PROTOCOL.md "UI tree" item 9, MCP-71): the same
         # node keeps it in every read. `pk` names the parent's key; `p` (its
@@ -5475,7 +5475,8 @@ class Session(object):
              "box": box_list, "at": at(box_list)},
         ] + [list_row(n) for n in range(1, 9)] + [
             # Below the display (a cart's lower rows): left out unless `offscreen`.
-            {"k": 4, "pk": 1, "l": 0, "role": "TextView", "text": "Below the fold", "off": True},
+            {"k": 4, "pk": 1, "l": 0, "role": "TextView", "text": "Below the fold", "off": True,
+             "where": "below"},
         ]
         # The variant's reads count from when it is switched on (`--mode-file`).
         variant = mode_on(self.phone.args, "tree_variant")
