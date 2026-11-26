@@ -90,9 +90,21 @@ def suite(args):
                    and e["msg"].get("t") == "window.open", 30, "window.open")
 
         # [MCP-60] Two screenshots: each asks for a keyframe, the seq grows.
+        # The phone's `window.keyframe` line reaches events.jsonl asynchronously
+        # through the debug log, so a screenshot can return a few ms before its
+        # own line lands: wait for it (up to 2 s), then still require the count
+        # to be exactly one. The wait only stops the check racing the log.
         first = screenshot(client, window)
         before = len(rx(events(args.events), "window.keyframe", window))
         second = screenshot(client, window)
+        try:
+            wait_event(args.events,
+                       lambda _e: len(rx(events(args.events), "window.keyframe", window)) > before,
+                       2, "the second screenshot's window.keyframe")
+        except RuntimeError:
+            # A line that never lands is the count check's finding, below, with
+            # the number it saw; a timeout message here would say it twice.
+            pass
         after = len(rx(events(args.events), "window.keyframe", window))
         seq1 = (first.get("frame") or {}).get("seq")
         seq2 = (second.get("frame") or {}).get("seq")
