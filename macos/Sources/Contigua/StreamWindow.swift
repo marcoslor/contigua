@@ -85,6 +85,9 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     /// picture for the watchdog to call stale yet.
     var isOpening: Bool { showsOpeningCover && opening.isUp }
 
+    /// MCP-21: whether the stream has had its first frame, cover or not.
+    private(set) var firstFrameNoted = false
+
     /// What freezes the phone-side actions: Live Text (the frame is frozen),
     /// a stalled picture, the opening cover, a dropped link (WIN-16/PATH-17:
     /// input is dropped, not queued), or, in the phone window, a cover over
@@ -479,7 +482,12 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
     }
 
     /// The stream's first frame arrived (WindowManager); once per window.
+    /// Every window notes it, whether or not it wears the opening cover: a
+    /// link window has none, and MCP-21's `opening` is "no first frame yet"
+    /// (#255).
     func noteFirstFrame() {
+        guard !firstFrameNoted else { return }
+        firstFrameNoted = true
         let at = now()
         guard showsOpeningCover, let actions = opening.handle(.firstFrame, at: at) else { return }
         openingTimer?.invalidate()
@@ -1506,11 +1514,15 @@ class StreamWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// MCP-21: the window's lifecycle for the closed state token.
+    /// MCP-21: the window's lifecycle for the closed state token. A window
+    /// with no first frame yet is `opening` whether or not it wears the opening
+    /// cover: a link window has none, and its answer must still say opening
+    /// until its picture arrives (#255). A closed or offline window keeps its
+    /// own token, and a live window that is stalled or paused still says so.
     var mcpLifecycle: MCPWindowState.Lifecycle {
         if hasClosed { return .closed }
         if isLinkDown { return .offline }
-        if isOpening { return .opening }
+        if isOpening || !firstFrameNoted { return .opening }
         if isStalled { return .stalled }
         if isPaused { return .paused }
         return .live
