@@ -138,7 +138,7 @@ that names the next step. Extra fields depend on the code:
 | `too_many_windows` | the phone's window cap is reached (`open_app` with `newWindow`: whether the Mac or the phone finds it) | The phone allows <n> app windows at once. Close one with close_window, then try again. | `maxWindows` |
 | `bad_url` | LinkPolicy refused the URL | That link can't be opened: only http, https, geo, tel and mailto links up to 8 KiB are allowed. | — |
 | `bad_file` | the path is missing, unreadable, not a regular file or over the cap | That file can't be sent: it must be an absolute path to a readable regular file of at most <cap>. | — |
-| `no_frame` | no keyframe arrived within 2 s | Window <id> is <state word>: no new picture arrived in 2 s. Use ui_tree, or try again. — or, for an `opening` window: Window <id> is opening: no picture yet. Try again in a few seconds. | `window`, `state` |
+| `no_frame` | no keyframe arrived within 2 s, and the phone did not say the window is still with a frame to show | Window <id> is <state word>: no new picture arrived in 2 s. Use ui_tree, or try again. — or, for an `opening` window: Window <id> is opening: no picture yet. Try again in a few seconds. | `window`, `state` |
 | `not_supported` | this phone, or the focused field, cannot do it (no tree, no foreground read, a field that takes no set text) | <phone> can't <read this window's accessibility tree \| …>. — or, for `type_text`: The focused field on window <id> can't take this text: type only letters, digits and symbols a keyboard has, or pass clear: true to replace what is there. | `window` for a field |
 | `timeout` | the phone did not answer within the call's bound | <phone> did not answer in time. Try again; if it keeps failing, check phone_status. | — |
 | `failed` | anything else, and `close_window` on the person's window without `force` | The phone's or the app's own sentence. — or: Window <id> was opened by the person. Pass force: true to close it anyway. | `window` when one is named |
@@ -203,7 +203,7 @@ window) or `"window"` (MCP-100, "A window an agent opens" below).
 | `send_file` | `path` | Copy one file from this Mac to the phone's Download/Contigua folder and wait until the phone has it. Nothing on the phone is replaced or removed. |
 | `list_windows` | — | Every open window: its id, what it shows, who opened it (you, another agent, the person or the app itself), its state and how fresh its picture is, and the windows that closed in the last 10 minutes with the reason. A window id is a handle, never reused for another window while Contigua runs. |
 | `close_window` | `window`, `force`? | Close a window. On the phone this ends the app's screen on that window's own display; the app is not uninstalled and its data (a browser's tabs, a document) stays. A window the person opened needs force: true. |
-| `screenshot` | `window`, `ref`?, `wait`? | A PNG of the window, from a frame the phone sends after this call (never an older one), longest side at most 1280 px. ui_tree's box values are in the window's pixels (size), not the image's. Pass ref to get only that element. |
+| `screenshot` | `window`, `ref`?, `wait`? | A PNG of the window, from a frame the phone sends after this call (never an older one), longest side at most 1280 px. A window that is not moving answers the frame it shows, with frame.still: true and that frame's own age. ui_tree's box values are in the window's pixels (size), not the image's. Pass ref to get only that element. |
 | `ui_tree` | `window`, `wait`? (default `"none"`), `format`? (`"tree"`/`"text"`), `find`? | What the window shows, as accessibility nodes in reading order: text, role, view id, states, a tap point (at, 0..1) and a ref for tap; box is in the display's pixels (size). A ref names one element for as long as it is on screen, across reads; a ref whose element is gone is refused. Only what is on screen is listed: a list says how many items it hides before and after; swipe the list to reach them. A field showing its hint has hint: true and no text. loading: true means the screen is still loading. Exact, and cheaper than a screenshot for finding what to press. find keeps only the nodes whose text, description or view id contains it, ignoring case and accents, off-screen ones included (off: true, no at, and in names the list to swipe), and says how many matched of the total. format: "text" answers text instead of nodes: one line per label in reading order, # before a heading, and [ref role states] after what can be acted on. |
 | `wait` | `window`, one of `ms` (1–30000), `text` (+ `gone`?) or `settle: true`; `timeoutMs`? (≤ 30000, default 10000), `observe`? | Wait on a window: for ms milliseconds, until text appears on it (with gone: true, until it disappears), or with settle: true until it stops changing and nothing on it is loading, at most timeoutMs; if timeoutMs ends first, reason says whether it was still loading. Use this instead of sleeping or re-reading the tree as a clock. |
 | `tap` | `window`, `ref` or `x`+`y`, `holdMs`? (1–3000), `wait`?, `observe`? | Tap an element by its ref from ui_tree (preferred), or a point x, y (0..1 of the window); holdMs makes it a long press. A ref names one element for as long as it is on screen, across reads; a ref whose element is gone is refused. A ref whose element is off screen or covered is refused too, and nothing is pressed. The answer names what was pressed (its role and label). By default the call waits for the screen to settle and returns the new tree. |
@@ -342,7 +342,21 @@ Content: the PNG block, then the text block of
 (say 1080×2340), larger than its stream (592×1280). `crop` is in the same
 display pixels, the ref's `box` plus 8 on each side, clamped to `size`; the
 Mac scales it by frame/`size` to cut the decoded frame. `crop` only with `ref`, `blank` only when true, `settle` only with
-`wait: "settle"`.
+`wait: "settle"`, `frame.still` only when true.
+
+A still window answers the frame on the display, and says so in that frame:
+
+```json
+{"window": 3, "state": "live", "frame": {"seq": 1340, "ageMs": 4100, "still": true},
+ "image": [576, 1280], "size": [2860, 1654]}
+```
+
+`frame.still: true` means the phone itself reported the window still
+(`window.still`, PHONE-21) *since this call* and nothing newer has arrived: the
+answer is the frame the window shows, `frame.seq` and `frame.ageMs` are that
+frame's own — which is why the age is older than the call — and it was answered
+at once rather than at the bound. Without the flag the frame is a keyframe the
+phone sent after the call.
 
 A screenshot on a phone that is not online fails `phone_offline` at once,
 before its `ref` is judged, asking for no keyframe (MCP-61). No keyframe
@@ -442,12 +456,39 @@ changes close it:
 - **A screenshot is a frame from after the call (MCP-60).** The Mac asks for a
   keyframe and decodes the first one that arrives with the window's snapshot
   decoder (`beginFrameSnapshot`), stamped with its `seq`. The display layer's
-  buffer is never the answer, so a screenshot cannot be older than the call.
+  buffer is never the answer unless the phone itself said the window is still
+  (#274, below), so a screenshot otherwise cannot be older than the call.
   The decoder is one per window, shared with Live Text's freeze: each begin
   gets a token, a cancel acts only on its own token, and a newer begin
   displaces the older request, which fails at once.
-  The cost is one keyframe per screenshot. A window that sends none in 2 s
-  fails `no_frame` with its state.
+  The cost is one keyframe per screenshot. A window that sends none in 2 s and
+  is not still fails `no_frame` with its state.
+
+**Why a still screen failed `no_frame` (#274).** Found by hand-driving the
+field phone: `screenshot` failed 6/6 on a page that was not moving, and passed
+while it animated. Two causes, both on the Mac, closed without a wire change:
+
+- **The phone answers an ask with an IDR it already sent.** A key request made
+  within 250 ms of an IDR is satisfied by that IDR (PATH-41) and the phone
+  sends nothing, so a decoder that needs a frame counted *after* the call waits
+  out its whole bound. When no frame has been counted ~300 ms after the first
+  ask the Mac asks once more; that request is past the window and reaches the
+  encoder. Both asks share the one 2 s bound.
+- **A still surface submits no frames.** The phone's encoder repeats its last
+  frame every 500 ms while a stream is open; a vendor encoder that drops the
+  repeat sends `window.still` instead, once after 1 s of silence and again
+  every second, never on request (PHONE-21). So a still the phone sent *since
+  the call* — at or after the ask, with no newer frame — *is* the phone saying
+  nothing has changed since the newest frame. With a frame on screen
+  (`copyDisplayedFrame`) the Mac answers that frame at once, marked
+  `frame.still: true`, with its real `frame.ageMs` however old it is: a page
+  left open for minutes is exactly this case, and the age says so honestly. A
+  still from *before* the call answers nothing, because the screen may have
+  changed after it and the new frame may still be on the wire: waiting for the
+  next one costs at most a second, and a frame from before the call would bring
+  #165 back. A fresh keyframe that arrives first still wins, and a window with
+  no frame on screen still fails `no_frame`: the flag never claims more than the
+  phone said.
 
 A black first frame of a new window (the app had not drawn) is answered
 `blank: true`; with `wait: "settle"` the screenshot waits for the tree to settle

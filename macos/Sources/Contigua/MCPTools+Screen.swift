@@ -98,61 +98,100 @@ extension MCPToolHost {
 
 // MARK: - The screenshot source (MCP-60)
 
-/// A decoded frame from after the call, its count on the window's clock and
-/// when it arrived (uptime). Its age is taken when the answer is made (MCP-20).
-struct SnapshotFrame {
+/// A decoded frame: the buffer, its count on the window's clock (MCP-20) and
+/// when it arrived (uptime). Its age is taken when the answer is made.
+struct SnapshotFrame: Equatable {
+    /// Where the frame came from.
+    enum Origin: Equatable {
+        /// MCP-60's normal route: a keyframe counted after the call.
+        case keyframe
+        /// MCP-60's still route: the frame on the display, answered because the
+        /// phone said the window is still since it.
+        case displayed
+    }
     let buffer: CVPixelBuffer
     let seq: Int
     let at: TimeInterval
+    var origin: Origin = .keyframe
+
+    /// Same frame means same count at the same instant from the same route:
+    /// the pixel buffer is not comparable.
+    static func == (left: Self, right: Self) -> Bool {
+        left.seq == right.seq && left.at == right.at && left.origin == right.origin
+    }
 }
 
+/// What an `window.keyframe` request began: its decode is cancelled by this.
+typealias SnapshotTicket = SnapshotSlot.Token
+
 /// What a screenshot reads its frame from: a window, or a fake in the tests.
-/// `copyDisplayedFrame` is here so a fake can prove it is never read.
+/// `copyDisplayedFrame` is here so a fake can prove it is read only where the
+/// phone itself said the window is still.
 @MainActor
 protocol ScreenshotSource: AnyObject {
-    /// The newest counted frame when the call starts.
+    /// The newest counted frame when the call starts (MCP-20).
     var newestSeq: Int { get }
+    /// When that frame arrived; nil before the first.
+    var newestAt: TimeInterval? { get }
     /// Live Text's freeze holds the one snapshot decoder.
     var isCapturing: Bool { get }
-    /// The display layer's buffer: never a screenshot's answer (MCP-60).
+    /// The last `window.still` (PHONE-21) seen after the newest frame: the
+    /// phone itself says nothing has changed since then.
+    var stillSince: TimeInterval? { get }
+    /// The display layer's buffer: never a screenshot's answer unless the phone
+    /// reported the window still (MCP-60).
     func copyDisplayedFrame() -> CVPixelBuffer?
-    /// The first keyframe counted after `seq`, decoded; nil after `timeout`.
-    /// Called only once Live Text no longer holds the decoder.
-    func nextKeyframe(after seq: Int, timeout: TimeInterval) async -> SnapshotFrame?
+    /// Asks the phone for a keyframe and decodes the first one counted later
+    /// than `seq`; `handler` runs once, with the frame or nil. `until` is the
+    /// time the call has left: the decode never outlives it (MCP-61).
+    func beginSnapshot(after seq: Int, until: TimeInterval,
+                       handler: @escaping (SnapshotFrame?) -> Void) -> SnapshotTicket
+    /// Asks again while that decode still waits: the phone answers a request
+    /// made within 250 ms of an IDR it sent with that IDR and sends nothing
+    /// (PATH-41), so one ask can be answered by silence.
+    func askKeyframeAgain()
+    /// Drops the decode `ticket` began, only if it is still the current one.
+    func cancelSnapshot(_ ticket: SnapshotTicket)
+    /// Hands the call back to the run loop for one poll of its bound.
+    func poll(_ seconds: TimeInterval) async
 }
 
 extension StreamWindowController: ScreenshotSource {
     var newestSeq: Int { frameClock.newest }
 
+    var newestAt: TimeInterval? { frameClock.lastFrame }
+
     var isCapturing: Bool { liveText.state == .capturing }
+
+    var stillSince: TimeInterval? { stillAfterFrame }
 
     func copyDisplayedFrame() -> CVPixelBuffer? { videoView.copyDisplayedFrame() }
 
-    func nextKeyframe(after seq: Int, timeout: TimeInterval) async -> SnapshotFrame? {
-        final class Once {
-            var continuation: CheckedContinuation<SnapshotFrame?, Never>?
-            func finish(_ frame: SnapshotFrame?) {
-                continuation?.resume(returning: frame)
-                continuation = nil
-            }
-        }
-        let once = Once()
+    /// MCP-60: the snapshot decoder's frame, stamped with its count.
+    func beginSnapshot(after seq: Int, until: TimeInterval,
+                       handler: @escaping (SnapshotFrame?) -> Void) -> SnapshotTicket {
         let view = videoView
-        return await withCheckedContinuation { continuation in
-            once.continuation = continuation
-            let token = view.beginFrameSnapshot(after: seq) { buffer, stamp in
-                MainActor.assumeIsolated {
-                    guard let buffer, let stamp else { once.finish(nil); return }
-                    once.finish(SnapshotFrame(buffer: buffer, seq: stamp.seq, at: stamp.at))
-                }
-            }
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                guard once.continuation != nil else { return }
-                view.cancelFrameSnapshot(token)
-                once.finish(nil)
+        let ticket = view.beginFrameSnapshot(after: seq) { buffer, stamp in
+            MainActor.assumeIsolated {
+                guard let buffer, let stamp else { handler(nil); return }
+                handler(SnapshotFrame(buffer: buffer, seq: stamp.seq, at: stamp.at))
             }
         }
+        // MCP-61: the decode is dropped with the call's bound, whatever the
+        // caller does; a screenshot must not leave a decoder behind.
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(max(0, until) + 0.05))
+            view.cancelFrameSnapshot(ticket)
+        }
+        return ticket
+    }
+
+    func askKeyframeAgain() { videoView.requestKeyframeNow() }
+
+    func cancelSnapshot(_ ticket: SnapshotTicket) { videoView.cancelFrameSnapshot(ticket) }
+
+    func poll(_ seconds: TimeInterval) async {
+        try? await Task.sleep(for: .seconds(seconds))
     }
 }
 
@@ -161,11 +200,12 @@ extension StreamWindowController: ScreenshotSource {
 @MainActor
 enum Screenshot {
     /// The bound for a keyframe to arrive (MCP-61).
-    static let timeout: TimeInterval = 2
+    static let timeout = ScreenshotWait.bound
 
-    /// The `.image` answer for the first keyframe after the call, or `no_frame`.
-    /// `state` is read when the answer or failure is made, not at the call:
-    /// an opening window may have gone live, a live one stalled or closed.
+    /// The `.image` answer for the first keyframe after the call, or
+    /// `no_frame`. `state` is read when the answer or failure is made, not at
+    /// the call: an opening window may have gone live, a live one stalled or
+    /// closed.
     static func result(id: Int, state: () -> String, source: ScreenshotSource,
                        size: (Int, Int), crop: [Int]?,
                        online: Bool = true, phone: String? = nil,
@@ -174,25 +214,7 @@ enum Screenshot {
         async throws -> MCPToolResult {
         // MCP-61: an offline window can make no picture; say so before asking.
         guard online else { throw MCPToolError.phoneOffline(phone) }
-        let start = source.newestSeq
-        // Live Text's freeze holds the one snapshot decoder: wait for it to
-        // finish rather than take it away. The wait is inside the one 2 s
-        // bound; the keyframe gets only the time left (MCP-61).
-        let deadline = ProcessInfo.processInfo.systemUptime + timeout
-        while source.isCapturing, ProcessInfo.processInfo.systemUptime < deadline {
-            try? await Task.sleep(nanoseconds: 50_000_000)
-        }
-        let left = deadline - ProcessInfo.processInfo.systemUptime
-        let frame = source.isCapturing || left <= 0
-            ? nil : await source.nextKeyframe(after: start, timeout: left)
-        guard let frame else {
-            // MCP-61: a window that closed while the call waited is gone,
-            // not short of a picture.
-            // MCP-53: a window that closed keeps the ledger's record, as `tap` does.
-            let now = state()
-            if now == "closed" { throw (noWindow ?? { MCPToolError.noWindow(id) })() }
-            throw MCPToolError.noFrame(window: id, state: now)
-        }
+        let frame = try await waitForFrame(id: id, state: state, source: source, noWindow: noWindow)
         let buffer = frame.buffer
         let frameSize = (CVPixelBufferGetWidth(buffer), CVPixelBufferGetHeight(buffer))
         // MCP-63: the crop is in display pixels; the frame may be smaller.
@@ -206,19 +228,113 @@ enum Screenshot {
                                       window: id)
         }
         let image = FrameGrab.scaledSize(sourceWidth: frameSize.0, sourceHeight: frameSize.1, crop: frameCrop)
+        // MCP-20: the age now, when the answer is made, not at decode.
+        var frameObject = FrameClock.object(
+            seq: frame.seq,
+            ageMs: FrameClock.ms(since: frame.at, now: ProcessInfo.processInfo.systemUptime))
+        // MCP-60: a frame the phone said is still the picture is marked so; a
+        // keyframe from after the call is a live frame and carries no flag. The
+        // flag sits in `frame` because it explains that frame's own age.
+        if frame.origin == .displayed { frameObject["still"] = true }
         var answer: [String: Any] = [
             "window": id,
             "state": state(),
-            // MCP-20: the age now, when the answer is made, not at decode.
-            "frame": FrameClock.object(seq: frame.seq,
-                                       ageMs: FrameClock.ms(since: frame.at,
-                                                            now: ProcessInfo.processInfo.systemUptime)),
+            "frame": frameObject,
             "image": [image.0, image.1],
             "size": [size.0, size.1],
         ]
         if encoded.1 { answer["blank"] = true }
         if let crop { answer["crop"] = crop }
         return .image(png, answer)
+    }
+
+    /// The frame the call answers, or `no_frame`/`no_window` at its bound
+    /// (MCP-60, MCP-61): the one state machine, driven against the window.
+    private static func waitForFrame(id: Int, state: () -> String,
+                                      source: ScreenshotSource,
+                                      noWindow: (() -> MCPToolError)?) async throws -> SnapshotFrame {
+        // MCP-61: the bound runs from the call, and covers Live Text's hold.
+        var wait = ScreenshotWait.model(callStart: ProcessInfo.processInfo.systemUptime,
+                                        hasFrame: source.newestAt != nil)
+        // Live Text's freeze holds the one snapshot decoder: wait for it to let
+        // go rather than take it away, inside the same bound (MCP-61).
+        while source.isCapturing, ProcessInfo.processInfo.systemUptime < wait.deadline {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        guard !source.isCapturing else { throw boundFailure(id: id, state: state, noWindow: noWindow) }
+
+        // MCP-60: ask, and decode the first keyframe counted after the call.
+        // PATH-41: the repeat is counted from this ask, not from the call, so a
+        // Live Text hold longer than it cannot leave the repeat already due.
+        let startSeq = source.newestSeq
+        var answered: SnapshotFrame?
+        let ticket = source.beginSnapshot(
+            after: startSeq,
+            until: max(0, wait.deadline - ProcessInfo.processInfo.systemUptime)) { frame in
+            MainActor.assumeIsolated {
+                if answered == nil { answered = frame }
+            }
+        }
+        defer { source.cancelSnapshot(ticket) }
+        let askedAt = ProcessInfo.processInfo.systemUptime
+        wait = ScreenshotWait.transition(wait, .asked(now: askedAt)).model
+
+        // The wait proper: a frame wins, a still sent since the ask with a shown
+        // picture answers, and one more ask covers the phone's duplicate-IDR
+        // gate (PATH-41).
+        while true {
+            let tick = ProcessInfo.processInfo.systemUptime
+            let transition = ScreenshotWait.transition(
+                wait,
+                .tick(now: tick, frame: answered,
+                      stillAt: source.stillSince,
+                      displayed: displayedFrame(source, askedAt: askedAt)))
+            wait = transition.model
+            for action in transition.actions {
+                switch action {
+                case .askAgain:
+                    source.askKeyframeAgain()
+                case .wait(let seconds):
+                    await source.poll(seconds)
+                }
+            }
+            switch transition.outcome {
+            case .wait:
+                continue
+            case .keyframe(let frame):
+                return frame
+            case .displayed(let frame):
+                return frame
+            case .fail:
+                throw boundFailure(id: id, state: state, noWindow: noWindow)
+            }
+        }
+    }
+
+    /// The frame on the display, when the answer may honestly claim it. It is
+    /// read only once the phone has sent a `window.still` since this ask, so a
+    /// moving window or a stale pre-call still never touches the display layer.
+    /// A frame older than the call is still the picture then (MCP-61) and its
+    /// `frame.ageMs` says how old it is, a static page left open for minutes
+    /// being exactly what this route is for. Without a counted frame there is
+    /// nothing to vouch for and the display is never read: a still is not a
+    /// first picture (MCP-61). A keyframe arriving first wins by the machine's
+    /// order.
+    private static func displayedFrame(_ source: ScreenshotSource,
+                                       askedAt: TimeInterval) -> SnapshotFrame? {
+        guard ScreenshotWait.stillVouches(source.stillSince, askedAt: askedAt),
+              let at = source.newestAt,
+              let buffer = source.copyDisplayedFrame() else { return nil }
+        return SnapshotFrame(buffer: buffer, seq: source.newestSeq, at: at, origin: .displayed)
+    }
+
+    /// At the bound: a window that closed while the call waited is gone, not
+    /// short of a picture (MCP-61), and keeps its ledger record (MCP-53).
+    private static func boundFailure(id: Int, state: () -> String,
+                                     noWindow: (() -> MCPToolError)?) -> MCPToolError {
+        let now = state()
+        return now == "closed" ? (noWindow ?? { MCPToolError.noWindow(id) })()
+                               : MCPToolError.noFrame(window: id, state: now)
     }
 }
 

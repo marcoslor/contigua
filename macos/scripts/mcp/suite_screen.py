@@ -1,23 +1,30 @@
 #!/usr/bin/env python3
-"""MCP screenshot freshness e2e suite (docs/specs/mcp.md MCP-20/21/22/50/60).
+"""MCP screenshot freshness e2e suite (docs/specs/mcp.md MCP-20/21/22/50/60/61).
 
 A screenshot is a frame from after the call: each one asks the fakephone for a
 keyframe and its `frame.seq` grows; `size` is the window's pixels, the same as
-`list_windows` says. A minimised (paused) window is resumed by the agent hold
-for the call and pauses again by WIN's rule 15 s after it. Run it through
-driver.py (`--suite screen`); the pause setup needs `--control`.
+`list_windows` says. A window that is not moving (`window.still`, PHONE-21)
+answers the frame it shows, marked `frame.still: true`, at once (#274). A minimised
+(paused) window is resumed by the agent hold for the call and pauses again by
+WIN's rule 15 s after it. Run it through driver.py (`--suite screen`); the pause
+setup needs `--control`.
 """
 
 import json
 import os
 import time
 
-from common import MCP, events, report, wait_event
+from common import MCP, events, mode, report, wait_event
 
 
 def rx(log, kind, stream, since=0.0):
     return [e for e in log if e.get("ev") == "rx" and isinstance(e.get("msg"), dict)
             and e["msg"].get("t") == kind and e["msg"].get("stream") == stream
+            and e.get("ts", 0) >= since]
+
+
+def stills(log, stream, since=0.0):
+    return [e for e in log if e.get("ev") == "still" and e.get("stream") == stream
             and e.get("ts", 0) >= since]
 
 
@@ -83,10 +90,21 @@ def suite(args):
                    and e["msg"].get("t") == "window.open", 30, "window.open")
 
         # [MCP-60] Two screenshots: each asks for a keyframe, the seq grows.
+        # The phone's `window.keyframe` line reaches events.jsonl asynchronously
+        # through the debug log, so a screenshot can return a few ms before its
+        # own line lands: wait for it (up to 2 s), then still require the count
+        # to be exactly one. The wait only stops the check racing the log.
         first = screenshot(client, window)
         before = len(rx(events(args.events), "window.keyframe", window))
         second = screenshot(client, window)
-        held_from = time.time()  # the hold runs to 15 s after this call
+        try:
+            wait_event(args.events,
+                       lambda _e: len(rx(events(args.events), "window.keyframe", window)) > before,
+                       2, "the second screenshot's window.keyframe")
+        except RuntimeError:
+            # A line that never lands is the count check's finding, below, with
+            # the number it saw; a timeout message here would say it twice.
+            pass
         after = len(rx(events(args.events), "window.keyframe", window))
         seq1 = (first.get("frame") or {}).get("seq")
         seq2 = (second.get("frame") or {}).get("seq")
@@ -109,6 +127,54 @@ def suite(args):
         report(row.get("label") == "Settings" and isinstance(row.get("title"), str),
                "MCP [MCP-50] list_windows' row carries the app's label and the phone's task title (%r/%r)"
                % (row.get("label"), row.get("title")))
+
+        # [MCP-60, MCP-61] #274: a window that is not moving. The phone says
+        # `window.still` once a second instead of sending frames (PHONE-21), and
+        # a key request reaches no input frame to encode. The call must answer
+        # the frame the window shows, marked still, with its real age, at once.
+        mode(args, "still")
+        stilled = wait_event(args.events,
+                              lambda e: e.get("ev") == "still" and e.get("stream") == window,
+                              15, "a still report")
+        report(bool(stilled), "MCP [MCP-60] the still window reports window.still")
+        called = time.time()
+        shot = screenshot(client, window)
+        done = time.time()
+        log = events(args.events)
+        report((shot.get("frame") or {}).get("still") is True,
+               "MCP [MCP-61] a still window's screenshot answers the shown frame with "
+               "frame.still: true (%s)" % (shot.get("frame") or {}).get("still"))
+        frame = shot.get("frame") or {}
+        report(isinstance(frame.get("seq"), int) and (frame.get("ageMs") or 0) >= 0,
+               "MCP [MCP-60] the still answer carries that frame's own seq and age "
+               "(%s, %s ms)" % (frame.get("seq"), frame.get("ageMs")))
+        report(done - called < 2,
+               "MCP [MCP-61] the still answer comes at once, not at the bound (%.2f s)"
+               % (done - called))
+        report(len(stills(log, window, since=called - 1)) > 0,
+               "MCP [MCP-60] the phone kept saying the window is still")
+        # The picture moves again: once a frame newer than the still answer is
+        # on the display, the phone's still no longer vouches for anything, and
+        # the next screenshot is a keyframe with no flag.
+        mode(args)
+        frozen = (shot.get("frame") or {}).get("seq") or 0
+        deadline = time.time() + 15
+        newest = frozen
+        while time.time() < deadline and newest <= frozen:
+            rows = [w for w in client.text("list_windows").get("windows") or []
+                    if w.get("id") == window]
+            newest = ((rows[0].get("frame") or {}).get("seq") if rows else 0) or 0
+            if newest <= frozen:
+                time.sleep(0.2)
+        report(newest > frozen, "MCP [MCP-60] the window's picture moves again (seq %s)"
+               % newest)
+        moving = screenshot(client, window)
+        report((moving.get("frame") or {}).get("still") is None
+               and isinstance((moving.get("frame") or {}).get("seq"), int),
+               "MCP [MCP-61] a window that moves again answers a keyframe, no still flag (%s)"
+               % (moving.get("frame") or {}).get("still"))
+        # The hold runs to 15 s after the last call on the window: this one.
+        held_from = time.time()
 
         # [MCP-22] A minimised window: the call resumes it, and it pauses again
         # by WIN's rule 15 s after the call.
@@ -151,4 +217,7 @@ def suite(args):
                % (None if held is None else round(held, 1)))
         client.text("close_window", {"window": window})
     finally:
+        # The mode file outlives this suite: clear it even when a check above
+        # stopped early, so a later suite never sees a still phone.
+        mode(args)
         client.close()

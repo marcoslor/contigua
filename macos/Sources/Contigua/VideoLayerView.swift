@@ -788,6 +788,13 @@ final class VideoLayerView: NSView {
         }
     }
 
+    /// Asks the phone for a keyframe again, without touching the decode that
+    /// already waits: a request the phone answered with an IDR it sent just
+    /// before the call sends nothing, and a later one is honoured (PATH-41).
+    func requestKeyframeNow() {
+        onRequestKeyframe?()
+    }
+
     /// Why there is no frame to freeze, for the scripted check (state only, no
     /// pixels). "renderer=…" is the API's own status; the rest is the layer and
     /// its window.
