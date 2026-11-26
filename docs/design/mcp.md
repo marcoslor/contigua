@@ -682,7 +682,10 @@ field with no set text gets a paste, and then the phone saves the person's whole
 clip, proves it can put it back, pastes one run at a time and puts the clip back
 afterwards; a clip it cannot save or put back, and any clip carrying a URI (an
 image, a file), is never overwritten, and the run is dropped. A set-text run waits
-for the keys sent before it to be handled first, and for a busy tree 150 ms at most.
+for the keys sent before it to be handled first, and for the tree 150 ms at
+most: that is the whole bound, so it never connects a tree and never waits for
+the settle, and a tree that is busy, unconnected or shows no focused field is
+unreadable and the run takes the fallback under its guards (#270).
 
 `input_probe` is the measurement tool built for the pmaxx epic, listed only
 while the app runs with `--mcp-dev-tools` (the stream bench, the e2e `mcp`
