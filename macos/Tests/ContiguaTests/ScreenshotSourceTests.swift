@@ -393,6 +393,7 @@ final class ScreenshotSourceTests: XCTestCase {
         let frame = try XCTUnwrap(answer["frame"] as? [String: Any])
         XCTAssertNil(frame["still"], "the fresh keyframe wins, not the pre-call still")
         XCTAssertEqual(frame["seq"] as? Int, 41)
+        XCTAssertEqual(source.displays, 0, "a pre-call still never reads the display layer")
     }
 
     // [MCP-61] The same pre-call still with no keyframe behind it: `no_frame`
@@ -408,6 +409,7 @@ final class ScreenshotSourceTests: XCTestCase {
         } catch let error as MCPToolError {
             XCTAssertEqual(error.code, .noFrame)
         }
+        XCTAssertEqual(source.displays, 0, "a pre-call still never reads the display layer")
     }
 
     // [MCP-60] A fresh keyframe that arrives before the still wins.

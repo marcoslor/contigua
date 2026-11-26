@@ -157,12 +157,10 @@ enum ScreenshotWait {
             }
             return ScreenshotWaitTransition(model: model, outcome: .wait,
                                              actions: [.wait(seconds: pollInterval)])
-        case (.waiting, .asked(let now)):
-            // A second `asked` is the repeat ask; its moment already stands.
+        case (.waiting(let askedAt, let repeatAt, _), .asked):
+            // A second `asked` is the repeat ask; the first ask's moment stands.
             var next = model
-            if case .waiting(_, let repeatAt, _) = model.state {
-                next.state = .waiting(askedAt: now, repeatAt: repeatAt, askedAgain: true)
-            }
+            next.state = .waiting(askedAt: askedAt, repeatAt: repeatAt, askedAgain: true)
             return ScreenshotWaitTransition(model: next, outcome: .wait, actions: [])
         }
     }

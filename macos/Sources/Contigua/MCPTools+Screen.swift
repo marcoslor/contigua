@@ -273,7 +273,8 @@ enum Screenshot {
             }
         }
         defer { source.cancelSnapshot(ticket) }
-        wait = ScreenshotWait.transition(wait, .asked(now: ProcessInfo.processInfo.systemUptime)).model
+        let askedAt = ProcessInfo.processInfo.systemUptime
+        wait = ScreenshotWait.transition(wait, .asked(now: askedAt)).model
 
         // The wait proper: a frame wins, a still sent since the ask with a shown
         // picture answers, and one more ask covers the phone's duplicate-IDR
@@ -284,7 +285,7 @@ enum Screenshot {
                 wait,
                 .tick(now: tick, frame: answered,
                       stillAt: source.stillSince,
-                      displayed: displayedFrame(source)))
+                      displayed: displayedFrame(source, askedAt: askedAt)))
             wait = transition.model
             for action in transition.actions {
                 switch action {
@@ -308,17 +309,18 @@ enum Screenshot {
     }
 
     /// The frame on the display, when the answer may honestly claim it. It is
-    /// read only while the phone is saying the window is still, so a moving
-    /// window never touches the display layer. `stillSince` is only the last
-    /// still the phone sent, so the machine decides whether it came since the
-    /// ask; a frame older than the call is still the picture then (MCP-61) and
-    /// its `frame.ageMs` says how old it is, a static page left open for minutes
+    /// read only once the phone has sent a `window.still` since this ask, so a
+    /// moving window or a stale pre-call still never touches the display layer.
+    /// A frame older than the call is still the picture then (MCP-61) and its
+    /// `frame.ageMs` says how old it is, a static page left open for minutes
     /// being exactly what this route is for. Without a counted frame there is
     /// nothing to vouch for and the display is never read: a still is not a
     /// first picture (MCP-61). A keyframe arriving first wins by the machine's
     /// order.
-    private static func displayedFrame(_ source: ScreenshotSource) -> SnapshotFrame? {
-        guard source.stillSince != nil, let at = source.newestAt,
+    private static func displayedFrame(_ source: ScreenshotSource,
+                                       askedAt: TimeInterval) -> SnapshotFrame? {
+        guard ScreenshotWait.stillVouches(source.stillSince, askedAt: askedAt),
+              let at = source.newestAt,
               let buffer = source.copyDisplayedFrame() else { return nil }
         return SnapshotFrame(buffer: buffer, seq: source.newestSeq, at: at, origin: .displayed)
     }
