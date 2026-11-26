@@ -325,7 +325,7 @@ struct UITree: Equatable {
                          role: node.role, text: node.text, desc: node.desc, id: node.id,
                          box: node.box, at: node.at.map { [$0.x, $0.y] },
                          off: node.off ? true : nil,
-                         `where`: node.whereOff,
+                         where: node.whereOff,
                          click: node.click ? true : nil,
                          edit: node.edit ? true : nil,
                          scroll: node.scroll ? true : nil,
