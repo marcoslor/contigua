@@ -520,7 +520,9 @@ final class MCPCoreTests: XCTestCase {
                 "recentlyClosed": [["id": 2, "kind": "link", "package": NSNull(), "reason": "closed",
                                     "closedBy": "another_agent", "closedAgoMs": 5100]],
             ],
-            .screenshot: ["window": 3, "state": state, "frame": frame, "image": [1280, 740],
+            .screenshot: ["window": 3, "state": state,
+                          "frame": ["seq": 1340, "ageMs": 35, "still": true],
+                          "image": [1280, 740],
                           "size": [2860, 1654], "crop": [130, 1052, 1310, 1148], "blank": true,
                           "settle": MCPActEnvelope.settle(settle)],
             .uiTree: tree,
@@ -560,8 +562,20 @@ final class MCPCoreTests: XCTestCase {
             as? [String: Any]
         XCTAssertEqual(Set(row?["required"] as? [String] ?? []),
                        ["id", "package", "size", "state", "frame"])
-        let screenshot = MCPOutputSchemas.schema(for: .screenshot)["required"] as? [String] ?? []
+        let schema = MCPOutputSchemas.schema(for: .screenshot)
+        let screenshot = schema["required"] as? [String] ?? []
         XCTAssertEqual(Set(screenshot), ["window", "state", "frame", "image", "size"])
+        // MCP-62: `still` sits inside `frame`, where it explains that frame's own
+        // age, and is optional, so a keyframe's frame still matches the schema
+        // (additionalProperties: false).
+        let fields = schema["properties"] as? [String: Any] ?? [:]
+        XCTAssertNil(fields["still"], "still is not a top-level key")
+        let screenshotFrame = fields["frame"] as? [String: Any] ?? [:]
+        let still = (screenshotFrame["properties"] as? [String: Any])?["still"] as? [String: Any]
+        XCTAssertEqual(still?["type"] as? String, "boolean")
+        XCTAssertEqual(screenshotFrame["additionalProperties"] as? Bool, false)
+        XCTAssertFalse((screenshotFrame["required"] as? [String] ?? []).contains("still"),
+                       "frame.still is omitted unless the answer is a still")
 
         let stamped = MCPFreshness.stamp(["ok": true, "window": 3], state: "paused",
                                          frame: FrameClock.object(seq: 0, ageMs: nil))

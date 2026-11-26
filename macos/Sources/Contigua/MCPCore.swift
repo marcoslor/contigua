@@ -274,7 +274,7 @@ enum MCPTools {
                 description: "Every open window: its id, what it shows, who opened it (you, another agent, the person or the app itself), its state and how fresh its picture is, and the windows that closed in the last 10 minutes with the reason. A window id is a handle, never reused for another window while Contigua runs.",
                 schema: object([:], required: [])),
         MCPTool(name: .screenshot,
-                description: "A PNG of the window, from a frame the phone sends after this call (never an older one), longest side at most 1280 px. ui_tree's box values are in the window's pixels (size), not the image's. Pass ref to get only that element.",
+                description: "A PNG of the window, from a frame the phone sends after this call (never an older one), longest side at most 1280 px. A window that is not moving answers the frame it shows, with frame.still: true and that frame's own age. ui_tree's box values are in the window's pixels (size), not the image's. Pass ref to get only that element.",
                 schema: object([
                     "window": window,
                     "ref": ["type": "string", "minLength": 1, "maxLength": 32, "pattern": "^e[0-9]+$",
@@ -415,6 +415,12 @@ enum MCPOutputSchemas {
     /// MCP-20's `frame` object, carried by every answer that reflects a screen.
     private static let frameObject = object(["seq": integer, "ageMs": nullable("integer")],
                                             required: ["seq", "ageMs"])
+    /// MCP-60's `frame` on a screenshot: the same, plus `still` on an answer
+    /// made from the frame the window shows rather than a keyframe from after
+    /// the call, so the flag explains why `ageMs` is older than the call.
+    private static let screenshotFrameObject = object(
+        ["seq": integer, "ageMs": nullable("integer"), "still": boolean],
+        required: ["seq", "ageMs"])
     /// MCP-21's closed state token.
     private static let stateToken: [String: Any] = [
         "type": "string", "enum": ["opening", "live", "paused", "stalled", "offline", "closed"]]
@@ -573,7 +579,7 @@ enum MCPOutputSchemas {
                                                                      "closedBy", "closedAgoMs"]))],
                           required: ["windows", "recentlyClosed"])
         case .screenshot:
-            return object(["window": integer, "state": stateToken, "frame": frameObject,
+            return object(["window": integer, "state": stateToken, "frame": screenshotFrameObject,
                            "image": array(integer), "size": array(integer),
                            "blank": boolean, "crop": array(integer), "settle": settleObject],
                           required: ["window", "state", "frame", "image", "size"])
