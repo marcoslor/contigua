@@ -73,9 +73,8 @@ enum UITreeText {
     /// The lines of [rows], each with its `i`, its parent's `i` and a `find`'s
     /// scrollable. An unlabelled clickable wrapper adopts its non-actionable
     /// children's labels onto its own line (MCP-74): a cross-platform
-    /// toolkit's icon button is
-    /// one `View` a client can press, wrapping the text it shows, and two
-    /// disconnected lines read as two controls.
+    /// toolkit's icon button is one `View` a client can press, wrapping the
+    /// text it shows, and two disconnected lines read as two controls.
     private static func lines(_ rows: [(Row, Int, Int?, String?)]) -> String {
         let absorbed = wrappers(rows)
         var out: [String] = []
