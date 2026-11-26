@@ -331,8 +331,8 @@ enum MCPTools {
                 description: "Type text into the window's focused field at the cursor: what is there stays, and entry in the answer says inserted. clear: true replaces the field's text instead (entry: replaced); submit: true presses Enter after. The phone's clipboard is never used. Tap the field first if nothing is focused.",
                 schema: object([
                     "window": window,
-                    "text": ["type": "string", "maxLength": 2000,
-                             "description": "Up to 2000 characters."],
+                    "text": ["type": "string", "minLength": 1, "maxLength": 2000,
+                             "description": "1 to 2000 characters, counted as Unicode code points (the phone's unit)."],
                     "clear": ["type": "boolean",
                               "description": "Replace the field's text instead of inserting at the cursor."],
                     "submit": ["type": "boolean", "description": "Press Enter after the text."],
@@ -394,8 +394,13 @@ enum MCPTools {
 /// The answer shapes of the tools as they are today (design/mcp.md "Answer
 /// shapes"); each later task updates its own tool's.
 enum MCPOutputSchemas {
+    /// MCP-5: an answer's schema names every field the tool may answer, and
+    /// says so (`additionalProperties: false`), so a field a tool starts
+    /// emitting without a schema change fails its own validation instead of
+    /// reaching a client as an undeclared key.
     private static func object(_ properties: [String: Any], required: [String] = []) -> [String: Any] {
-        var schema: [String: Any] = ["type": "object", "properties": properties]
+        var schema: [String: Any] = ["type": "object", "properties": properties,
+                                     "additionalProperties": false]
         if !required.isEmpty { schema["required"] = required }
         return schema
     }
@@ -414,30 +419,100 @@ enum MCPOutputSchemas {
     private static let stateToken: [String: Any] = [
         "type": "string", "enum": ["opening", "live", "paused", "stalled", "offline", "closed"]]
 
+    /// The `ui_tree` payload properties shared between top-level `ui_tree` and
+    /// the `tree` observed inside an act, open, or wait answer (MCP-70…75, MCP-82).
+    private static var treeProperties: [String: Any] {
+        // WIN-79's row and what the later tasks added: MCP-72 (`heading`),
+        // MCP-73 (`covered`), MCP-103 (`loading`), MCP-104 (`hint`,
+        // `hintText`), MCP-106 (`hidden`) and MCP-75's `find` (`in`, `at` and
+        // `off` for an off-screen match).
+        let row = object([
+            "i": integer, "ref": string, "p": integer, "l": integer, "role": string,
+            "text": string, "desc": string, "id": string, "box": array(integer),
+            "at": array(number), "off": boolean, "click": boolean, "edit": boolean,
+            "scroll": boolean, "check": boolean, "sel": boolean, "focus": boolean,
+            "disabled": boolean, "pwd": boolean, "loading": boolean, "heading": boolean,
+            "covered": string, "hint": boolean, "hintText": string,
+            "hidden": array(integer), "in": string,
+        ], required: ["i", "role"])
+        let layer = object([
+            "i": integer, "title": nullable("string"), "type": string, "active": boolean,
+        ], required: ["i", "type"])
+        return [
+            "window": integer, "ok": boolean, "displayId": integer, "snapshot": integer,
+            "size": array(integer), "truncated": boolean,
+            "layers": array(layer), "nodes": array(row),
+            "note": string, "loading": boolean, "omitted": integer,
+        ]
+    }
+
+    /// MCP-82: the observed `tree` nested inside an act, open, or wait answer
+    /// (`UITree.Out` directly; `state` and `frame` sit on the outer envelope).
+    private static var observedTree: [String: Any] {
+        object(treeProperties, required: ["window"])
+    }
+
+    /// MCP-70…75: the top-level `ui_tree` answer (stamped with `state` and `frame`).
+    private static var treeAnswer: [String: Any] {
+        var props = treeProperties
+        props["settle"] = settleObject
+        props["matched"] = integer
+        props["total"] = integer
+        props["format"] = ["type": "string", "enum": ["text"]]
+        props["text"] = string
+        props["state"] = stateToken
+        props["frame"] = frameObject
+        return object(props, required: ["window", "state", "frame"])
+    }
+
     /// MCP-81's settle: a closed state, how long it waited, and why it stopped.
     private static let settleObject = object([
         "state": ["type": "string",
                   "enum": ["settled", "still_changing", "not_waited", "not_ready", "unavailable",
                            "window_closed", "interrupted"]],
         "waitedMs": integer,
-        "reason": ["type": "string", "enum": ["changes", "loading"]],
+        "reason": ["type": "string", "enum": ["changes", "loading", "deadline"]],
     ], required: ["state"])
 
-    /// MCP-80: the act envelope every input tool answers. No `ok`.
-    private static let actEnvelope = object([
-        "window": integer,
-        "did": object(["action": string], required: ["action"]),
-        "on": object(["snapshot": nullable("integer"), "frame": nullable("integer")],
-                     required: ["snapshot", "frame"]),
-        "settle": settleObject,
-        "state": stateToken,
-        "frame": frameObject,
-        "alsoActed": array(["type": "string", "enum": ["person"]]),
-        "closed": object(["reason": string, "closedBy": string], required: ["reason", "closedBy"]),
-        "tree": ["type": "object"],
-        "text": string,
-        "treeError": string,
-    ], required: ["window", "did", "on", "settle", "state", "frame"])
+    /// MCP-80: the act envelope every input tool answers. No `ok`. `did` is a
+    /// union over the actions (MCP-87/88/90/92/94): every key one action may
+    /// answer is named, and only `action` is always there.
+    private static let actEnvelope: [String: Any] = {
+        let namedNode = object(["role": string, "text": string, "desc": string],
+                               required: ["role"])
+        let hitNode = object(["ref": string, "role": string, "text": string, "desc": string],
+                             required: ["ref", "role"])
+        let did = object([
+            "action": string,
+            // A tap by ref (MCP-86, MCP-88, MCP-108).
+            "ref": string, "box": array(integer), "node": namedNode, "holdMs": integer,
+            // A tap by point (MCP-87).
+            "at": array(["type": "number"]), "hit": hitNode,
+            // A swipe (MCP-90).
+            "from": array(["type": "number"]), "to": array(["type": "number"]), "ms": integer,
+            "direction": ["type": "string", "enum": MCPSwipeDirection.allCases.map(\.rawValue)],
+            // type_text (MCP-92, MCP-109).
+            "characters": integer, "clear": boolean, "submit": boolean,
+            "entry": ["type": "string", "enum": ["inserted", "replaced", "unknown"]],
+            "via": ["type": "string", "enum": ["keys", "set_text"]],
+            // press_key (MCP-94).
+            "key": string, "ignored": boolean,
+        ], required: ["action"])
+        return object([
+            "window": integer,
+            "did": did,
+            "on": object(["snapshot": nullable("integer"), "frame": nullable("integer")],
+                         required: ["snapshot", "frame"]),
+            "settle": settleObject,
+            "state": stateToken,
+            "frame": frameObject,
+            "alsoActed": array(["type": "string", "enum": ["person"]]),
+            "closed": object(["reason": string, "closedBy": string], required: ["reason", "closedBy"]),
+            "tree": observedTree,
+            "text": string,
+            "treeError": string,
+        ], required: ["window", "did", "on", "settle", "state", "frame"])
+    }()
 
     /// MCP-41: `open_app` and `send_link`'s answer.
     private static let openedWindow = object([
@@ -445,12 +520,12 @@ enum MCPOutputSchemas {
         "package": nullable("string"), "label": nullable("string"),
         "opened": ["type": "string", "enum": ["new", "raised"]], "openedBy": string,
         "size": array(integer), "settle": settleObject, "state": stateToken, "frame": frameObject,
-        "tree": ["type": "object"], "text": string, "treeError": string,
+        "tree": observedTree, "text": string, "treeError": string,
     ], required: ["window", "kind", "package", "label", "opened", "openedBy", "size", "settle",
                   "state", "frame"])
 
-    /// `type_text`'s envelope: `did` says how it typed and never the text
-    /// (MCP-92, MCP-109).
+    /// `type_text`'s envelope: the act envelope with `did` made exact, because
+    /// its `did` says how it typed and never the text (MCP-92, MCP-109).
     private static let typeEnvelope: [String: Any] = {
         var envelope = actEnvelope
         var properties = envelope["properties"] as? [String: Any] ?? [:]
@@ -471,7 +546,9 @@ enum MCPOutputSchemas {
                            "locked": nullable("boolean"), "screen": nullable("string"),
                            "lockSource": nullable("string"), "lockChangedAgoMs": integer,
                            "input": string, "maxWindows": integer, "windows": integer,
-                           "foreground": ["type": ["object", "null"]],
+                           "foreground": ["type": ["object", "null"],
+                                          "properties": ["package": string, "label": nullable("string")],
+                                          "additionalProperties": false],
                            "foregroundError": ["type": "string", "enum": ["not_supported", "timeout"]]],
                           required: ["connected", "name", "battery", "charging", "locked", "screen",
                                      "input", "foreground", "windows", "maxWindows"])
@@ -501,22 +578,16 @@ enum MCPOutputSchemas {
                            "blank": boolean, "crop": array(integer), "settle": settleObject],
                           required: ["window", "state", "frame", "image", "size"])
         case .uiTree:
-            return object(["window": integer, "ok": boolean, "displayId": integer,
-                           "snapshot": integer, "size": array(integer), "truncated": boolean,
-                           "layers": array(["type": "object"]), "nodes": array(["type": "object"]),
-                           "note": string, "loading": boolean, "settle": settleObject,
-                           "omitted": integer, "matched": integer, "total": integer,
-                           "format": ["type": "string", "enum": ["text"]], "text": string,
-                           "state": stateToken, "frame": frameObject],
-                          // `format: text` answers `text` in place of the rows (MCP-74).
-                          required: ["window", "state", "frame"])
+            // `format: text` answers `text` in place of the rows (MCP-74);
+            // `find` adds `matched` and `total` (MCP-75).
+            return treeAnswer
         case .wait:
             return object(["window": integer, "waitedMs": integer,
                            "until": ["type": "string", "enum": ["met", "timeout"]],
                            "match": object(["ref": string, "text": string]),
                            "reason": ["type": "string", "enum": ["changes", "loading"]],
                            "state": stateToken, "frame": frameObject,
-                           "tree": ["type": "object"], "text": string, "treeError": string],
+                           "tree": observedTree, "text": string, "treeError": string],
                           required: ["window", "waitedMs", "state", "frame"])
         case .tap, .swipe, .pressKey:
             return actEnvelope
@@ -567,11 +638,16 @@ enum MCPArguments {
         guard let value = raw as? String else {
             throw MCPArgumentError(message: "“\(key)” must be a string")
         }
-        guard value.count >= minimum else {
+        // MCP-92: a limit counts Unicode code points, as JSON Schema's
+        // `maxLength` and the phone do. A grapheme cluster can be several
+        // ("👍🏽" is two), so counting it as one lets text through that the
+        // phone then refuses (#270).
+        let length = value.unicodeScalars.count
+        guard length >= minimum else {
             throw MCPArgumentError(message: "“\(key)” must not be empty")
         }
-        guard value.count <= maximum else {
-            throw MCPArgumentError(message: "“\(key)” is longer than \(maximum) characters")
+        guard length <= maximum else {
+            throw MCPArgumentError(message: "“\(key)” is longer than \(maximum) characters (Unicode code points)")
         }
         return value
     }
@@ -753,7 +829,7 @@ enum MCPArguments {
             return try swipeCall(args)
         case .typeText:
             return .typeText(window: try integer(args, "window", minimum: 1, maximum: 1_000_000),
-                             text: try string(args, "text", minimum: 0, maximum: 2000),
+                             text: try string(args, "text", maximum: 2000),
                              clear: try boolean(args, "clear", default: false),
                              submit: try boolean(args, "submit", default: false),
                              wait: try wait(args), observe: try observe(args))

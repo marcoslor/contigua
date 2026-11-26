@@ -100,7 +100,14 @@ the tool's schema (`-32602`) (MCP-4).
 
 with one extra `{"type": "image", "mimeType": "image/png", "data": …}` block
 first for `screenshot`. `tools/list` declares each tool's `outputSchema`, the
-answer shapes below.
+answer shapes below. A schema names every key its tool may answer and says so
+(`additionalProperties: false`), and a nested one (`tree`, `did`, `foreground`,
+a row) is the one its shape shares: a field a tool starts answering without its
+schema change is then a validation failure for every client that checks, rather
+than a key nobody declared. So `ui_tree`'s `omitted` (and its `ok`,
+`snapshot`, `truncated`, `layers`, `nodes`, `note`, `loading`, `matched` and
+`total`), the `tree` an act, an open or a wait observes, and the act envelope's
+`did` per action are named too.
 
 **Errors (MCP-6).** A failure of the moment (no phone, a window that closed, a
 ref whose element is gone) is a tool result with `isError: true` and one text
@@ -201,7 +208,7 @@ window) or `"window"` (MCP-100, "A window an agent opens" below).
 | `wait` | `window`, one of `ms` (1–30000), `text` (+ `gone`?) or `settle: true`; `timeoutMs`? (≤ 30000, default 10000), `observe`? | Wait on a window: for ms milliseconds, until text appears on it (with gone: true, until it disappears), or with settle: true until it stops changing and nothing on it is loading, at most timeoutMs; if timeoutMs ends first, reason says whether it was still loading. Use this instead of sleeping or re-reading the tree as a clock. |
 | `tap` | `window`, `ref` or `x`+`y`, `holdMs`? (1–3000), `wait`?, `observe`? | Tap an element by its ref from ui_tree (preferred), or a point x, y (0..1 of the window); holdMs makes it a long press. A ref names one element for as long as it is on screen, across reads; a ref whose element is gone is refused. A ref whose element is off screen or covered is refused too, and nothing is pressed. The answer names what was pressed (its role and label). By default the call waits for the screen to settle and returns the new tree. |
 | `swipe` | `window`, `direction` (+ `ref`?) or `x1`,`y1`,`x2`,`y2`; `ms`? (1–2000, default 300), `wait`?, `observe`? | Swipe in a window. direction is the way the finger moves (swipe up to see what is further down), through the centre of ref's element or of the window; or give the points x1,y1 to x2,y2. By default the call waits for the screen to settle and returns the new tree. |
-| `type_text` | `window`, `text` (≤ 2000), `clear`?, `submit`?, `wait`?, `observe`? | Type text into the window's focused field at the cursor: what is there stays, and entry in the answer says inserted. clear: true replaces the field's text instead (entry: replaced); submit: true presses Enter after. The phone's clipboard is never used. Tap the field first if nothing is focused. |
+| `type_text` | `window`, `text` (1–2000 code points), `clear`?, `submit`?, `wait`?, `observe`? | Type text into the window's focused field at the cursor: what is there stays, and entry in the answer says inserted. clear: true replaces the field's text instead (entry: replaced); submit: true presses Enter after. The phone's clipboard is never used. Tap the field first if nothing is focused. |
 | `press_key` | `window`, `key`, `wait`?, `observe`? | Press one key in a window. back, home and recents are the phone's navigation; home and recents act only in the Phone Mirror. back on an app's last screen closes the window, and the answer says so. The rest (enter, delete, tab, escape, up, down, left, right) are keys. |
 | `input_probe` | `window`, `x`, `y`, `w`?, `h`? (0.05–1) | Measurement: tap a point and return the milliseconds until the window's picture changed (input-to-photon), or null after 2 s. Not for driving an app. (Listed only when Contigua runs with --mcp-dev-tools.) |
 
@@ -675,7 +682,10 @@ field with no set text gets a paste, and then the phone saves the person's whole
 clip, proves it can put it back, pastes one run at a time and puts the clip back
 afterwards; a clip it cannot save or put back, and any clip carrying a URI (an
 image, a file), is never overwritten, and the run is dropped. A set-text run waits
-for the keys sent before it to be handled first, and for a busy tree 150 ms at most.
+for the keys sent before it to be handled first, and for the tree 150 ms at
+most: that is the whole bound, so it never connects a tree and never waits for
+the settle, and a tree that is busy, unconnected or shows no focused field is
+unreadable and the run takes the fallback under its guards (#270).
 
 `input_probe` is the measurement tool built for the pmaxx epic, listed only
 while the app runs with `--mcp-dev-tools` (the stream bench, the e2e `mcp`

@@ -160,6 +160,27 @@ class TextEntryTest {
         assertEquals(strokesOf("milk 42"), keys.pressed)
     }
 
+    /**
+     * #270 item 2: `clear` with no focused field sent ctrl+A and DEL to
+     * whatever held key focus (a mail or file list selects everything and
+     * deletes it), which breaks "never remove anything on the phone". Clearing
+     * needs a field to clear, so it refuses `no_field` and sends nothing —
+     * key-map text included.
+     */
+    @Test
+    fun testClearWithNoFocusIsNoField() { // [MCP-109]
+        assertEquals(
+            TextEntry.Outcome.Refused(TextEntry.NO_FIELD, "Window 3 has no focused text field. Tap the field first."),
+            type("milk 42", null, clear = true),
+        )
+        assertEquals("ctrl+A and DEL went to whatever had focus", emptyList<KeyStroke>(), keys.pressed)
+        assertEquals(TextEntry.NO_FIELD, (type("café", null, clear = true) as TextEntry.Outcome.Refused).code)
+        assertEquals(emptyList<KeyStroke>(), keys.pressed)
+        assertEquals(TextEntry.NO_FIELD,
+            (type("milk 42", null, clear = true, submit = true) as TextEntry.Outcome.Refused).code)
+        assertEquals("no ENTER either", emptyList<KeyStroke>(), keys.pressed)
+    }
+
     @Test
     fun testNoSetTextActionIsNotSupported() { // [MCP-109]
         val canvas = RecordingFocus(TextEntry.Field("draw", 4, 4, setsText = false))
