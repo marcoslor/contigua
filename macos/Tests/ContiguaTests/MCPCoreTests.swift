@@ -355,6 +355,136 @@ final class MCPCoreTests: XCTestCase {
         }
     }
 
+    // [MCP-4] [MCP-5] Every tool's sample answer — the shape each tool makes
+    // today — validates against that tool's own `outputSchema`: every `required`
+    // key present and no key outside `properties`. A field a tool emits and the
+    // schema never names (`ui_tree`'s `omitted`) is refused by any client that
+    // validates, which is what broke after #206.
+    func testEveryToolsSampleAnswerMatchesItsOutputSchema() throws {
+        let samples = MCPCoreTests.sampleAnswers()
+        XCTAssertEqual(Set(samples.keys), Set(MCPToolName.allCases),
+                       "a tool with no sample answer is never checked")
+        for (tool, answer) in samples {
+            let schema = MCPOutputSchemas.schema(for: tool)
+            XCTAssertEqual(MCPCoreTests.schemaProblems(answer, schema), [],
+                           "\(tool.rawValue) breaks its outputSchema")
+        }
+        // The sample that broke: a tree read carries `omitted`, so the schema
+        // must name it.
+        let tree = try XCTUnwrap(samples[.uiTree])
+        XCTAssertNotNil(tree["omitted"])
+    }
+
+    /// A recursive check of one answer against its schema (the JSON Schema
+    /// subset `tools/list` declares): the type, `required` and — since an
+    /// `outputSchema` names every field a tool may answer — `properties`, so a
+    /// key outside them is a break. `items` is checked for each row.
+    static func schemaProblems(_ value: Any, _ schema: [String: Any],
+                               _ at: String = "answer") -> [String] {
+        var out: [String] = []
+        let kinds: [String] = (schema["type"] as? String).map { [$0] }
+            ?? (schema["type"] as? [String] ?? [])
+        if !kinds.isEmpty, !kinds.contains(where: { kindFits(value, $0) }) {
+            return ["\(at) is not one of \(kinds.joined(separator: "/"))"]
+        }
+        if let object = value as? [String: Any] {
+            for key in schema["required"] as? [String] ?? [] where object[key] == nil {
+                out.append("\(at) lacks required “\(key)”")
+            }
+            let properties = schema["properties"] as? [String: Any] ?? [:]
+            for key in object.keys.sorted() where properties[key] == nil {
+                out.append("\(at) answers “\(key)”, which its schema does not declare")
+            }
+            for (key, sub) in properties {
+                if let held = object[key], let declared = sub as? [String: Any] {
+                    out += schemaProblems(held, declared, "\(at).\(key)")
+                }
+            }
+        }
+        if let rows = value as? [Any], let items = schema["items"] as? [String: Any] {
+            for (row, item) in rows.enumerated() {
+                out += schemaProblems(item, items, "\(at)[\(row)]")
+            }
+        }
+        return out
+    }
+
+    private static func kindFits(_ value: Any, _ kind: String) -> Bool {
+        switch kind {
+        case "null": return value is NSNull
+        case "boolean": return MCPValue.isBool(value)
+        case "integer":
+            return (value as? NSNumber).map { !MCPValue.isBool($0) && $0.doubleValue == $0.doubleValue.rounded() } ?? false
+        case "number": return value is NSNumber && !MCPValue.isBool(value)
+        case "string": return value is String
+        case "array": return value is [Any]
+        case "object": return value is [String: Any]
+        default: return true
+        }
+    }
+
+    /// One answer per tool, made by the same builders the tools answer with,
+    /// carrying every field they may add.
+    static func sampleAnswers() -> [MCPToolName: [String: Any]] {
+        let state = "live"
+        let frame = FrameClock.object(seq: 1340, ageMs: 35)
+        let settle = MCPActMachine.Settle(state: "settled", waitedMs: 412)
+        let tree: [String: Any] = [
+            "window": 3, "ok": true, "displayId": 64, "snapshot": 8, "truncated": false,
+            "size": [1080, 2364], "omitted": 41, "loading": false, "note": "…",
+            "matched": 1, "total": 87, "state": state, "frame": frame,
+            "layers": [["i": 0, "title": "Wikipedia", "type": "app", "active": true]],
+            "nodes": [["i": 0, "ref": "e3", "role": "TextView", "text": "Ada Lovelace", "heading": true,
+                       "box": [48, 420, 1032, 520], "at": [0.5, 0.196]]],
+        ]
+        let acted = MCPActEnvelope.answer(
+            window: 3, did: MCPActDid.swipe(from: [0.5, 0.9], to: [0.5, 0.2], ms: 300, direction: .up),
+            frameAtInput: 1302,
+            result: MCPActMachine.Answer(settle: settle, state: state, tree: "{}"))
+            .merging(["frame": frame]) { a, _ in a }
+        let typed = MCPActEnvelope.answer(
+            window: 3, did: MCPActDid.type(characters: 2, clear: false, submit: false), frameAtInput: nil,
+            result: MCPActMachine.Answer(settle: settle, state: state, entry: "inserted", via: "keys"))
+            .merging(["frame": frame]) { a, _ in a }
+        var waited = MCPWaitAnswer(waitedMs: 5004, until: "met",
+                                   match: ["ref": "e14", "text": "00:05.02"])
+        waited.tree = tree
+        let opened = MCPOpenAnswer.answer(window: 5, kind: .app, package: "com.example.shop", label: "Shop",
+                                          opened: .new, openedBy: "you", size: [590, 1280],
+                                          result: MCPActMachine.Answer(settle: settle, state: state, tree: "{}"))
+            .merging(["frame": frame]) { a, _ in a }
+        let status = MCPToolHost.statusAnswer(
+            MCPStatusInput(connected: true, name: "My phone", battery: 81, charging: false, windows: 2,
+                           maxWindows: 4,
+                           phone: MCPStatusPhone(locked: true, screen: .off, lockSource: .broadcast,
+                                                 lockChangedAt: .now),
+                           foreground: .pkg("org.example.browser"), apps: []), now: .now)
+        return [
+            .phoneStatus: status,
+            .listApps: ["apps": [["label": "Calculator", "package": "com.google.android.calculator"]],
+                        "total": 1],
+            .openApp: opened, .sendLink: opened,
+            .listWindows: [
+                "windows": [["id": 3, "kind": "app", "package": "com.google.android.calculator",
+                             "size": [590, 1280], "state": state, "frame": frame, "openedBy": "you",
+                             "openedAgoMs": 42000]],
+                "recentlyClosed": [["id": 2, "kind": "link", "package": NSNull(), "reason": "closed",
+                                    "closedBy": "another_agent", "closedAgoMs": 5100]],
+            ],
+            .screenshot: ["window": 3, "state": state, "frame": frame, "image": [1280, 740],
+                          "size": [2860, 1654], "crop": [130, 1052, 1310, 1148], "blank": true,
+                          "settle": MCPActEnvelope.settle(settle)],
+            .uiTree: tree,
+            .wait: waited.object(window: 3).merging(["state": state, "frame": frame]) { a, _ in a },
+            .tap: acted, .swipe: acted, .pressKey: acted,
+            .typeText: typed,
+            .inputProbe: ["ok": true, "window": 3, "frames": 4, "sent_ms": 1823344.2,
+                          "changed_ms": 48.1, "state": state, "frame": frame],
+            .closeWindow: ["window": 3, "closed": ["reason": "closed", "closedBy": "you"]],
+            .sendFile: ["bytes": 1_048_576, "state": "delivered"],
+        ]
+    }
+
     // [MCP-64] `ui_tree` and `screenshot` with `wait: "settle"` carry `settle`:
     // both outputSchemas declare it.
     func testTreeAndScreenshotDeclareSettle_MCP64() throws {
