@@ -65,7 +65,7 @@ class AndroidInjectorTest {
      * and nothing was copied, so the clip pasted after the run never matched.
      */
     @Test
-    fun testAKeyFramesCtrlReachesTheApp() { // [MCP-110]
+    fun testAKeyFramesCtrlReachesTheApp() { // [MCP-110] [WIN-15] [MIRROR-14]
         val (injector, events) = keysDelivered()
         val ctrl = KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON
         injector.key(0, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_C, ctrl, 7L, 7L)
