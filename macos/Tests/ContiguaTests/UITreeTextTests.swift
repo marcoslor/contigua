@@ -186,7 +186,8 @@ final class UITreeTextTests: XCTestCase {
         fixture.treeNodes = [
             ["i": 0, "k": 20, "role": "RecyclerView", "scroll": true,
              "box": [0, 200, 1080, 2000], "at": [0.5, 0.47]],
-            ["i": 1, "k": 33, "p": 0, "role": "TextView", "text": "Row 50", "off": true],
+            ["i": 1, "k": 33, "p": 0, "role": "TextView", "text": "Row 50", "off": true,
+             "where": "below"],
         ]
         let (found, _) = await fixture.call("ui_tree", ["window": Int(window.stream), "find": "row 50"])
         XCTAssertEqual(found["isError"] as? Bool, false, "ui_tree failed: \(found)")
@@ -198,6 +199,7 @@ final class UITreeTextTests: XCTestCase {
         XCTAssertEqual(nodes.count, 1)
         XCTAssertEqual(nodes.first?["ref"] as? String, "e33")
         XCTAssertEqual(nodes.first?["off"] as? Bool, true)
+        XCTAssertEqual(nodes.first?["where"] as? String, "below")
         XCTAssertNil(nodes.first?["at"])
         XCTAssertEqual(nodes.first?["in"] as? String, "e20")
         XCTAssertEqual(structured["matched"] as? Int, 1)
