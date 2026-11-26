@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ui-type: `ui.type` on a real shell server (MCP-109/MCP-110; docs/design/mcp-plan.md B5).
+# ui-type: `ui.type` on a real shell server (MCP-109, MCP-110).
 #
 #   bash tools/emulator/ui-type.sh --check   # rehearse: no device, no boot
 #   bash tools/emulator/ui-type.sh           # boot, pair, prove, kill (one boot)
@@ -18,8 +18,8 @@
 #      "térmica" is refused not_supported and no key reaches the page.
 #   4. The clip copied in 1 is pasted into the cleared field: still the same,
 #      and the phone sent no clip.set during the run; then the person's `text`
-#      path with "é" (the control) leaves it too: since plan T14 that run goes
-#      in by set text (WIN-80, tools/emulator/clip-keep.sh).
+#      path with "é" (the control) leaves it too: that run goes in by set text
+#      (WIN-80, tools/emulator/clip-keep.sh).
 # A Compose TextField is not covered: neither the image nor the app has one.
 # A step that finds nothing prints the tree's row shapes and goes on.
 # Output is codes, counts and match booleans only; no screen text is printed.
