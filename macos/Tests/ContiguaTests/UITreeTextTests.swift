@@ -166,6 +166,23 @@ final class UITreeTextTests: XCTestCase {
         XCTAssertNil(plainReads.first?.raw["offscreen"], "a plain read must not ask for off-screen nodes")
     }
 
+    // [MCP-75] `where` rides right after `off` in the bracket; without it
+    // the bracket is what it was.
+    func testAnOffScreenBracketNamesWhere_MCP75() throws {
+        let read = try tree([
+            ["i": 0, "k": 20, "role": "RecyclerView", "scroll": true,
+             "box": [0, 200, 1080, 2000], "at": [0.5, 0.47]],
+            ["i": 1, "k": 33, "p": 0, "role": "TextView", "text": "Row 50",
+             "off": true, "where": "below"],
+            ["i": 2, "k": 34, "p": 0, "role": "TextView", "text": "Row 99",
+             "off": true, "where": "hidden"],
+            ["i": 3, "k": 35, "p": 0, "role": "TextView", "text": "Row 7", "off": true],
+        ])
+        XCTAssertEqual(UITreeText.text(read.nodes),
+                       "[e20 RecyclerView scroll]\nRow 50 [e33 TextView off below, in e20]\n"
+                       + "Row 99 [e34 TextView off hidden, in e20]\nRow 7 [e35 TextView off, in e20]")
+    }
+
     // [MCP-75] `find` with `format: "text"`: the text view of the matches only,
     // an off-screen one bracketed `off, in <the list's ref>`.
     @MainActor
