@@ -77,17 +77,6 @@ class AndroidInjectorTest {
         assertEquals(listOf(7L, 8L), events.map { it.eventTime })
     }
 
-    /** A clipboard holding an image clip (no text) until something writes text over it. */
-    private class ImageClipboard : ClipboardPort {
-        @Volatile var holdsTheImage = true
-        override fun getText(): ClipText? = null
-        override fun setText(text: String) {
-            holdsTheImage = false
-        }
-        override fun listen(onChange: () -> Unit): ClipRegistration = ClipRegistration(onChange)
-        override fun stop(registration: ClipRegistration?) = Unit
-    }
-
     /**
      * The hidden IClipboard as the shell user sees it: it holds a whole
      * [ClipData], hands it back on a read and takes one on a write. With
@@ -178,21 +167,6 @@ class AndroidInjectorTest {
         }
     }
 
-    /**
-     * #173: the person's typing pasted through the clipboard never put a
-     * non-text clip back, so a copied image was lost. Now nothing in this path
-     * writes text over a clipboard it cannot put back whole.
-     */
-    @Test
-    fun testANonTextClipSurvivesTyping() { // [MCP-110]
-        val clipboard = ImageClipboard()
-        val injector = AndroidInjector(log = {}, sink = { _, _ -> }, clipboard = clipboard)
-        injector.text(0, "café")
-        // The paste path restores 400 ms after the paste; wait past it.
-        Thread.sleep(800) // real-time: the old paste path restores the clip 400 ms later on a real executor
-        assertTrue("the person's image clip is still on the clipboard", clipboard.holdsTheImage)
-    }
-
     @Test
     fun testTextGoesInBySetTextWhenTheFieldTakesIt() { // [WIN-80]
         val service = FakeService(imageClip())
@@ -223,7 +197,7 @@ class AndroidInjectorTest {
      * never written, not even with itself.
      */
     @Test
-    fun testAClipCarryingAUriIsNeverPastedOver() { // [WIN-80]
+    fun testAClipCarryingAUriIsNeverPastedOver() { // [WIN-80] [MCP-110]
         val image = imageClip()
         val service = FakeService(image)
         val logs = CopyOnWriteArrayList<String>()
