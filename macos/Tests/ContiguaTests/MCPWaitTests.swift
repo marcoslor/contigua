@@ -169,28 +169,6 @@ final class MCPWaitTests: XCTestCase {
     }
 
     // [MCP-97]
-    func testABusyReadIsRetriedAtTheNextPoll() async throws {
-        let env = FakeWait()
-        env.readScript = [.failed("busy"), .tree(tree([("e4", "Continue")]))]
-        let result = try answer(await MCPWaitRunner.run(.text("Continue", gone: false), timeoutMs: 10000,
-                                                        observe: .tree, env: env))
-        XCTAssertEqual(env.reads, [0, 500])
-        XCTAssertEqual(result.until, "met")
-        XCTAssertEqual(result.match?["ref"] as? String, "e4")
-    }
-
-    // [MCP-97]
-    func testABusyAtTheDeadlineIsTheError() async throws {
-        let env = FakeWait()
-        env.readScript = [.failed("busy")]
-        let outcome = await MCPWaitRunner.run(.text("Continue", gone: false), timeoutMs: 1500,
-                                              observe: .tree, env: env)
-        guard case .fail(let code) = outcome else { return XCTFail("expected busy, got \(outcome)") }
-        XCTAssertEqual(code, "busy")
-        XCTAssertEqual(env.reads, [0, 500, 1000, 1500])
-    }
-
-    // [MCP-97]
     func testAnotherReadFailureEndsTheWait() async throws {
         let env = FakeWait()
         env.readScript = [.failed("no_display"), .tree(tree([("e4", "Continue")]))]
@@ -199,6 +177,20 @@ final class MCPWaitTests: XCTestCase {
         guard case .fail(let code) = outcome else { return XCTFail("expected no_display, got \(outcome)") }
         XCTAssertEqual(code, "no_display")
         XCTAssertEqual(env.reads, [0])
+    }
+
+    /// #266 item 5: the API is one closed list of codes and the runner gives
+    /// none of them a retry: whatever a read fails with ends the wait at once.
+    func testEveryReadFailureEndsTheWaitAtOnce_MCP97() async throws {
+        for code in ["busy", "failed", "timeout", "not_supported"] {
+            let env = FakeWait()
+            env.readScript = [.failed(code), .tree(tree([("e4", "Continue")]))]
+            let outcome = await MCPWaitRunner.run(.text("Continue", gone: false), timeoutMs: 10000,
+                                                  observe: .tree, env: env)
+            guard case .fail(let failed) = outcome else { return XCTFail("\(code): expected a failure, got \(outcome)") }
+            XCTAssertEqual(failed, code)
+            XCTAssertEqual(env.reads, [0], "\(code): the wait read again after a failed read")
+        }
     }
 
     // [MCP-97]

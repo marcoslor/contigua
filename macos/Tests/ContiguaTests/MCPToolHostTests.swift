@@ -343,6 +343,67 @@ final class MCPToolHostTests: XCTestCase {
         }
     }
 
+    /// #266 item 3: the link drops while `phone_status` waits for `task.front`.
+    /// The answer reads `connected` and the lock after the wait, together, so
+    /// it never says `connected: true` for a phone that is gone ([MCP-30], [MCP-31]).
+    @MainActor
+    func testALinkDropDuringTheForegroundWaitAnswersNotConnected_MCP31() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        _ = try await fixture.liveWindow()
+        let host = MCPToolHost(controller: fixture.controller)
+        let call = Task { await host.phoneStatus() }
+        let asked = await fixture.wait { !fixture.sent("task.front").isEmpty }
+        XCTAssertTrue(asked, "phone_status sent no task.front: \(fixture.sentTypes())")
+        fixture.server.stop()
+        let answer = await call.value
+        XCTAssertFalse(fixture.controller.link.isOnline, "the link did not drop: \(fixture.controller.link)")
+        XCTAssertEqual(answer["connected"] as? Bool, false, "a phone gone during the wait answered \(answer)")
+        XCTAssertTrue(answer["locked"] is NSNull, "no phone: locked must be null, got \(String(describing: answer["locked"]))")
+    }
+
+    /// #266 item 5: a phone that answers a `wait`'s read `busy` reaches the
+    /// runner through the real mapping as `failed`, which ends the wait at
+    /// once with `failed`: no retry, no `busy` code ([MCP-97], MCP-6, MCP-70).
+    @MainActor
+    func testABusyPhoneEndsAWaitWithFailedThroughTheRealMapping_MCP97() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        let window = try await fixture.liveWindow()
+        fixture.treeFailure = "busy"
+        let started = ContinuousClock.now
+        let (answer, _) = await fixture.call("wait", ["window": Int(window.stream), "text": "Continue",
+                                                      "timeoutMs": 3000])
+        XCTAssertLessThan(ContinuousClock.now - started, .milliseconds(2500), "the wait polled on after the failure")
+        XCTAssertEqual(answer["isError"] as? Bool, true, "a busy read must end the wait: \(answer)")
+        let text = try XCTUnwrap(((answer["content"] as? [[String: Any]])?.first)?["text"] as? String)
+        let error = try XCTUnwrap((try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])?["error"]
+                                  as? [String: Any])
+        XCTAssertEqual(error["code"] as? String, "failed")
+        XCTAssertEqual(fixture.sent("ui.tree").count, 1, "one read, no retry: \(fixture.sentTypes())")
+    }
+
+    /// #266 item 6: a timed `wait` whose window closes during the pause
+    /// answers `state: "closed"` with the window's last frame, not seq 0 ([MCP-20]).
+    @MainActor
+    func testATimedWaitWhoseWindowClosesAnswersItsLastFrame_MCP20() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        let window = try await fixture.liveWindow()
+        for _ in 0..<3 { window.frameClock.note() }
+        let id = Int(window.stream)
+        let call = Task { await fixture.call("wait", ["window": id, "ms": 600, "observe": "none"]) }
+        try await Task.sleep(for: .milliseconds(200))  // real-time: the wait is in its pause
+        window.window?.close()
+        XCTAssertNil(fixture.controller.windows.controller(for: window.stream), "the window did not close")
+        let (answer, _) = await call.value
+        XCTAssertEqual(answer["isError"] as? Bool, false, "wait failed: \(answer)")
+        let structured = try XCTUnwrap(answer["structuredContent"] as? [String: Any])
+        XCTAssertEqual(structured["state"] as? String, "closed")
+        let frame = try XCTUnwrap(structured["frame"] as? [String: Any])
+        XCTAssertEqual(frame["seq"] as? Int, 3, "the closed window's last frame: \(frame)")
+    }
+
     // MARK: type_text goes through ui.type (plan T13)
 
     /// `type_text {window, text: "café", clear: true, submit: true}` goes to
@@ -590,6 +651,127 @@ final class MCPToolHostTests: XCTestCase {
         let rows = MCPToolHost(controller: controller, client: MCPClientID(1)).listWindows()["recentlyClosed"]
             as? [[String: Any]] ?? []
         XCTAssertEqual(rows.first?["id"] as? Int, Int(stream))
+    }
+
+    /// [MCP-52] A window dropped for a forgotten phone, a trust loss or a
+    /// re-pairing keeps a close record: the person changed the phone
+    /// (`phone_switched` by `person`) or the phone closed it (`phone_closed`
+    /// by `phone`) (#194 item 1).
+    @MainActor
+    func testClosesWithNoRecordKeepTheirReason_MCP52() throws {
+        let phone = PhoneRef(id: "phone-1", name: "Pixel 9", model: "Pixel 9")
+
+        // A forgotten phone: the person changed which phone is used.
+        do {
+            let (controller, profile) = offlineController()
+            defer { dispose(controller, profile) }
+            controller.remembered.remember(phone)
+            let stream = controller.windows.openOrRaise(pkg: "com.android.settings").stream
+            let remembered = try XCTUnwrap(controller.remembered.phone(id: phone.id))
+            controller.forget(remembered)
+            XCTAssertNil(controller.windows.controller(for: stream), "the forgotten phone's window stayed open")
+            let record = try XCTUnwrap(controller.windows.ledger.closeRecord(
+                stream, asker: MCPClientID(1), now: ProcessInfo.processInfo.systemUptime), "no close record")
+            XCTAssertEqual(record.reason, "phone_switched")
+            XCTAssertEqual(record.closedBy, "person")
+        }
+
+        // A trust loss: the phone closed it, not the person.
+        do {
+            let (controller, profile) = offlineController()
+            defer { dispose(controller, profile) }
+            controller.remembered.remember(phone)
+            let stream = controller.windows.openOrRaise(pkg: "com.android.settings").stream
+            var machine = LinkMachine(link: .online(phone))
+            machine.handle(.restoreTrustLost(phone, .told), at: Date())
+            controller.machine = machine
+            controller.apply(PhoneBookEventResult(affectsCurrent: true))
+            XCTAssertNil(controller.windows.controller(for: stream), "the trust-lost phone's window stayed open")
+            let record = try XCTUnwrap(controller.windows.ledger.closeRecord(
+                stream, asker: MCPClientID(1), now: ProcessInfo.processInfo.systemUptime), "no close record")
+            XCTAssertEqual(record.reason, "phone_closed")
+            XCTAssertEqual(record.closedBy, "phone")
+        }
+    }
+
+    /// [MCP-53] A window that closes while `screenshot` waits answers the
+    /// ledger's close record, like `tap` does, never a bare `no_window`
+    /// (#194 item 2).
+    @MainActor
+    func testAScreenshotOfAWindowThatClosedKeepsItsClose_MCP53() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        let window = try await fixture.liveWindow()
+        window.noteFirstFrame()
+        // A real H.264 parameter set: the snapshot decoder is armed and the
+        // call asks the phone for a keyframe, so it really waits.
+        let sets: [UInt8] = [0, 0, 0, 1, 0x27, 0x64, 0x00, 0x0D, 0xAC, 0x56, 0x50, 0x50, 0x7E, 0x40,
+                             0, 0, 0, 1, 0x28, 0xEE, 0x3C, 0xB0]
+        window.videoView.configure(VideoConfig(width: 590, height: 1280, parameterSets: sets),
+                                  picture: .full(width: 590, height: 1280))
+        let host = MCPToolHost(controller: fixture.controller, client: MCPClientID(1))
+        let call = Task { () -> MCPToolError? in
+            do {
+                _ = try await host.screenshot(Int(window.stream), ref: nil, wait: .none)
+                return nil
+            } catch let error as MCPToolError {
+                return error
+            } catch {
+                return MCPToolError.failed("unexpected")
+            }
+        }
+        let asked = await fixture.wait { !fixture.sent("window.keyframe").isEmpty }
+        XCTAssertTrue(asked, "the screenshot asked for no keyframe: \(fixture.sentTypes())")
+        window.window?.close()
+        let failure = await call.value
+        let error = try XCTUnwrap(failure, "a closed window answered a screenshot")
+        XCTAssertEqual(error.code, .noWindow)
+        let closed = try XCTUnwrap(error.extra["closed"] as? [String: Any], "no close record: \(error.extra)")
+        XCTAssertEqual(closed["reason"] as? String, "closed")
+        XCTAssertEqual(closed["closedBy"] as? String, "person")
+        XCTAssertTrue(closed["closedAgoMs"] is Int)
+    }
+
+    /// [MCP-50] Every `list_windows` row carries `label` (the app's own label,
+    /// null for the Phone Mirror and an app not yet named) and `title` (the
+    /// phone's task title, null before one arrives) (#194 item 3).
+    @MainActor
+    func testListWindowsRowsCarryLabelAndTitle_MCP50() throws {
+        let (controller, profile) = offlineController()
+        defer { dispose(controller, profile) }
+        controller.windows.appsByPkg = [
+            "com.android.settings": AppInfo(json: ["pkg": "com.android.settings", "label": "Settings"])!,
+        ]
+        let window = controller.windows.openOrRaise(pkg: "com.android.settings")
+        window.noteFirstFrame()
+        let host = MCPToolHost(controller: controller, client: MCPClientID(1))
+
+        func row(_ id: UInt32) -> [String: Any]? {
+            (host.listWindows()["windows"] as? [[String: Any]] ?? []).first { $0["id"] as? Int == Int(id) }
+        }
+        let app = try XCTUnwrap(row(window.stream))
+        XCTAssertEqual(app["label"] as? String, "Settings", "the app's label")
+        XCTAssertTrue(app["title"] is NSNull, "no task title has arrived: \(app)")
+
+        controller.windows.setTaskLabel("Network & internet", stream: window.stream)
+        XCTAssertEqual(row(window.stream)?["title"] as? String, "Network & internet")
+
+        let mirror = controller.windows.openPhoneWindow()
+        let mirrorRow = try XCTUnwrap(row(mirror.stream))
+        XCTAssertEqual(mirrorRow["kind"] as? String, "mirror")
+        XCTAssertTrue(mirrorRow["package"] is NSNull)
+        XCTAssertTrue(mirrorRow["label"] is NSNull, "the Phone Mirror has no app label: \(mirrorRow)")
+        XCTAssertTrue(mirrorRow["title"] is NSNull)
+
+        // The schema says both, as nullable strings.
+        let schema = MCPOutputSchemas.schema(for: .listWindows)
+        let items = ((schema["properties"] as? [String: Any])?["windows"] as? [String: Any])?["items"]
+            as? [String: Any]
+        let properties = items?["properties"] as? [String: Any] ?? [:]
+        for key in ["label", "title"] {
+            let type = (properties[key] as? [String: Any])?["type"] as? [String]
+            XCTAssertEqual(type, ["string", "null"], "\(key): \(String(describing: properties[key]))")
+        }
     }
 
     private static let settingsMulti: [String: Any] = ["pkg": "com.android.settings", "label": "Settings",
@@ -909,9 +1091,18 @@ final class TypeTextFixture {
                   let message = JSONFrame.decode(payload: frame.payload) else { return }
             guard let self else { return }
             self.record(message, from: connection)
-            if !self.held(message, on: connection) { self.answer(message, on: connection) }
+            if !self.held(message, on: connection) {
+                Self.answer(message, on: connection, treeFailure: self.treeFailure, nodes: self.treeNodes)
+            }
         }
     }
+
+    /// When set, the fake answers every `ui.tree` with this failure code.
+    var treeFailure: String? {
+        get { lock.lock(); defer { lock.unlock() }; return failure }
+        set { lock.lock(); failure = newValue; lock.unlock() }
+    }
+    nonisolated(unsafe) private var failure: String?
 
     nonisolated private func record(_ message: JSONMessage, from connection: FakeServer.Connection) {
         lock.lock(); received.append(message); phone = connection; lock.unlock()
@@ -953,7 +1144,9 @@ final class TypeTextFixture {
         let due = heldMessages.filter { $0.0.t == type }
         heldMessages.removeAll { $0.0.t == type }
         lock.unlock()
-        for (message, connection) in due { answer(message, on: connection) }
+        for (message, connection) in due {
+            Self.answer(message, on: connection, treeFailure: treeFailure, nodes: treeNodes)
+        }
     }
 
     /// A message from the phone, unasked (`window.closed`, `apps`, `drop.result`).
@@ -970,7 +1163,8 @@ final class TypeTextFixture {
         XCTAssertTrue(loaded, "the app list never arrived")
     }
 
-    nonisolated private func answer(_ message: JSONMessage, on connection: FakeServer.Connection) {
+    nonisolated private static func answer(_ message: JSONMessage, on connection: FakeServer.Connection,
+                                           treeFailure: String?, nodes: [[String: Any]]) {
         guard let stream = message.int("stream"), let seq = message.int("seq") else { return }
         switch message.t {
         case "ui.type":
@@ -981,9 +1175,12 @@ final class TypeTextFixture {
         case "ui.settle":
             connection.sendJSON(["t": "ui.settle", "stream": stream, "seq": seq, "ok": true,
                                  "settled": true, "waitedMs": 300, "events": 0])
+        case "ui.tree" where treeFailure != nil:
+            connection.sendJSON(["t": "ui.tree", "stream": stream, "seq": seq, "ok": false,
+                                 "code": treeFailure ?? "failed", "message": "The display is busy."])
         case "ui.tree":
             connection.sendJSON(["t": "ui.tree", "stream": stream, "seq": seq, "ok": true,
-                                 "displayId": 2, "size": [1080, 2340], "layers": [], "nodes": treeNodes])
+                                 "displayId": 2, "size": [1080, 2340], "layers": [], "nodes": nodes])
         default:
             break
         }

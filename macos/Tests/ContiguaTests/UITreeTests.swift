@@ -2,6 +2,7 @@
 // accessibility tree, refuse a malformed one, issue refs from a per-window read
 // counter, and write the tool result with only the fields the contract names.
 
+import AppKit
 import XCTest
 @testable import Contigua
 
@@ -277,6 +278,52 @@ final class UITreeTests: XCTestCase {
         // such window" before this for a window that is really gone).
         XCTAssertTrue(UITreeRefusal.noTree("e1").contains("e1"))
         XCTAssertTrue(UITreeRefusal.noTree("e1").contains("Call ui_tree first."))
+    }
+
+    /// #266 item 7: the Mac's own refusal before a press, as the pure
+    /// decision `refusal()` makes: a point tap and a ref on a window with a
+    /// tree go to the phone; a ref on a window with no tree read since it
+    /// opened, or since the phone reconnected, is refused here with WIN-79's
+    /// sentence and never claims the window closed ([WIN-79], MCP-86).
+    func test_WIN79_theMacRefusesARefOnlyWithoutATree() throws {
+        XCTAssertNil(MCPHostActEnvironment.refusal(ref: nil, window: 3, latestSnapshot: nil),
+                     "a point tap has no ref to refuse")
+        XCTAssertNil(MCPHostActEnvironment.refusal(ref: "e1", window: 3, latestSnapshot: 1),
+                     "a window with a tree: the phone judges the ref")
+        let refused = try XCTUnwrap(MCPHostActEnvironment.refusal(ref: "e1", window: 3, latestSnapshot: nil))
+        XCTAssertEqual(refused.code, .staleRef)
+        XCTAssertEqual(refused.message, UITreeRefusal.noTree("e1"))
+        XCTAssertEqual(refused.extra["window"] as? Int, 3)
+        XCTAssertEqual(refused.extra["ref"] as? String, "e1")
+        XCTAssertFalse(refused.message.contains("closed"))
+    }
+
+    /// The same decision over the broker's lifecycle: refused before the
+    /// first read, allowed after it, refused again once the session ended
+    /// (a reconnect) or the window's refs were forgotten (window closed,
+    /// its stream id reused) ([WIN-79]).
+    @MainActor
+    func test_WIN79_aRefIsRefusedBeforeTheFirstReadAndAfterAReconnect() async throws {
+        let broker = UITreeBroker()
+        func decide() -> MCPToolError? {
+            MCPHostActEnvironment.refusal(ref: "e1", window: 3, latestSnapshot: broker.latestSnapshot(stream: 3))
+        }
+        func read() async throws {
+            var seq = 0
+            let task = Task { try await broker.read(stream: 3, timeout: 5, send: { seq = $0 }) }
+            await waitUntil { seq != 0 }
+            broker.reply(try XCTUnwrap(UITree(message: phoneReply(seq: seq))))
+            _ = try await task.value
+        }
+        XCTAssertEqual(decide()?.code, .staleRef, "no tree since the window opened")
+        try await read()
+        XCTAssertNil(decide(), "a tree was read")
+        broker.fail(.notConnected)
+        XCTAssertEqual(decide()?.code, .staleRef, "no tree since the phone reconnected")
+        try await read()
+        XCTAssertNil(decide())
+        broker.forget(stream: 3)
+        XCTAssertEqual(decide()?.code, .staleRef, "the window's refs were forgotten")
     }
 
     @MainActor
@@ -593,6 +640,33 @@ final class UITreeTests: XCTestCase {
         broker.answered(tree([row(0, k: 1, p: nil), row(1, k: 2, p: nil, text: "Pay")]), client: client)
         XCTAssertNil(broker.expect(client: client, stream: 3, k: 1))
         XCTAssertEqual(broker.expect(client: client, stream: 3, k: 2), "Pay")
+    }
+
+    /// #266 item 9: the screen labels a connection was answered (its presses'
+    /// `expect`s) are screen text: they go when that connection closes, and
+    /// another connection's stay ([MCP-86]).
+    @MainActor
+    func testAClosedConnectionsLabelsAreDropped_MCP86() throws {
+        _ = NSApplication.shared
+        let profile = try XCTUnwrap(Profile(name: "unit-labels-\(UUID().uuidString.prefix(8).lowercased())"))
+        let controller = ConnectionController(options: LaunchOptions.parse(["Contigua"]), profile: profile)
+        defer {
+            controller.shutdown()
+            if let suite = profile.defaultsSuiteName { profile.defaults.removePersistentDomain(forName: suite) }
+            try? FileManager.default.removeItem(at: profile.supportDirectoryUrl)
+        }
+        let gone = MCPClientID(1)
+        let staying = MCPClientID(2)
+        let pay = tree([row(0, k: 1, p: nil, text: "Pay")])
+        controller.uiTreeAnswered(pay, client: gone)
+        controller.uiTreeAnswered(pay, client: staying)
+        XCTAssertEqual(controller.uiTreeExpect(client: gone, stream: 3, k: 1), "Pay")
+
+        controller.mcp.onClientClosed?(gone)
+        XCTAssertNil(controller.uiTreeExpect(client: gone, stream: 3, k: 1),
+                     "a closed connection's screen labels outlived it")
+        XCTAssertEqual(controller.uiTreeExpect(client: staying, stream: 3, k: 1), "Pay",
+                       "another connection's labels went with it")
     }
 
     // [MCP-86] Item 7: an editable row's label is its desc, else its id, never its text.

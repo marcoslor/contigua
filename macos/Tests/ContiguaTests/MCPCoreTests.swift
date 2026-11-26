@@ -515,6 +515,7 @@ final class MCPCoreTests: XCTestCase {
             .openApp: opened, .sendLink: opened,
             .listWindows: [
                 "windows": [["id": 3, "kind": "app", "package": "com.google.android.calculator",
+                             "label": "Calculator", "title": NSNull(),
                              "size": [590, 1280], "state": state, "frame": frame, "openedBy": "you",
                              "openedAgoMs": 42000]],
                 "recentlyClosed": [["id": 2, "kind": "link", "package": NSNull(), "reason": "closed",
@@ -682,6 +683,23 @@ final class MCPCoreTests: XCTestCase {
             let ref = ((tool["inputSchema"] as? [String: Any])?["properties"] as? [String: Any])?["ref"] as? [String: Any]
             XCTAssertEqual(ref?["pattern"] as? String, "^e[0-9]+$", name)
         }
+    }
+
+    // [MCP-71] #266 item 8: a ref is a key the phone can give (a 32-bit
+    // key, at most 2147483647): more digits than that is an argument error,
+    // never a stale_ref from the tool.
+    func testARefWithTooManyDigitsIsAnArgumentError_MCP71() async throws {
+        let long = "e" + String(repeating: "9", count: 25)
+        for (tool, ref) in [("tap", long), ("screenshot", long), ("tap", "e2147483648"), ("tap", "e12345678901")] {
+            let data = await MCPDispatcher.handle(
+                line: callRequest(tool, ["window": 3, "ref": ref]),
+                client: MCPClientID(1), perform: { _, _ in .answer([:]) })
+            XCTAssertEqual(try errorCode(data), -32602, "\(tool) \(ref)")
+            let message = try XCTUnwrap((try decode(data)["error"] as? [String: Any])?["message"] as? String)
+            XCTAssertTrue(message.contains("ref must look like e12: use a ref from ui_tree"), message)
+        }
+        XCTAssertEqual(try MCPArguments.call("tap", ["window": 3, "ref": "e2147483647"]),
+                       .tapRef(window: 3, ref: "e2147483647"))
     }
 
     // [MCP-71] T10: the tap and ui_tree descriptions state the key rule.

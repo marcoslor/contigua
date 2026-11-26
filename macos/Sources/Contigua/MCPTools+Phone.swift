@@ -32,14 +32,18 @@ extension MCPToolHost {
     func phoneStatus() async -> [String: Any] {
         let windows = controller.windows.openStreams.count
         let maxWindows = controller.windows.maxWindows
-        guard let phone = try? IntentsBridge.resolve(nil) else {
+        guard let phone = try? IntentsBridge.resolve(nil, in: controller) else {
             return Self.statusAnswer(MCPStatusInput(connected: false, name: nil, battery: nil, charging: false,
                                                     windows: windows, maxWindows: maxWindows, phone: nil,
                                                     foreground: nil, apps: []), now: .now)
         }
+        // The foreground read may wait up to 1 s; `connected`, the lock and
+        // the foreground are read after it, together, so a link that drops
+        // during the wait answers like no phone online (MCP-30/31).
+        let asked: FrontRead? = controller.link.isOnline ? await controller.frontReads.read() : nil
         let online = controller.link.isOnline
-        let foreground: FrontRead? = online ? await controller.frontReads.read() : nil
-        let battery = IntentsBridge.battery(for: phone)
+        let foreground = online ? asked : nil
+        let battery = IntentsBridge.battery(for: phone, in: controller)
         var state: MCPStatusPhone?
         if online, let status = controller.status {
             state = MCPStatusPhone(locked: status.locked, screen: status.screen ?? .on,

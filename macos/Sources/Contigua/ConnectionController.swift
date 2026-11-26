@@ -718,7 +718,10 @@ final class ConnectionController {
         }
         mcp.configure(profile: profile, forced: options.mcpEnable, devTools: options.mcpDevTools)
         mcp.hostProvider = { [weak self] in self.map { MCPToolHost(controller: $0) } }
-        mcp.onClientClosed = { [weak self] client in self?.windowActs.clientGone(client) }
+        mcp.onClientClosed = { [weak self] client in
+            self?.windowActs.clientGone(client)
+            self?.uiTreeBroker.forget(client: client)
+        }
         // A phone-side change has to reach the Finder UI even when no extension
         // process is running, and a replicated extension may only be signalled
         // through its working set (NSFileProviderManager.h, design "S5 round 3").
@@ -1146,7 +1149,8 @@ final class ConnectionController {
             disconnect(deviceId: phone.id)
         }
         if wasActive {
-            windows.closeAll()
+            // MCP-52: the person changed the phone; its windows close for that.
+            windows.closeAll(cause: .phoneSwitched)
             apps = []
             appsLoaded = false
             status = nil
@@ -1271,19 +1275,16 @@ final class ConnectionController {
 
     // MARK: Foreground app (PANEL-26)
 
-    /// A card opened: ask once now, then at most once every 2 s while it stays
-    /// open. The count covers both hosts (the menu-bar panel and the Deck
-    /// popover); the timer stops when the last one closes, so a closed card
-    /// never reads the phone.
+    /// A card opened: ask once now, then again 2 s after the last request
+    /// while it stays open, whoever sent that request (the card or an MCP
+    /// read): the next ask is scheduled from the shared budget, so the budget
+    /// never refuses it (PANEL-26). The count covers both hosts (the menu-bar
+    /// panel and the Deck popover); the timer stops when the last one closes,
+    /// so a closed card never reads the phone.
     func beginPanelFrontWatch() {
         frontWatchCount += 1
         guard frontWatchCount == 1 else { return }
-        askFront()
-        let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.askFront() }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        frontTimer = timer
+        frontTick()
     }
 
     func endPanelFrontWatch() {
@@ -1291,6 +1292,22 @@ final class ConnectionController {
         guard frontWatchCount == 0 else { return }
         frontTimer?.invalidate()
         frontTimer = nil
+    }
+
+    /// One card ask, then the next one at the budget's `nextAsk`: 2 s after
+    /// the last request (2 s from now while offline, when nothing was asked).
+    private func frontTick() {
+        frontTimer?.invalidate()
+        frontTimer = nil
+        guard frontWatchCount > 0 else { return }
+        askFront()
+        let due = frontReads.nextAsk.map { $0 - .now } ?? FrontReadGate.budget
+        let seconds = Double(due.components.seconds) + Double(due.components.attoseconds) / 1e18
+        let timer = Timer(timeInterval: max(seconds, 0.05), repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.frontTick() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        frontTimer = timer
     }
 
     private func askFront() {
@@ -2824,7 +2841,8 @@ final class ConnectionController {
         // keep saying Reconnecting; the windows go and the banner is the one
         // truth. A generic pairing failure (kind nil) keeps today's down window.
         if result.affectsCurrent, case .needsPairing = link, machine.trustLossKind != nil {
-            windows.closeAll()
+            // MCP-52: a trust loss closes the windows as the phone's own close.
+            windows.closeAll(cause: .phone("phone_closed"))
         }
         // A window that was opening during the one-shot transition follows
         // the current Link value too: the zombie-service case left it on
@@ -3044,7 +3062,8 @@ final class ConnectionController {
         if book.currentId?.hasPrefix("hook:pair-") != true {
             pairingResumeId = book.currentId
         }
-        windows.closeAll()
+        // MCP-52: re-pairing is the person changing the phone.
+        windows.closeAll(cause: .phoneSwitched)
         stopClipboardSync()
         // A person re-running the pairing revokes the old pin here (§7): the
         // next connect lands in pairing mode (no record, no §3 mirror).

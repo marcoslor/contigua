@@ -44,7 +44,8 @@ extension MCPToolHost {
         // a window's first frame can end its opening while the call waits.
         return try await Screenshot.result(id: id, state: { self.stateToken(for: window) },
                                            source: window, size: size, crop: crop,
-                                           online: controller.link.isOnline, phone: phoneName)
+                                           online: controller.link.isOnline, phone: phoneName,
+                                           noWindow: { self.noWindow(id) })
     }
 
     /// P0 (pmaxx): the tap goes through the same session path a click does;
@@ -208,11 +209,12 @@ enum Screenshot {
     static func result(id: Int, state: () -> String, source: ScreenshotSource,
                        size: (Int, Int), crop: [Int]?,
                        online: Bool = true, phone: String? = nil,
+                       noWindow: (() -> MCPToolError)? = nil,
                        encode: @escaping @Sendable (CVPixelBuffer, [Int]?) -> Data? = { FrameGrab.png(from: $0, crop: $1) })
         async throws -> MCPToolResult {
         // MCP-61: an offline window can make no picture; say so before asking.
         guard online else { throw MCPToolError.phoneOffline(phone) }
-        let frame = try await waitForFrame(id: id, state: state, source: source)
+        let frame = try await waitForFrame(id: id, state: state, source: source, noWindow: noWindow)
         let buffer = frame.buffer
         let frameSize = (CVPixelBufferGetWidth(buffer), CVPixelBufferGetHeight(buffer))
         // MCP-63: the crop is in display pixels; the frame may be smaller.
@@ -249,7 +251,8 @@ enum Screenshot {
     /// The frame the call answers, or `no_frame`/`no_window` at its bound
     /// (MCP-60, MCP-61): the one state machine, driven against the window.
     private static func waitForFrame(id: Int, state: () -> String,
-                                      source: ScreenshotSource) async throws -> SnapshotFrame {
+                                      source: ScreenshotSource,
+                                      noWindow: (() -> MCPToolError)?) async throws -> SnapshotFrame {
         // MCP-61: the bound runs from the call, and covers Live Text's hold.
         var wait = ScreenshotWait.model(callStart: ProcessInfo.processInfo.systemUptime,
                                         hasFrame: source.newestAt != nil)
@@ -258,7 +261,7 @@ enum Screenshot {
         while source.isCapturing, ProcessInfo.processInfo.systemUptime < wait.deadline {
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
-        guard !source.isCapturing else { throw boundFailure(id: id, state: state) }
+        guard !source.isCapturing else { throw boundFailure(id: id, state: state, noWindow: noWindow) }
 
         // MCP-60: ask, and decode the first keyframe counted after the call.
         // PATH-41: the repeat is counted from this ask, not from the call, so a
@@ -303,7 +306,7 @@ enum Screenshot {
             case .displayed(let frame):
                 return frame
             case .fail:
-                throw boundFailure(id: id, state: state)
+                throw boundFailure(id: id, state: state, noWindow: noWindow)
             }
         }
     }
@@ -326,10 +329,12 @@ enum Screenshot {
     }
 
     /// At the bound: a window that closed while the call waited is gone, not
-    /// short of a picture (MCP-61).
-    private static func boundFailure(id: Int, state: () -> String) -> MCPToolError {
+    /// short of a picture (MCP-61), and keeps its ledger record (MCP-53).
+    private static func boundFailure(id: Int, state: () -> String,
+                                     noWindow: (() -> MCPToolError)?) -> MCPToolError {
         let now = state()
-        return now == "closed" ? MCPToolError.noWindow(id) : MCPToolError.noFrame(window: id, state: now)
+        return now == "closed" ? (noWindow ?? { MCPToolError.noWindow(id) })()
+                               : MCPToolError.noFrame(window: id, state: now)
     }
 }
 
