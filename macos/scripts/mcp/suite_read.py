@@ -76,10 +76,11 @@ def suite(args):
         nodes = found.get("nodes") or []
         match = nodes[0] if len(nodes) == 1 else {}
         report(match.get("text") == "Row 7" and match.get("off") is True and "at" not in match
+               and match.get("where") == "below"
                and match.get("in") == listing.get("ref") and found.get("matched") == 1
                and found.get("total") == len(plain.get("nodes") or []) + (plain.get("omitted") or 0),
-               "[MCP-106] MCP ui_tree {find} answers an off-screen row off, with no at and in the list's ref (%s)"
-               % {k: match.get(k) for k in ("ref", "off", "in")})
+               "[MCP-106] MCP ui_tree {find} answers an off-screen row off, with no at, where and in the list's ref (%s)"
+               % {k: match.get(k) for k in ("ref", "off", "where", "in")})
         report(len(reads) == 1 and reads[0] == found.get("total")
                and reads[0] > len(plain.get("nodes") or []),
                "[MCP-106] MCP find reads the off-screen rows too (%s nodes, a plain read %d)"

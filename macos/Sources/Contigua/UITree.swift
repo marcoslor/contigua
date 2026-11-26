@@ -4,10 +4,11 @@
 // screen was only reachable as pixels until now (ISS-143).
 //
 // The phone does the trimming (layout folded away, short names, tap points,
-// off-screen nodes marked `off`); this parses that contract, refuses a
-// malformed reply, writes the tool result, and issues each reply's refs from a
-// per-window read counter. A ref never crosses the wire: the phone sends none,
-// and the Mac names them `s<snapshot>e<row>` from the counter it owns (S1).
+// off-screen nodes marked `off` with the way to swipe to them, `where`); this
+// parses that contract, refuses a malformed reply, writes the tool result, and
+// issues each reply's refs from a per-window read counter. A ref never crosses
+// the wire: the phone sends none, and the Mac names them `s<snapshot>e<row>`
+// from the counter it owns (S1).
 // Text is on-screen content: it goes to the MCP client, never to a log line.
 
 import Foundation
@@ -43,6 +44,10 @@ struct UITree: Equatable {
         let at: Point?
         /// True when the node has no on-screen tap point (F9).
         let off: Bool
+        /// Which way an off-screen node is (MCP-75): `above`, `below`, `left`,
+        /// `right`, `before`, `after` or `hidden`, from an `offscreen` read.
+        /// `where` is a Swift keyword, so it is `whereOff` here.
+        var whereOff: String? = nil
         let click: Bool
         let edit: Bool
         let scroll: Bool
@@ -121,7 +126,7 @@ struct UITree: Equatable {
             if let key = raw["covered"] as? Int { covered = "e\(key)" }
             else if let word = raw["covered"] as? String { covered = word }
             let key = raw["k"] as? Int
-            return Node(index: index,
+            var node = Node(index: index,
                         ref: key.map { "e\($0)" } ?? "",
                         parent: raw["p"] as? Int,
                         layer: raw["l"] as? Int ?? 0,
@@ -147,6 +152,8 @@ struct UITree: Equatable {
                         hint: raw["hint"] as? Bool ?? false,
                         hintText: raw["hintText"] as? String,
                         hidden: (raw["hidden"] as? [NSNumber]).flatMap { $0.count == 2 ? $0.map(\.intValue) : nil })
+            node.whereOff = raw["where"] as? String
+            return node
         }
     }
 
@@ -267,6 +274,8 @@ struct UITree: Equatable {
                 let box: [Int]?
                 let at: [Double]?
                 let off: Bool?
+                /// MCP-75: which way an off-screen row is, from an `offscreen` read.
+                let `where`: String?
                 let click: Bool?
                 let edit: Bool?
                 let scroll: Bool?
@@ -316,6 +325,7 @@ struct UITree: Equatable {
                          role: node.role, text: node.text, desc: node.desc, id: node.id,
                          box: node.box, at: node.at.map { [$0.x, $0.y] },
                          off: node.off ? true : nil,
+                         where: node.whereOff,
                          click: node.click ? true : nil,
                          edit: node.edit ? true : nil,
                          scroll: node.scroll ? true : nil,

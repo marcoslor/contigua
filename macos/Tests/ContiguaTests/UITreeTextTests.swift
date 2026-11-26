@@ -65,6 +65,50 @@ final class UITreeTextTests: XCTestCase {
                        "Search (hint) [e7 EditText edit]\n[e20 RecyclerView scroll, 0 before, 41 after]")
     }
 
+    // [MCP-74] A formatted value and a different accessible description are
+    // both said: the visible text alone loses what the page reads out.
+    func testDistinctDescIsShownAlongsideText_MCP74() throws {
+        let read = try tree([
+            ["i": 0, "k": 31, "role": "TextView", "text": "R$ 36 69",
+             "desc": "36 reais com 69 centavos", "box": box(1), "at": [0.5, 0.01]],
+            ["i": 1, "k": 32, "role": "TextView", "text": "Settings", "desc": "Settings",
+             "box": box(2), "at": [0.5, 0.02]],
+            ["i": 2, "k": 33, "role": "EditText", "text": "36", "desc": "Price",
+             "edit": true, "box": box(3), "at": [0.5, 0.03]],
+        ])
+        XCTAssertEqual(UITreeText.text(read.nodes),
+                       "R$ 36 69 — 36 reais com 69 centavos\nSettings\n36 — Price [e33 EditText edit]")
+    }
+
+    // [MCP-74] An unlabelled clickable wrapper adopts the labels of its
+    // non-actionable children, so a cross-platform toolkit's icon button reads
+    // as one line.
+    func testUnlabelledClickableWrapperAdoptsNonActionableChildLabels_MCP74() throws {
+        let read = try tree([
+            ["i": 0, "k": 16, "role": "View", "click": true, "box": box(0), "at": [0.5, 0.0]],
+            ["i": 1, "k": 17, "p": 0, "role": "TextView", "desc": "Settings",
+             "box": box(1), "at": [0.5, 0.01]],
+            // A clickable card holding a clickable button keeps the button: an
+            // actionable descendant is never swallowed.
+            ["i": 2, "k": 18, "role": "View", "click": true, "box": box(2), "at": [0.5, 0.02]],
+            ["i": 3, "k": 19, "p": 2, "role": "TextView", "text": "Item 3",
+             "box": box(3), "at": [0.5, 0.03]],
+            ["i": 4, "k": 20, "p": 2, "role": "Button", "text": "Add to cart", "click": true,
+             "box": box(4), "at": [0.5, 0.04]],
+            // An off-screen descendant keeps its own line: a swipe may reach it.
+            ["i": 5, "k": 21, "role": "View", "click": true, "box": box(5), "at": [0.5, 0.05]],
+            ["i": 6, "k": 22, "p": 5, "role": "TextView", "text": "Row 7", "off": true],
+        ])
+        // A clickable card keeps its own line and its inner button: an
+        // actionable descendant is never swallowed, and the card itself stays
+        // pressable by its ref.
+        let expected = "Settings [e16 View]\n[e18 View]\nItem 3\nAdd to cart [e20 Button]\n"
+            + "[e21 View]\nRow 7 [e22 TextView off]"
+        XCTAssertEqual(UITreeText.text(read.nodes), expected)
+        // The encoded answer's rows read the same way.
+        XCTAssertEqual(UITreeText.text(answer: try answer(read)), expected)
+    }
+
     // MARK: find (MCP-75, MCP-106)
 
     // [MCP-75]
@@ -142,7 +186,8 @@ final class UITreeTextTests: XCTestCase {
         fixture.treeNodes = [
             ["i": 0, "k": 20, "role": "RecyclerView", "scroll": true,
              "box": [0, 200, 1080, 2000], "at": [0.5, 0.47]],
-            ["i": 1, "k": 33, "p": 0, "role": "TextView", "text": "Row 50", "off": true],
+            ["i": 1, "k": 33, "p": 0, "role": "TextView", "text": "Row 50", "off": true,
+             "where": "below"],
         ]
         let (found, _) = await fixture.call("ui_tree", ["window": Int(window.stream), "find": "row 50"])
         XCTAssertEqual(found["isError"] as? Bool, false, "ui_tree failed: \(found)")
@@ -154,6 +199,7 @@ final class UITreeTextTests: XCTestCase {
         XCTAssertEqual(nodes.count, 1)
         XCTAssertEqual(nodes.first?["ref"] as? String, "e33")
         XCTAssertEqual(nodes.first?["off"] as? Bool, true)
+        XCTAssertEqual(nodes.first?["where"] as? String, "below")
         XCTAssertNil(nodes.first?["at"])
         XCTAssertEqual(nodes.first?["in"] as? String, "e20")
         XCTAssertEqual(structured["matched"] as? Int, 1)
@@ -164,6 +210,23 @@ final class UITreeTextTests: XCTestCase {
         let plainReads = fixture.sent("ui.tree")
         XCTAssertEqual(plainReads.count, 1)
         XCTAssertNil(plainReads.first?.raw["offscreen"], "a plain read must not ask for off-screen nodes")
+    }
+
+    // [MCP-75] `where` rides right after `off` in the bracket; without it
+    // the bracket is what it was.
+    func testAnOffScreenBracketNamesWhere_MCP75() throws {
+        let read = try tree([
+            ["i": 0, "k": 20, "role": "RecyclerView", "scroll": true,
+             "box": [0, 200, 1080, 2000], "at": [0.5, 0.47]],
+            ["i": 1, "k": 33, "p": 0, "role": "TextView", "text": "Row 50",
+             "off": true, "where": "below"],
+            ["i": 2, "k": 34, "p": 0, "role": "TextView", "text": "Row 99",
+             "off": true, "where": "hidden"],
+            ["i": 3, "k": 35, "p": 0, "role": "TextView", "text": "Row 7", "off": true],
+        ])
+        XCTAssertEqual(UITreeText.text(read.nodes, within: [1: "e20", 2: "e20", 3: "e20"]),
+                       "[e20 RecyclerView scroll]\nRow 50 [e33 TextView off below, in e20]\n"
+                       + "Row 99 [e34 TextView off hidden, in e20]\nRow 7 [e35 TextView off, in e20]")
     }
 
     // [MCP-75] `find` with `format: "text"`: the text view of the matches only,

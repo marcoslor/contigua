@@ -1548,8 +1548,9 @@ for it.
      active layer, item 9), `disabled`, `pwd`.
    - A node whose box does not intersect the display, that is not visible to the user, or
      whose visible part is under 8×8 px is `off`. It is left out of the reply and
-     counted (item 9); a read that asks `offscreen: true` keeps it with `off: true` and no
-     `at`, its text still there so a reader knows to scroll. A tap by its ref is refused
+     counted (item 9); a read that asks `offscreen: true` keeps it with `off: true`, no
+     `at` and `where` (the way a swipe must go, item 9), its text still there so a reader
+     knows to scroll. A tap by its ref is refused
      either way. `box` is the clipped part and `at` the centre of it, never a clamped
      outside point. The platform clips a view's screen bounds to its parent, so a row
      scrolled out of its list arrives with an empty screen box: when its bounds in its
@@ -1687,7 +1688,10 @@ for it.
      carry `at` and are clickable or carry a label. A layer above that reaches the point (by
      its window bounds, or a counted row of it there) wins over the row's own layer: the
      highest such layer names its topmost counted row at the point, or `"window"` when it has
-     none there. Absent when nothing covers the point, and on a row with no `at`.
+     none there. In the row's own layer a counted row covers it only when it is clickable,
+     editable or checkable: a plain label sibling — a rotating placeholder, a badge drawn
+     over the field's centre — takes no touch, so the platform lets the press through and it
+     covers nothing. Absent when nothing covers the point, and on a row with no `at`.
    - **`hint`, `hintText`.** A row whose node `isShowingHintText` carries `hint: true` and
      the hint's words as `hintText` (its text when the node reports no hint), and no `text`;
      a field holding content carries `text` and neither hint key.
@@ -1702,7 +1706,15 @@ for it.
      when either is non-zero: its left-out descendants before its first on-screen descendant
      in reading order, and the rest. The reply carries `omitted`, the count of left-out rows.
      A request `{"t":"ui.tree","stream":N,"seq":S,"offscreen":true}` keeps them, marked `off`
-     as item 2 sends them; the Mac asks so only for the MCP `find` argument.
+     as item 2 sends them, and each carries `where`, one closed word for the way a swipe must
+     go: `above` when its box ends above the display, `below` when it starts below it, `left`
+     or `right` when it lies wholly to a side, `hidden` when its bounds do have their 8×8 px
+     on the display but the user cannot see it (a collapsed tab, a DOM node swiping cannot
+     reveal); a row whose box the platform clipped to nothing (item 2's empty screen box) is
+     `before` or `after` instead, whether it comes before or after its nearest open
+     scrollable's first on-screen row — the same split as that scrollable's `hidden` — and
+     `hidden` with no scrollable holding it. `where` is sent only on such a read; the Mac asks
+     so only for the MCP `find` argument, and passes it through.
 10. **`ui.type`.** Mac → `{"t":"ui.type","stream":N,"seq":S,"text":"…","clear":B,"submit":B}`,
     `text` 1–2000 characters, `clear` and `submit` optional (false). The phone finds the node
     with input focus in the active layer (item 9) of the stream's display. Text made only of

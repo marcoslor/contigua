@@ -282,7 +282,7 @@ enum MCPTools {
                     "wait": wait,
                 ], required: ["window"])),
         MCPTool(name: .uiTree,
-                description: "What the window shows, as accessibility nodes in reading order: text, role, view id, states, a tap point (at, 0..1) and a ref for tap; box is in the display's pixels (size). A ref names one element for as long as it is on screen, across reads; a ref whose element is gone is refused. Only what is on screen is listed: a list says how many items it hides before and after; swipe the list to reach them. A field showing its hint has hint: true and no text. loading: true means the screen is still loading. Exact, and cheaper than a screenshot for finding what to press. find keeps only the nodes whose text, description or view id contains it, ignoring case and accents, off-screen ones included (off: true, no at, and in names the list to swipe), and says how many matched of the total. format: \"text\" answers text instead of nodes: one line per label in reading order, # before a heading, and [ref role states] after what can be acted on.",
+                description: "What the window shows, as accessibility nodes in reading order: text, role, view id, states, a tap point (at, 0..1) and a ref for tap; box is in the display's pixels (size). A ref names one element for as long as it is on screen, across reads; a ref whose element is gone is refused. Only what is on screen is listed: a list says how many items it hides before and after; swipe the list to reach them. A field showing its hint has hint: true and no text. loading: true means the screen is still loading. Exact, and cheaper than a screenshot for finding what to press. find keeps only the nodes whose text, description or view id contains it, ignoring case and accents, off-screen ones included (off: true, no at, where says whether it is above, below, left, right, hidden from swipes, or before/after its list, and in names the list to swipe), and says how many matched of the total. format: \"text\" answers text instead of nodes: one line per label in reading order, # before a heading, [ref role states] after what can be acted on, and a value whose description differs as text — description.",
                 schema: object([
                     "window": window, "wait": wait,
                     "format": ["type": "string", "enum": MCPTreeFormat.allCases.map(\.rawValue),
@@ -411,6 +411,13 @@ enum MCPOutputSchemas {
     private static let string: [String: Any] = ["type": "string"]
     private static func nullable(_ type: String) -> [String: Any] { ["type": [type, "null"]] }
     private static func array(_ items: [String: Any]) -> [String: Any] { ["type": "array", "items": items] }
+    /// The same schema with one sentence a client reads: a field whose name
+    /// alone misreads (`image` is pixels, never bytes; MCP-62).
+    private static func describing(_ schema: [String: Any], _ description: String) -> [String: Any] {
+        var out = schema
+        out["description"] = description
+        return out
+    }
 
     /// MCP-20's `frame` object, carried by every answer that reflects a screen.
     private static let frameObject = object(["seq": integer, "ageMs": nullable("integer")],
@@ -419,11 +426,18 @@ enum MCPOutputSchemas {
     /// made from the frame the window shows rather than a keyframe from after
     /// the call, so the flag explains why `ageMs` is older than the call.
     private static let screenshotFrameObject = object(
-        ["seq": integer, "ageMs": nullable("integer"), "still": boolean],
+        ["seq": integer, "ageMs": nullable("integer"),
+         "still": describing(boolean,
+                             "Present and true when the window was still and answered its displayed frame.")],
         required: ["seq", "ageMs"])
     /// MCP-21's closed state token.
     private static let stateToken: [String: Any] = [
         "type": "string", "enum": ["opening", "live", "paused", "stalled", "offline", "closed"]]
+
+    /// MCP-75's closed token: which way an off-screen row is.
+    private static let whereToken: [String: Any] = [
+        "type": "string",
+        "enum": ["above", "below", "left", "right", "before", "after", "hidden"]]
 
     /// The `ui_tree` payload properties shared between top-level `ui_tree` and
     /// the `tree` observed inside an act, open, or wait answer (MCP-70…75, MCP-82).
@@ -435,7 +449,8 @@ enum MCPOutputSchemas {
         let row = object([
             "i": integer, "ref": string, "p": integer, "l": integer, "role": string,
             "text": string, "desc": string, "id": string, "box": array(integer),
-            "at": array(number), "off": boolean, "click": boolean, "edit": boolean,
+            "at": array(number), "off": boolean, "where": whereToken,
+            "click": boolean, "edit": boolean,
             "scroll": boolean, "check": boolean, "sel": boolean, "focus": boolean,
             "disabled": boolean, "pwd": boolean, "loading": boolean, "heading": boolean,
             "covered": string, "hint": boolean, "hintText": string,
@@ -581,8 +596,16 @@ enum MCPOutputSchemas {
                           required: ["windows", "recentlyClosed"])
         case .screenshot:
             return object(["window": integer, "state": stateToken, "frame": screenshotFrameObject,
-                           "image": array(integer), "size": array(integer),
-                           "blank": boolean, "crop": array(integer), "settle": settleObject],
+                           "image": describing(
+                               array(integer),
+                               "PNG pixel dimensions [width, height]; the PNG itself is returned in the image content block."),
+                           "size": describing(
+                               array(integer),
+                               "Window display pixel dimensions [width, height] (the coordinate space of ui_tree box)."),
+                           "blank": describing(
+                               boolean,
+                               "Present and true only when the frame is a single flat colour (e.g. a blank splash or secure screen)."),
+                           "crop": array(integer), "settle": settleObject],
                           required: ["window", "state", "frame", "image", "size"])
         case .uiTree:
             // `format: text` answers `text` in place of the rows (MCP-74);

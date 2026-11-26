@@ -80,7 +80,7 @@ assert [n["k"] for n in rows if n.get("focus")] == [9]
 print("  omitted %d, hidden %s, hint %r, layers %d" % (one["omitted"], lst["hidden"], hint["hintText"], len(one["layers"])))
 PY
 
-note "ui-tree offscreen: the left-out rows come back marked off, no at (MCP-106)"
+note "ui-tree offscreen: the left-out rows come back marked off, no at, and where (MCP-106, MCP-75)"
 start offscreen
 reads offscreen --offscreen
 "$PY" - "$WORK/offscreen.jsonl" <<'PY' || die "offscreen assertions failed"
@@ -89,8 +89,12 @@ one = json.loads(open(sys.argv[1]).readline())
 off = [n for n in one["nodes"] if n.get("off")]
 assert sorted(n["k"] for n in off) == [4, 15, 16, 17, 18, 19], off
 assert all("at" not in n for n in off), off
+# MCP-75: every off row says which way it is, and these are all below.
+assert all(n.get("where") == "below" for n in off), off
+assert all("where" not in n for n in one["nodes"] if not n.get("off")), one["nodes"]
 assert one["omitted"] == 0 and all("hidden" not in n for n in one["nodes"]), one
-print("  %d rows, %d off, omitted %d" % (len(one["nodes"]), len(off), one["omitted"]))
+print("  %d rows, %d off, omitted %d, where %s"
+      % (len(one["nodes"]), len(off), one["omitted"], sorted({n["where"] for n in off})))
 PY
 
 note "ui-tree --keyboard: the ime layer is not active and its row has no focus (MCP-105)"

@@ -548,6 +548,7 @@ final class UITreeTests: XCTestCase {
     }
 
     func testRefsAreTheKeys() throws {
+
         let raw: [String: Any] = [
             "t": "ui.tree", "stream": 3, "seq": 4, "ok": true,
             "nodes": [
@@ -749,6 +750,23 @@ final class UITreeTests: XCTestCase {
     }
 
     // [MCP-106]
+    // [MCP-75] [MCP-106] An off-screen row says which way it is; a plain read
+    // never carries the field.
+    func testWherePassesThroughOnAnOffScreenRow_MCP75() throws {
+        let object = try encodedObject([
+            "t": "ui.tree", "stream": 3, "seq": 4, "ok": true, "omitted": 1,
+            "nodes": [
+                ["i": 0, "k": 33, "l": 0, "role": "TextView", "text": "Row 50",
+                 "off": true, "where": "below"],
+                ["i": 1, "k": 34, "l": 0, "role": "TextView", "text": "Row 1",
+                 "box": [0, 20, 10, 30], "at": [0.5, 0.1]],
+            ],
+        ])
+        let nodes = try XCTUnwrap(object["nodes"] as? [[String: Any]])
+        XCTAssertEqual(nodes[0]["where"] as? String, "below")
+        XCTAssertNil(nodes[1]["where"], "an on-screen row has no where")
+    }
+
     func testHiddenAndOmittedPassThrough() throws {
         let object = try encodedObject([
             "t": "ui.tree", "stream": 3, "seq": 4, "ok": true, "omitted": 115,

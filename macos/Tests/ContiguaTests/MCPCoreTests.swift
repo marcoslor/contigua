@@ -350,6 +350,27 @@ final class MCPCoreTests: XCTestCase {
         XCTAssertEqual(pointText, #"{"x":0.651}"#)
     }
 
+    // [MCP-5] [MCP-62] A field an agent reads wrong for want of a description:
+    // `image` is pixel dimensions, not bytes, and `size` is the space `box` is
+    // in. Every one of `screenshot`'s own fields says what it is.
+    func testScreenshotSchemaDescribesItsFields_MCP62() throws {
+        let schema = MCPOutputSchemas.schema(for: .screenshot)
+        let properties = try XCTUnwrap(schema["properties"] as? [String: Any])
+        func description(_ key: String) -> String? {
+            (properties[key] as? [String: Any])?["description"] as? String
+        }
+        XCTAssertEqual(description("image"),
+                       "PNG pixel dimensions [width, height]; the PNG itself is returned in the image content block.")
+        XCTAssertEqual(description("size"),
+                       "Window display pixel dimensions [width, height] (the coordinate space of ui_tree box).")
+        XCTAssertEqual(description("blank"),
+                       "Present and true only when the frame is a single flat colour (e.g. a blank splash or secure screen).")
+        let frame = try XCTUnwrap(properties["frame"] as? [String: Any])
+        let still = try XCTUnwrap((frame["properties"] as? [String: Any])?["still"] as? [String: Any])
+        XCTAssertEqual(still["description"] as? String,
+                       "Present and true when the window was still and answered its displayed frame.")
+    }
+
     // [MCP-5]
     func testImageAnswerPutsTheImageFirst() async throws {
         let png = Data([0x89, 0x50, 0x4e, 0x47])
@@ -462,7 +483,7 @@ final class MCPCoreTests: XCTestCase {
             "layers": [["i": 0, "title": "Wikipedia", "type": "app", "active": true]],
             "nodes": [["i": 0, "ref": "e3", "role": "TextView", "text": "Ada Lovelace", "desc": "…",
                        "id": "…", "heading": true, "box": [48, 420, 1032, 520], "at": [0.5, 0.196],
-                       "off": true, "click": true, "edit": true, "scroll": true, "check": true,
+                       "off": true, "where": "below", "click": true, "edit": true, "scroll": true, "check": true,
                        "sel": true, "focus": true, "disabled": true, "pwd": true, "p": 1, "l": 0,
                        "loading": true, "hint": true, "hintText": "…", "hidden": [0, 41],
                        "covered": "e31", "in": "e20"]],

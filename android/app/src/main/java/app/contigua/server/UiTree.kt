@@ -24,7 +24,9 @@ package app.contigua.server
  *
  * Each row carries `k`, its node's key in the display's [UiTreeKeys] table
  * (MCP-71), `heading` when the node is one (MCP-72), and `covered` when a node
- * drawn after it, or a window above it, holds its tap point (MCP-73). A
+ * that takes a touch for itself, drawn after it, or a window above it, holds
+ * its tap point (MCP-73): a plain label drawn over the point is not clickable,
+ * so the platform lets the press through and it covers nothing. A
  * field showing its hint says so instead of reading as filled (MCP-104), and
  * only the active layer's focused node carries `focus` (MCP-105).
  */
@@ -303,6 +305,12 @@ object UiTree {
         val box: Box?,
         /** Clickable or labelled (MCP-73): what can cover another row. */
         val readable: Boolean,
+        /**
+         * Clickable, editable or checkable (MCP-73): what takes the touch a
+         * sibling draws over. A plain label — a placeholder, a badge — does
+         * not intercept it, so it covers nothing in its own window.
+         */
+        val interactive: Boolean,
     )
 
     /** A scrollable row's left-out descendants, before and after its first on-screen one (MCP-106). */
@@ -376,9 +384,12 @@ object UiTree {
                 })
                 return top?.let { nodes[it]["k"] } ?: "window"
             }
+            // In the row's own window only something that takes a touch covers
+            // it (MCP-73): a plain label sibling — a rotating placeholder, a
+            // badge — is not clickable, so the platform lets the press through.
             val top = topmost(placed.indices.filter { other ->
                 val it = placed[other]
-                other != target && it.layer == row.layer && it.readable && it.box != null &&
+                other != target && it.layer == row.layer && it.interactive && it.box != null &&
                     inside(it.box, x, y) && drawnAfter(it.path, row.path)
             })
             return top?.let { nodes[it]["k"] }
@@ -410,6 +421,28 @@ object UiTree {
 
         private fun inside(box: Box, x: Double, y: Double): Boolean =
             x >= box.left && x < box.right && y >= box.top && y < box.bottom
+
+        /**
+         * Which way a swipe must go to reach an `off` row (MCP-75): `above`,
+         * `below`, `left` or `right` of the display, `hidden` when the box has
+         * its 8×8 px on the display and only the user cannot see it (a
+         * collapsed tab, a DOM node swiping cannot reveal), or — when the
+         * platform clipped its box to nothing — `before` or `after` the list's
+         * first on-screen row (`hidden`'s `[before, after]`), `hidden` with no
+         * list to swipe.
+         */
+        private fun where(node: Node, open: List<Hidden>): String {
+            val box = node.box
+            if (box != null && !box.empty) {
+                if (box.bottom <= MIN_VISIBLE) return "above"
+                if (box.top >= size.h - MIN_VISIBLE) return "below"
+                if (box.right <= MIN_VISIBLE) return "left"
+                if (box.left >= size.w - MIN_VISIBLE) return "right"
+                return "hidden"
+            }
+            val scroll = open.lastOrNull() ?: return "hidden"
+            return if (scroll.shown) "after" else "before"
+        }
 
         /**
          * Walks [list] under the row [parent]. [active] is whether the layer
@@ -447,9 +480,13 @@ object UiTree {
                     add(layer, node.children, parent, depth + 1, here, active, open)
                     continue
                 }
-                for (it in open) it.shown = true
+                // MCP-75: an `off` row on an off-screen read says which way a
+                // swipe must go. Zero bytes on a normal read, which leaves it out.
+                val away = off(node, size)
+                val where = if (offscreen && away) where(node, open) else null
+                if (!away) for (it in open) it.shown = true
                 val index = nodes.size
-                val row = row(layer, index, parent, node, active)
+                val row = row(layer, index, parent, node, active, where)
                 nodes.add(row)
                 val visible = (row["box"] as? List<*>)?.takeIf { row["at"] != null }
                     ?.let { Box(it[0] as Int, it[1] as Int, it[2] as Int, it[3] as Int) }
@@ -459,13 +496,15 @@ object UiTree {
                     identity = node.identity,
                     box = visible,
                     readable = node.clickable || label(node.text) != null || label(node.desc) != null,
+                    interactive = node.clickable || node.editable || node.checkable,
                 ))
                 val inside = if (node.scrollable) open + Hidden(index).also { scrolls.add(it) } else open
                 add(layer, node.children, index, depth + 1, here, active, inside)
             }
         }
 
-        private fun row(layer: Int, index: Int, parent: Int, node: Node, active: Boolean): LinkedHashMap<String, Any?> {
+        private fun row(layer: Int, index: Int, parent: Int, node: Node, active: Boolean,
+                        where: String? = null): LinkedHashMap<String, Any?> {
             val row = LinkedHashMap<String, Any?>()
             row["i"] = index
             // The display's key for the node, filled in by [key] (MCP-71).
@@ -500,6 +539,8 @@ object UiTree {
                 val visible = visible(node, size)
                 if (visible == null) row["off"] = true else row["at"] = at(visible)
             }
+            // MCP-75: which way an off-screen row is, so `find` never guesses.
+            where?.let { row["where"] = it }
             if (node.clickable) row["click"] = true
             if (node.editable) row["edit"] = true
             if (node.scrollable) row["scroll"] = true
