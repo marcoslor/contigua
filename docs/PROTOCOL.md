@@ -1638,8 +1638,10 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
    exists, is `isVisibleToUser` and is on the display (item 2's `off` rule), reads its bounds
    now, computes the covering node as `covered` does (item 9) at the bounds' centre, reads the
    same label of the refreshed node (its text, else its description, else the first node under
-   it with either that the tree would not mark `off` — item 2's rule, the same predicate as
-   the row's `off` — depth first within item 2's depth cap, each trimmed as item 2 trims a label;
+   it with either that the tree would keep and not mark `off` — item 2's rule, the same
+   predicates as the row's `off` and fold: a node with no drawable bounds gives no label and
+   its own children take its place — depth first within item 2's depth cap, each trimmed as
+   item 2 trims a label;
    an editable node is labelled by its description, else its view id as item 2 shortens it, a
    password one by its view id alone, and
    under another node an editable node and its subtree give none),
