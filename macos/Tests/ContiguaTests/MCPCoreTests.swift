@@ -455,10 +455,10 @@ final class MCPCoreTests: XCTestCase {
         let state = "live"
         let frame = FrameClock.object(seq: 1340, ageMs: 35)
         let settle = MCPActMachine.Settle(state: "settled", waitedMs: 412)
-        let tree: [String: Any] = [
+        let deadlineSettle = MCPActMachine.Settle(state: "still_changing", waitedMs: 5000, reason: "deadline")
+        let observedTree: [String: Any] = [
             "window": 3, "ok": true, "displayId": 64, "snapshot": 8, "truncated": false,
             "size": [1080, 2364], "omitted": 41, "loading": false, "note": "…",
-            "matched": 1, "total": 87, "state": state, "frame": frame,
             "layers": [["i": 0, "title": "Wikipedia", "type": "app", "active": true]],
             "nodes": [["i": 0, "ref": "e3", "role": "TextView", "text": "Ada Lovelace", "desc": "…",
                        "id": "…", "heading": true, "box": [48, 420, 1032, 520], "at": [0.5, 0.196],
@@ -467,11 +467,29 @@ final class MCPCoreTests: XCTestCase {
                        "loading": true, "hint": true, "hintText": "…", "hidden": [0, 41],
                        "covered": "e31", "in": "e20"]],
         ]
-        let treeJSON = MCPJSON.string(tree)
-        let acted = MCPActEnvelope.answer(
+        var tree = observedTree
+        tree["matched"] = 1
+        tree["total"] = 87
+        tree["state"] = state
+        tree["frame"] = frame
+        let treeJSON = MCPJSON.string(observedTree)
+        let tapped = MCPActEnvelope.answer(
+            window: 3,
+            did: MCPActDid(object: ["action": "tap", "at": [0.5, 0.2],
+                                    "hit": ["ref": "e3", "role": "Button", "text": "Continue"]],
+                           snapshot: 8),
+            frameAtInput: 1302,
+            result: MCPActMachine.Answer(settle: settle, state: state, tree: treeJSON))
+            .merging(["frame": frame]) { a, _ in a }
+        let swiped = MCPActEnvelope.answer(
             window: 3, did: MCPActDid.swipe(from: [0.5, 0.9], to: [0.5, 0.2], ms: 300, direction: .up),
             frameAtInput: 1302,
             result: MCPActMachine.Answer(settle: settle, state: state, tree: treeJSON))
+            .merging(["frame": frame]) { a, _ in a }
+        let keyed = MCPActEnvelope.answer(
+            window: 3, did: MCPActDid.key("home", ignored: true),
+            frameAtInput: 1302,
+            result: MCPActMachine.Answer(settle: deadlineSettle, state: state, tree: treeJSON))
             .merging(["frame": frame]) { a, _ in a }
         let typed = MCPActEnvelope.answer(
             window: 3, did: MCPActDid.type(characters: 2, clear: false, submit: false), frameAtInput: nil,
@@ -479,7 +497,7 @@ final class MCPCoreTests: XCTestCase {
             .merging(["frame": frame]) { a, _ in a }
         var waited = MCPWaitAnswer(waitedMs: 5004, until: "met",
                                    match: ["ref": "e14", "text": "00:05.02"])
-        waited.tree = tree
+        waited.tree = observedTree
         let opened = MCPOpenAnswer.answer(window: 5, kind: .app, package: "com.example.shop", label: "Shop",
                                           opened: .new, openedBy: "you", size: [590, 1280],
                                           result: MCPActMachine.Answer(settle: settle, state: state, tree: treeJSON))
@@ -507,7 +525,7 @@ final class MCPCoreTests: XCTestCase {
                           "settle": MCPActEnvelope.settle(settle)],
             .uiTree: tree,
             .wait: waited.object(window: 3).merging(["state": state, "frame": frame]) { a, _ in a },
-            .tap: acted, .swipe: acted, .pressKey: acted,
+            .tap: tapped, .swipe: swiped, .pressKey: keyed,
             .typeText: typed,
             .inputProbe: ["ok": true, "window": 3, "frames": 4, "sent_ms": 1823344.2,
                           "changed_ms": 48.1, "state": state, "frame": frame],
