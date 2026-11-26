@@ -560,8 +560,14 @@ final class MCPCoreTests: XCTestCase {
             as? [String: Any]
         XCTAssertEqual(Set(row?["required"] as? [String] ?? []),
                        ["id", "package", "size", "state", "frame"])
-        let screenshot = MCPOutputSchemas.schema(for: .screenshot)["required"] as? [String] ?? []
+        let schema = MCPOutputSchemas.schema(for: .screenshot)
+        let screenshot = schema["required"] as? [String] ?? []
         XCTAssertEqual(Set(screenshot), ["window", "state", "frame", "image", "size"])
+        // MCP-62: `still` is declared beside `blank` and optional, so an answer
+        // that carries it still matches the schema (additionalProperties: false).
+        let fields = schema["properties"] as? [String: Any] ?? [:]
+        XCTAssertEqual((fields["still"] as? [String: Any])?["type"] as? String, "boolean")
+        XCTAssertFalse(screenshot.contains("still"), "still is omitted unless the answer is a still")
 
         let stamped = MCPFreshness.stamp(["ok": true, "window": 3], state: "paused",
                                          frame: FrameClock.object(seq: 0, ageMs: nil))

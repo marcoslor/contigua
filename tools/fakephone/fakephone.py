@@ -1115,6 +1115,11 @@ class EventLog(object):
         """--power-locked-after: the phone sent `power.locked` at the press."""
         self._emit({"ev": "power_locked", "stream": stream, "ts": time.time()})
 
+    def still(self, stream):
+        """The `still` mode word: a live stream's encoder produced no output
+        buffer, so the phone sent `window.still` instead of a frame (PHONE-21)."""
+        self._emit({"ev": "still", "stream": stream, "ts": time.time()})
+
     def rx(self, msg):
         self._emit({"ev": "rx", "msg": redact_event(msg), "ts": time.time()})
         # Every request leaves a fresh counters line, so a check that starts
@@ -2302,6 +2307,10 @@ class WindowStream(object):
         self._stall_timer = None
         self._stall_end_timer = None
         self._power_timer = None
+        # The `still` mode word: the picture stopped changing while the stream
+        # stayed live, so the phone sends `window.still` instead of frames
+        # (PHONE-21) and a key request reaches no input frame to encode.
+        self._still = False
         self._lock = threading.Lock()
 
     @property
@@ -2471,6 +2480,7 @@ class WindowStream(object):
         self._reader.start()
 
     def _cancel_timers_locked(self):
+        self._still = False
         for name in ("_stall_timer", "_stall_end_timer"):
             timer = getattr(self, name)
             if timer is not None:
@@ -2551,6 +2561,31 @@ class WindowStream(object):
     def _resume_after_stall(self):
         self._handle(EncoderEvent.STALL_ENDED, "stall-for")
 
+    def _begin_still(self):
+        """The `still` mode word: stop sending frames, keep the session, and say so.
+
+        The real phone's IdleFrameWatchdog sends `window.still` once its encoder
+        has produced no output buffer for a second, and again each second while
+        the silence lasts. The stream is live the whole time: only the picture
+        stopped changing.
+        """
+        if self._still:
+            return
+        self._still = True
+
+        def run():
+            # The phone waits for a second of silence before it says so, and
+            # then repeats once a second: the Mac's watchdog counts a still as a
+            # heartbeat, so the window stays live throughout (PHONE-21).
+            time.sleep(1.0)
+            while self._still and self._state in (EncoderState.RUNNING, EncoderState.PAUSED):
+                self.phone.events.still(self.stream_id)
+                self.phone.sender.send_json({"t": "window.still", "stream": self.stream_id})
+                time.sleep(1.0)
+
+        threading.Thread(target=run, name="fake-still-%d" % self.stream_id,
+                         daemon=True).start()
+
     def stop(self):
         self._config_stop.set()
         self._handle(EncoderEvent.STOP, "stop")
@@ -2611,6 +2646,14 @@ class WindowStream(object):
                 self._emit(au)
 
     def _emit(self, access_unit):
+        if mode_on(self.phone.args, "still"):
+            self._begin_still()
+            # A still screen submits no input frames: the phone has nothing to
+            # send but `window.still` (PHONE-21).
+            return
+        if self._still:
+            # The mode was turned off: the picture moves again.
+            self._still = False
         nals = proto.split_nals(access_unit)
         if not nals:
             return
@@ -5871,6 +5914,13 @@ class Session(object):
         window = self._stream_or_error(msg)
         if window is not None:
             window._stats_kf_req += 1
+            if window._still or mode_on(self.phone.args, "still"):
+                # PARAMETER_KEY_REQUEST_SYNC_FRAME applies to the encoder's
+                # next input frame, and a static surface submits none: the ask
+                # is counted and answered with `window.still` (PHONE-21).
+                sys.stderr.write("fakephone: stream %d key request while still\n"
+                                 % window.stream_id)
+                return
             window.start(cause="keyframe")
 
     def _on_window_quality(self, msg):

@@ -274,7 +274,7 @@ enum MCPTools {
                 description: "Every open window: its id, what it shows, who opened it (you, another agent, the person or the app itself), its state and how fresh its picture is, and the windows that closed in the last 10 minutes with the reason. A window id is a handle, never reused for another window while Contigua runs.",
                 schema: object([:], required: [])),
         MCPTool(name: .screenshot,
-                description: "A PNG of the window, from a frame the phone sends after this call (never an older one), longest side at most 1280 px. ui_tree's box values are in the window's pixels (size), not the image's. Pass ref to get only that element.",
+                description: "A PNG of the window, from a frame the phone sends after this call (never an older one), longest side at most 1280 px. A window that is not moving answers the frame it shows, with still: true and that frame's own age. ui_tree's box values are in the window's pixels (size), not the image's. Pass ref to get only that element.",
                 schema: object([
                     "window": window,
                     "ref": ["type": "string", "minLength": 1, "maxLength": 32, "pattern": "^e[0-9]+$",
@@ -575,7 +575,8 @@ enum MCPOutputSchemas {
         case .screenshot:
             return object(["window": integer, "state": stateToken, "frame": frameObject,
                            "image": array(integer), "size": array(integer),
-                           "blank": boolean, "crop": array(integer), "settle": settleObject],
+                           "blank": boolean, "still": boolean, "crop": array(integer),
+                           "settle": settleObject],
                           required: ["window", "state", "frame", "image", "size"])
         case .uiTree:
             // `format: text` answers `text` in place of the rows (MCP-74);

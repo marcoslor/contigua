@@ -134,6 +134,14 @@ down to a multiple of 16. Deltas are dropped past ~250 ms of backlog per stream
 phone-mode `window.open` with `{"t":"error","code":"mirror_unavailable"}`
 (`--mirror-unavailable`), sending no `window.opened` and no frames.
 
+The `still` mode word (`--mode-file`, beside the events log) is a screen that
+stops moving: the stream stays live and sends no frames, and the fake sends
+`window.still` after a second of silence and once a second after that, as the
+phone's idle-frame watchdog does (PHONE-21). A key request reaches no input
+frame, so the fake counts it and sends nothing, as on the phone. The event log
+records it as `{"ev":"still","stream":N,"ts":…}`. `suite_screen` uses it for
+the #274 checks.
+
 ### The window stream encoder's states
 
 A stream's encoder is one explicit state machine (`encoder_transition` in
