@@ -1547,8 +1547,9 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
      active layer, item 9), `disabled`, `pwd`.
    - A node whose box does not intersect the display, that is not visible to the user, or
      whose visible part is under 8×8 px is `off`. Since B6 it is left out of the reply and
-     counted (item 9); a read that asks `offscreen: true` keeps it with `off: true` and no
-     `at`, its text still there so a reader knows to scroll. A tap by its ref is refused
+     counted (item 9); a read that asks `offscreen: true` keeps it with `off: true`, no
+     `at` and `where` (the way a swipe must go, item 9), its text still there so a reader
+     knows to scroll. A tap by its ref is refused
      either way. `box` is the clipped part and `at` the centre of it, never a clamped
      outside point. The platform clips a view's screen bounds to its parent, so a row
      scrolled out of its list arrives with an empty screen box: when its bounds in its

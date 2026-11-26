@@ -4,10 +4,11 @@
 // screen was only reachable as pixels until now (ISS-143).
 //
 // The phone does the trimming (layout folded away, short names, tap points,
-// off-screen nodes marked `off`); this parses that contract, refuses a
-// malformed reply, writes the tool result, and issues each reply's refs from a
-// per-window read counter. A ref never crosses the wire: the phone sends none,
-// and the Mac names them `s<snapshot>e<row>` from the counter it owns (S1).
+// off-screen nodes marked `off` with the way to swipe to them, `where`); this
+// parses that contract, refuses a malformed reply, writes the tool result, and
+// issues each reply's refs from a per-window read counter. A ref never crosses
+// the wire: the phone sends none, and the Mac names them `s<snapshot>e<row>`
+// from the counter it owns (S1).
 // Text is on-screen content: it goes to the MCP client, never to a log line.
 
 import Foundation
