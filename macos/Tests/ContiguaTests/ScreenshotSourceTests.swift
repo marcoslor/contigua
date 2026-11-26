@@ -38,27 +38,24 @@ final class ScreenshotSourceTests: XCTestCase {
 
     /// A source that delivers one frame (or none) and traps on the display
     /// layer's buffer, which a screenshot must never read. `capturingFor`
-    /// models Live Text's freeze holding the decoder; `waitsOutBound` makes a
-    /// source with no frame take its whole timeout, as a real one does.
+    /// models Live Text's freeze holding the decoder.
     @MainActor
     private final class FakeSource: ScreenshotSource {
         let newestSeq: Int
         let deliver: SnapshotFrame?
         let deliverAfter: TimeInterval
-        let waitsOutBound: Bool
         private let capturingUntil: TimeInterval
         private(set) var askedAfter: Int?
         private(set) var askedTimeout: TimeInterval?
         init(newestSeq: Int, deliver: SnapshotFrame?, deliverAfter: TimeInterval = 0,
-             capturingFor: TimeInterval = 0, waitsOutBound: Bool = false) {
+             capturingFor: TimeInterval = 0) {
             self.newestSeq = newestSeq
             self.deliver = deliver
             self.deliverAfter = deliverAfter
-            self.waitsOutBound = waitsOutBound
             self.capturingUntil = ProcessInfo.processInfo.systemUptime + capturingFor
         }
         var isCapturing: Bool { ProcessInfo.processInfo.systemUptime < capturingUntil }
-        var newestAt: TimeInterval? { nil }
+        var newestAt: TimeInterval? { deliver.map { $0.at } }
         var stillSince: TimeInterval? { nil }
         func copyDisplayedFrame() -> CVPixelBuffer? {
             XCTFail("a screenshot read the display layer's buffer")
@@ -83,16 +80,6 @@ final class ScreenshotSourceTests: XCTestCase {
         func poll(_ seconds: TimeInterval) async {
             try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))  // real-time: the bound under test is wall-clock (MCP-61)
         }
-        func nextKeyframe(after seq: Int, timeout: TimeInterval) async -> SnapshotFrame? {
-            askedAfter = seq
-            askedTimeout = timeout
-            if deliver == nil, waitsOutBound {
-                try? await Task.sleep(nanoseconds: UInt64(max(0, timeout) * 1_000_000_000))  // real-time: the bound under test is wall-clock (MCP-61)
-            } else if deliverAfter > 0 {
-                try? await Task.sleep(nanoseconds: UInt64(deliverAfter * 1_000_000_000))  // real-time: the answer's age is wall-clock (MCP-20)
-            }
-            return deliver
-        }
     }
 
     /// The screenshot's answer object; fails the test when it is not an image.
@@ -109,9 +96,12 @@ final class ScreenshotSourceTests: XCTestCase {
 
     // MARK: The wait's rule (MCP-60, MCP-61; #274)
 
-    private func waitModel(at askAt: TimeInterval = 100, hasFrame: Bool = true)
-        -> ScreenshotWaitModel {
-        ScreenshotWait.model(askAt: askAt, hasFrame: hasFrame)
+    /// A call that started at 100 and has already sent its first ask at `asked`.
+    private func waitModel(callStart: TimeInterval = 100, asked: TimeInterval = 100,
+                           hasFrame: Bool = true) -> ScreenshotWaitModel {
+        let model = ScreenshotWait.model(callStart: callStart, hasFrame: hasFrame)
+        guard asked >= callStart else { return model }
+        return ScreenshotWait.transition(model, .asked(now: asked)).model
     }
 
     private func stamp(seq: Int, at: TimeInterval = 90,
@@ -126,36 +116,72 @@ final class ScreenshotSourceTests: XCTestCase {
     func testASecondAskCoversThePhonesDuplicateIdr_MCP60() {
         let model = waitModel()
         // Just after the ask: nothing arrived, and the repeat is not due.
-        let early = ScreenshotWait.transition(model, .tick(now: 100.1, frame: nil, still: false,
+        let early = ScreenshotWait.transition(model, .tick(now: 100.1, frame: nil, stillAt: nil,
                                                           displayed: nil))
         XCTAssertEqual(early.outcome, .wait)
         XCTAssertEqual(early.actions, [.wait(seconds: ScreenshotWait.pollInterval)])
         // Past 300 ms: ask again, exactly once.
         let again = ScreenshotWait.transition(early.model, .tick(now: 100.35, frame: nil,
-                                                                still: false, displayed: nil))
+                                                                stillAt: nil, displayed: nil))
         XCTAssertEqual(again.actions, [.askAgain])
-        XCTAssertEqual(again.model.state, .waiting(repeatAt: 100.3, askedAgain: true))
+        XCTAssertEqual(again.model.state, .waiting(askedAt: 100, repeatAt: 100.3, askedAgain: true))
         let third = ScreenshotWait.transition(again.model, .tick(now: 100.4, frame: nil,
-                                                                still: false, displayed: nil))
+                                                                stillAt: nil, displayed: nil))
         XCTAssertEqual(third.actions, [.wait(seconds: ScreenshotWait.pollInterval)])
         // The second ask's frame answers the call, with no still flag.
         let landed = stamp(seq: 11)
         let done = ScreenshotWait.transition(third.model, .tick(now: 100.45, frame: landed,
-                                                                still: false, displayed: nil))
+                                                                stillAt: nil, displayed: nil))
         XCTAssertEqual(done.outcome, .keyframe(landed))
         XCTAssertEqual(done.model.state, .done)
     }
 
+    // [MCP-60] #274 review: the repeat is counted from the *ask*, never from
+    // the call. Live Text holding the one snapshot decoder for 1.5 s leaves
+    // 0.5 s of the same bound; the repeat must still wait its own 300 ms
+    // after the ask rather than fire at once because the call is older.
+    func testTheSecondAskIsCountedFromTheAsk_MCP60() {
+        // The call started at 100; Live Text let go and the first ask went out
+        // at 101.5. The repeat's moment is 101.8, not 100.3.
+        let asked = waitModel(callStart: 100, asked: 101.5)
+        XCTAssertEqual(asked.state, .waiting(askedAt: 101.5, repeatAt: 101.8, askedAgain: false))
+        let justAfter = ScreenshotWait.transition(asked, .tick(now: 101.55, frame: nil,
+                                                               stillAt: nil, displayed: nil))
+        XCTAssertEqual(justAfter.actions, [.wait(seconds: ScreenshotWait.pollInterval)],
+                       "the repeat must not fire because the call is already 1.5 s old")
+        XCTAssertFalse(justAfter.actions.contains(.askAgain))
+        let due = ScreenshotWait.transition(justAfter.model, .tick(now: 101.85, frame: nil,
+                                                                   stillAt: nil, displayed: nil))
+        XCTAssertEqual(due.actions, [.askAgain], "300 ms after the ask, as PATH-41 needs")
+    }
+
     // [MCP-60] #274: a still window sends no frame and says `window.still`
-    // instead (PHONE-21); the call answers the displayed frame at once.
+    // instead (PHONE-21); a still sent since the ask answers the displayed
+    // frame at once.
     func testASteadyWindowAnswersTheDisplayedFrame_MCP60() {
         let shown = stamp(seq: 40, origin: .displayed)
         let done = ScreenshotWait.transition(waitModel(),
-                                             .tick(now: 100.05, frame: nil, still: true,
+                                             .tick(now: 100.05, frame: nil, stillAt: 100.01,
                                                    displayed: shown))
         XCTAssertEqual(done.outcome, .displayed(shown))
         XCTAssertEqual(done.model.state, .done)
         XCTAssertEqual(done.actions, [], "a still is answered without waiting out the bound")
+    }
+
+    // [MCP-61] #274 review: a `window.still` from *before* the call answers
+    // nothing. The screen may have changed since it, with the new frame still
+    // on the wire, so answering it would be a picture from before the call.
+    func testAPreCallStillAnswersNothing_MCP61() {
+        let shown = stamp(seq: 40, origin: .displayed)
+        let pre = ScreenshotWait.transition(waitModel(),
+                                            .tick(now: 100.05, frame: nil, stillAt: 99.5,
+                                                  displayed: shown))
+        XCTAssertEqual(pre.outcome, .wait, "a still sent before the ask vouches for nothing")
+        // Even at the bound, with that same pre-call still, the call fails.
+        let bound = ScreenshotWait.transition(pre.model,
+                                              .tick(now: 102, frame: nil, stillAt: 99.5,
+                                                    displayed: shown))
+        XCTAssertEqual(bound.outcome, .fail)
     }
 
     // [MCP-60] A fresh keyframe that arrives before the still wins: it is what
@@ -163,7 +189,7 @@ final class ScreenshotSourceTests: XCTestCase {
     func testAFreshKeyframeBeatsTheStill_MCP60() {
         let fresh = stamp(seq: 41)
         let done = ScreenshotWait.transition(waitModel(),
-                                             .tick(now: 100.05, frame: fresh, still: true,
+                                             .tick(now: 100.05, frame: fresh, stillAt: 100.01,
                                                    displayed: stamp(seq: 40, origin: .displayed)))
         XCTAssertEqual(done.outcome, .keyframe(fresh))
     }
@@ -172,10 +198,11 @@ final class ScreenshotSourceTests: XCTestCase {
     // there is no picture to show, so the bound decides.
     func testAStillWithNoDisplayedFrameIsNoFrame_MCP61() {
         let still = ScreenshotWait.transition(waitModel(),
-                                              .tick(now: 100.05, frame: nil, still: true,
+                                              .tick(now: 100.05, frame: nil, stillAt: 100.01,
                                                     displayed: nil))
         XCTAssertEqual(still.outcome, .wait)
-        let bound = ScreenshotWait.transition(still.model, .tick(now: 102, frame: nil, still: true,
+        let bound = ScreenshotWait.transition(still.model, .tick(now: 102, frame: nil,
+                                                                 stillAt: 100.01,
                                                                  displayed: nil))
         XCTAssertEqual(bound.outcome, .fail)
         XCTAssertEqual(bound.actions, [])
@@ -187,7 +214,7 @@ final class ScreenshotSourceTests: XCTestCase {
         var model = waitModel()
         var repeats = 0
         for step in stride(from: 100.05, through: 102.1, by: 0.05) {
-            let next = ScreenshotWait.transition(model, .tick(now: step, frame: nil, still: false,
+            let next = ScreenshotWait.transition(model, .tick(now: step, frame: nil, stillAt: nil,
                                                               displayed: nil))
             if next.actions.contains(.askAgain) { repeats += 1 }
             model = next.model
@@ -195,6 +222,23 @@ final class ScreenshotSourceTests: XCTestCase {
         }
         XCTAssertEqual(model.state, .done)
         XCTAssertEqual(repeats, 1, "one repeat, no more")
+    }
+
+    // [MCP-61] A call whose Live Text hold outlives the bound fails without
+    // ever asking: the bound is the call's, not the ask's.
+    func testTheBoundIsTheCallsNotTheAsks_MCP61() {
+        var model = ScreenshotWait.model(callStart: 100, hasFrame: true)
+        let early = ScreenshotWait.transition(model, .tick(now: 101, frame: nil, stillAt: nil,
+                                                           displayed: nil))
+        XCTAssertEqual(early.outcome, .wait)
+        XCTAssertEqual(early.model.state, .beforeAsk)
+        let bound = ScreenshotWait.transition(early.model, .tick(now: 102,
+                                                                 frame: nil, stillAt: nil,
+                                                                 displayed: nil))
+        XCTAssertEqual(bound.outcome, .fail)
+        XCTAssertEqual(model.state, .beforeAsk)
+        model = bound.model
+        XCTAssertEqual(model.state, .done)
     }
 
     // MARK: A phone that behaves as the wire does (#274)
@@ -215,10 +259,11 @@ final class ScreenshotSourceTests: XCTestCase {
         let newestAt: TimeInterval?
         let asks: [Ask]
         let displayed: CVPixelBuffer?
-        /// `window.still` arrives this long after the call; nil never.
+        /// `window.still` arrived this long *before* the call started: a still
+        /// from before the ask, which must answer nothing (#165).
+        let stillBefore: TimeInterval?
+        /// `window.still` arrives this long *after* the call starts; nil never.
         let stillAfter: TimeInterval?
-        /// The window was already quiet at the call (a still repeats each second).
-        let stillBefore: Bool
         private let started = ProcessInfo.processInfo.systemUptime
         private(set) var asked = 0
         private(set) var displays = 0
@@ -226,7 +271,7 @@ final class ScreenshotSourceTests: XCTestCase {
 
         init(newestSeq: Int, newestAt: TimeInterval? = nil, asks: [Ask] = [],
              displayed: CVPixelBuffer? = nil, stillAfter: TimeInterval? = nil,
-             stillBefore: Bool = false) {
+             stillBefore: TimeInterval? = nil) {
             self.newestSeq = newestSeq
             self.newestAt = newestAt
             self.asks = asks
@@ -238,7 +283,7 @@ final class ScreenshotSourceTests: XCTestCase {
         var isCapturing: Bool { false }
 
         var stillSince: TimeInterval? {
-            if stillBefore { return started - 0.5 }
+            if let stillBefore { return started - stillBefore }
             guard let stillAfter else { return nil }
             let at = started + stillAfter
             return ProcessInfo.processInfo.systemUptime >= at ? at : nil
@@ -262,17 +307,6 @@ final class ScreenshotSourceTests: XCTestCase {
 
         func poll(_ seconds: TimeInterval) async {
             try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))  // real-time: the bound under test is wall-clock (MCP-61)
-        }
-
-        func nextKeyframe(after seq: Int, timeout: TimeInterval) async -> SnapshotFrame? {
-            asked += 1
-            let ask = asked <= asks.count ? asks[asked - 1] : nil
-            if let ask, ask.after > 0 {
-                try? await Task.sleep(nanoseconds: UInt64(ask.after * 1_000_000_000))  // real-time: the phone's own latency
-            }
-            return ask?.deliver.map {
-                SnapshotFrame(buffer: $0, seq: seq + 1, at: ProcessInfo.processInfo.systemUptime)
-            }
         }
 
         private func ask(seq: Int) {
@@ -306,40 +340,74 @@ final class ScreenshotSourceTests: XCTestCase {
         let started = ProcessInfo.processInfo.systemUptime
         let answer = try await shot(id: 3, state: "live", source: source, size: (64, 64), crop: nil)
         XCTAssertEqual(source.asked, 2, "the Mac asked a second time")
-        XCTAssertEqual(answer["still"] as? Bool, nil, "a keyframe needs no still flag")
         let frame = try XCTUnwrap(answer["frame"] as? [String: Any])
+        XCTAssertNil(frame["still"], "a keyframe's frame needs no still flag")
+        XCTAssertNil(answer["still"], "still is never a top-level key")
         XCTAssertEqual(frame["seq"] as? Int, 41)
         XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - started, 2,
                           "the second ask lands well inside the one 2 s bound")
     }
 
     // [MCP-60] #274: a still window sends no frame and says so (`window.still`)
-    // instead; the call answers the shown frame, marked still, with its real
-    // age, and at once rather than wait out the bound.
+    // instead; the call answers the shown frame, marked still inside its frame,
+    // with its real age, and at once rather than wait out the bound.
     func testAStillWindowAnswersTheShownFrame_MCP60() async throws {
         let shown = makeBuffer(width: 64, height: 64, value: 90)
         let source = PhoneSource(newestSeq: 12, newestAt: ProcessInfo.processInfo.systemUptime - 30,
                                   asks: [], displayed: shown, stillAfter: 0.1)
         let started = ProcessInfo.processInfo.systemUptime
         let answer = try await shot(id: 3, state: "live", source: source, size: (64, 64), crop: nil)
-        XCTAssertEqual(answer["still"] as? Bool, true)
+        XCTAssertNil(answer["still"], "still lives inside frame, not beside it (MCP-62)")
         let frame = try XCTUnwrap(answer["frame"] as? [String: Any])
+        XCTAssertEqual(frame["still"] as? Bool, true)
         XCTAssertEqual(frame["seq"] as? Int, 12, "the answer is the frame the phone vouched for")
         XCTAssertGreaterThanOrEqual(frame["ageMs"] as? Int ?? -1, 30_000, "its real age")
         XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - started, 1,
                           "answered at once, well under the 2 s bound")
     }
 
-    // [MCP-60] #274: the window was already still before the call (the phone
-    // repeats `still` once a second), so the call sees one almost at once.
-    func testAnAlreadyStillWindowAnswersAtOnce_MCP60() async throws {
-        let source = PhoneSource(newestSeq: 12, newestAt: ProcessInfo.processInfo.systemUptime - 4,
+    // [MCP-61] A frame older than a minute is still the picture when the phone
+    // says so: the age is told, never used as a reason to fail. A static page
+    // left open for 2 minutes must not fail `no_frame` again.
+    func testALongQuietWindowAnswersWithItsRealAge_MCP61() async throws {
+        let source = PhoneSource(newestSeq: 40, newestAt: ProcessInfo.processInfo.systemUptime - 125,
                                   asks: [], displayed: makeBuffer(width: 64, height: 64, value: 8),
-                                  stillBefore: true)
-        let started = ProcessInfo.processInfo.systemUptime
+                                  stillAfter: 0.1)
         let answer = try await shot(id: 3, state: "live", source: source, size: (64, 64), crop: nil)
-        XCTAssertEqual(answer["still"] as? Bool, true)
-        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - started, 1)
+        let frame = try XCTUnwrap(answer["frame"] as? [String: Any])
+        XCTAssertEqual(frame["still"] as? Bool, true)
+        XCTAssertGreaterThanOrEqual(frame["ageMs"] as? Int ?? -1, 125_000,
+                                    "the real age, past the old 60 s cap")
+    }
+
+    // [MCP-61] #274 review: a `window.still` that arrived before the call
+    // answers nothing. If a fresh keyframe arrives it wins; if none does the
+    // call fails `no_frame` at its bound — it never hands back the pre-call
+    // picture (#165).
+    func testAPreCallStillAnswersNothing_MCP61() async throws {
+        let source = PhoneSource(
+            newestSeq: 40, newestAt: ProcessInfo.processInfo.systemUptime - 5,
+            asks: [Ask(deliver: makeBuffer(width: 64, height: 64, value: 90), after: 0.1)],
+            displayed: makeBuffer(width: 64, height: 64, value: 8), stillBefore: 0.4)
+        let answer = try await shot(id: 3, state: "live", source: source, size: (64, 64), crop: nil)
+        let frame = try XCTUnwrap(answer["frame"] as? [String: Any])
+        XCTAssertNil(frame["still"], "the fresh keyframe wins, not the pre-call still")
+        XCTAssertEqual(frame["seq"] as? Int, 41)
+    }
+
+    // [MCP-61] The same pre-call still with no keyframe behind it: `no_frame`
+    // at the bound, and the display layer is never read for the answer.
+    func testAPreCallStillIsNoFrame_MCP61() async throws {
+        let source = PhoneSource(newestSeq: 40, newestAt: ProcessInfo.processInfo.systemUptime - 5,
+                                  asks: [], displayed: makeBuffer(width: 64, height: 64, value: 8),
+                                  stillBefore: 0.4)
+        do {
+            _ = try await Screenshot.result(id: 3, state: { "live" }, source: source,
+                                            size: (64, 64), crop: nil)
+            XCTFail("a still from before the call answered a picture")
+        } catch let error as MCPToolError {
+            XCTAssertEqual(error.code, .noFrame)
+        }
     }
 
     // [MCP-60] A fresh keyframe that arrives before the still wins.
@@ -348,8 +416,9 @@ final class ScreenshotSourceTests: XCTestCase {
             newestSeq: 40, asks: [Ask(deliver: makeBuffer(width: 64, height: 64, value: 90))],
             displayed: makeBuffer(width: 64, height: 64, value: 8), stillAfter: 0.05)
         let answer = try await shot(id: 3, state: "live", source: source, size: (64, 64), crop: nil)
-        XCTAssertNil(answer["still"], "the answer is a keyframe, not a still")
-        XCTAssertEqual((answer["frame"] as? [String: Any])?["seq"] as? Int, 41)
+        let frame = try XCTUnwrap(answer["frame"] as? [String: Any])
+        XCTAssertNil(frame["still"], "the answer is a keyframe, not a still")
+        XCTAssertEqual(frame["seq"] as? Int, 41)
     }
 
     // [MCP-61] A window with no displayed frame at all is still `no_frame`,
@@ -596,7 +665,7 @@ final class ScreenshotSourceTests: XCTestCase {
     // [MCP-61] The 2 s bound covers Live Text's capture too: the keyframe
     // wait gets only the time left.
     func testTheBoundIncludesLiveTextsCaptureWait() async throws {
-        let source = FakeSource(newestSeq: 0, deliver: nil, capturingFor: 1.5, waitsOutBound: true)
+        let source = FakeSource(newestSeq: 0, deliver: nil, capturingFor: 1.5)
         let started = ProcessInfo.processInfo.systemUptime
         do {
             _ = try await Screenshot.result(id: 3, state: { "live" }, source: source,

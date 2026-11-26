@@ -137,10 +137,12 @@ phone-mode `window.open` with `{"t":"error","code":"mirror_unavailable"}`
 The `still` mode word (`--mode-file`, beside the events log) is a screen that
 stops moving: the stream stays live and sends no frames, and the fake sends
 `window.still` after a second of silence and once a second after that, as the
-phone's idle-frame watchdog does (PHONE-21). A key request reaches no input
-frame, so the fake counts it and sends nothing, as on the phone. The event log
-records it as `{"ev":"still","stream":N,"ts":…}`. `suite_screen` uses it for
-the #274 checks.
+phone's idle-frame watchdog does (PHONE-21). Because only a still sent *since*
+a screenshot's ask answers that call, the repeat is what the Mac waits for: a
+still screen answers within a second, and one from before the call answers
+nothing. A key request reaches no input frame, so the fake counts it and sends
+nothing, as on the phone. The event log records it as
+`{"ev":"still","stream":N,"ts":…}`. `suite_screen` uses it for the #274 checks.
 
 ### The window stream encoder's states
 

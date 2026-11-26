@@ -4,7 +4,7 @@
 A screenshot is a frame from after the call: each one asks the fakephone for a
 keyframe and its `frame.seq` grows; `size` is the window's pixels, the same as
 `list_windows` says. A window that is not moving (`window.still`, PHONE-21)
-answers the frame it shows, marked `still: true`, at once (#274). A minimised
+answers the frame it shows, marked `frame.still: true`, at once (#274). A minimised
 (paused) window is resumed by the agent hold for the call and pauses again by
 WIN's rule 15 s after it. Run it through driver.py (`--suite screen`); the pause
 setup needs `--control`.
@@ -126,9 +126,9 @@ def suite(args):
         shot = screenshot(client, window)
         done = time.time()
         log = events(args.events)
-        report(shot.get("still") is True,
+        report((shot.get("frame") or {}).get("still") is True,
                "MCP [MCP-61] a still window's screenshot answers the shown frame with "
-               "still: true (%s)" % shot.get("still"))
+               "frame.still: true (%s)" % (shot.get("frame") or {}).get("still"))
         frame = shot.get("frame") or {}
         report(isinstance(frame.get("seq"), int) and (frame.get("ageMs") or 0) >= 0,
                "MCP [MCP-60] the still answer carries that frame's own seq and age "
@@ -154,9 +154,10 @@ def suite(args):
         report(newest > frozen, "MCP [MCP-60] the window's picture moves again (seq %s)"
                % newest)
         moving = screenshot(client, window)
-        report(moving.get("still") is None and isinstance((moving.get("frame") or {}).get("seq"), int),
+        report((moving.get("frame") or {}).get("still") is None
+               and isinstance((moving.get("frame") or {}).get("seq"), int),
                "MCP [MCP-61] a window that moves again answers a keyframe, no still flag (%s)"
-               % moving.get("still"))
+               % (moving.get("frame") or {}).get("still"))
         # The hold runs to 15 s after the last call on the window: this one.
         held_from = time.time()
 

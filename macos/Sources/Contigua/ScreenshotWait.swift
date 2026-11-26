@@ -16,15 +16,24 @@
 //   `KEY_REPEAT_PREVIOUS_FRAME_AFTER` sends `window.still` instead: once after
 //   1000 ms without an output buffer, and again each second while the silence
 //   lasts (IdleFrameWatchdog). It is never sent on request, so a still that
-//   came after the newest frame is the phone's own report that nothing changed
-//   since that frame.
+//   arrived *since this call* is the phone's own report that the picture it
+//   shows has not changed. A still from before the ask answers nothing: the
+//   screen may have changed after it and the new frame may still be on the
+//   wire, so answering it would hand back a picture from before the call
+//   (#165). Repeating every second is what makes waiting for the next one
+//   cheap: a still screen answers within a second.
 
 import CoreVideo
 import Foundation
 
 enum ScreenshotWaitState: Equatable {
-    /// A keyframe was asked for; its decode waits.
-    case waiting(repeatAt: TimeInterval, askedAgain: Bool)
+    /// The call is waiting for Live Text's freeze to free the one snapshot
+    /// decoder: no ask yet. The repeat's moment is not set here, because it is
+    /// counted from the first ask, not from the call.
+    case beforeAsk
+    /// A keyframe was asked for at `askedAt`; the decode waits, and a second
+    /// ask is due at `repeatAt` (PATH-41).
+    case waiting(askedAt: TimeInterval, repeatAt: TimeInterval, askedAgain: Bool)
     /// The call is over.
     case done
 }
@@ -41,8 +50,9 @@ enum ScreenshotWaitAction: Equatable {
 
 /// What the call knows, fixed when it starts.
 struct ScreenshotWaitModel: Equatable {
-    var state: ScreenshotWaitState = .waiting(repeatAt: 0, askedAgain: false)
-    /// The call's bound, from its start (MCP-61: 2 s).
+    var state: ScreenshotWaitState = .beforeAsk
+    /// The call's bound, from its start (MCP-61: 2 s). Live Text's hold and
+    /// both asks share it.
     let deadline: TimeInterval
     /// Whether a frame was ever counted for this window: the still route can
     /// answer only a picture that exists (PROTOCOL.md: a still is never a
@@ -50,13 +60,16 @@ struct ScreenshotWaitModel: Equatable {
     let hasFrame: Bool
 }
 
-/// One poll of the call.
+/// What happens to the call.
 enum ScreenshotWaitEvent: Equatable {
-    /// `frame` is a keyframe decoded from after the call, if one arrived.
-    /// `still` is whether the phone says the window is still since the newest
-    /// frame (a `window.still` at the call's start or after it). `displayed` is
+    /// The first ask went out at `now`: the snapshot decode is open, and the
+    /// second ask is counted from here rather than from the call.
+    case asked(now: TimeInterval)
+    /// One poll. `frame` is a keyframe decoded from after the call, if one
+    /// arrived. `stillAt` is when the phone last said the window is still
+    /// (PHONE-21); a still from before the ask answers nothing. `displayed` is
     /// the frame on the display, when there is one the still route may answer.
-    case tick(now: TimeInterval, frame: SnapshotFrame?, still: Bool,
+    case tick(now: TimeInterval, frame: SnapshotFrame?, stillAt: TimeInterval?,
               displayed: SnapshotFrame?)
 }
 
@@ -83,52 +96,75 @@ enum ScreenshotWait {
     /// IDR it already sent and sends nothing; a later request is honoured.
     static let duplicateIdr: TimeInterval = 0.25
     /// The second ask: past the phone's duplicate-IDR window, with a margin for
-    /// the wire's own one-way latency.
+    /// the wire's own one-way latency. Counted from the first ask.
     static let repeatAfter: TimeInterval = 0.3
     /// How often the wait polls: a still is answered on the next poll, and the
     /// bound is honoured to a few tens of milliseconds.
     static let pollInterval: TimeInterval = 0.05
-    /// A displayed frame older than this is not a picture to act on (MCP-S1):
-    /// the call fails `no_frame` rather than answer a picture from long ago.
-    static let maxStillAge: TimeInterval = 60
 
-    /// The model for a call starting now: the first ask goes out at `askAt`.
-    static func model(askAt: TimeInterval, bound: TimeInterval = bound,
+    /// The model for a call starting now. The bound runs from `callStart`
+    /// (MCP-61); the first ask goes out later, when Live Text lets go, and its
+    /// own event sets the second ask's moment.
+    static func model(callStart: TimeInterval, bound: TimeInterval = bound,
                       hasFrame: Bool) -> ScreenshotWaitModel {
-        ScreenshotWaitModel(state: .waiting(repeatAt: askAt + repeatAfter, askedAgain: false),
-                             deadline: askAt + bound, hasFrame: hasFrame)
+        ScreenshotWaitModel(state: .beforeAsk, deadline: callStart + bound, hasFrame: hasFrame)
     }
 
-    /// Whether the still route may answer a displayed frame of this age.
-    static func stillFrameUsable(age: TimeInterval) -> Bool {
-        age >= 0 && age <= maxStillAge
+    /// Whether a still the phone sent at `stillAt` vouches for the picture on
+    /// screen, when the first ask went out at `askedAt`. A still from before
+    /// the ask does not: the screen may have changed after it, with the newer
+    /// frame still on the wire (#165).
+    static func stillVouches(_ stillAt: TimeInterval?, askedAt: TimeInterval) -> Bool {
+        guard let stillAt else { return false }
+        return stillAt >= askedAt
     }
 
     /// The rule, once. A keyframe from after the call beats everything: it is
-    /// what MCP-60 asks for. A still beats the bound: the phone itself said the
-    /// displayed frame is still the picture, so the call answers it at once.
+    /// what MCP-60 asks for. A still the phone sent *since the ask* beats the
+    /// bound: the phone itself said the displayed frame is still the picture,
+    /// so the call answers it at once. A still from before the ask is not
+    /// evidence of anything the call can answer (#165).
     static func transition(_ model: ScreenshotWaitModel,
                             _ event: ScreenshotWaitEvent) -> ScreenshotWaitTransition {
-        guard case .waiting(let repeatAt, let askedAgain) = model.state,
-              case .tick(let now, let frame, let still, let displayed) = event else {
+        switch (model.state, event) {
+        case (.done, _):
             return ScreenshotWaitTransition(model: model, outcome: .wait, actions: [])
-        }
-        if let frame {
-            return finish(model, .keyframe(frame))
-        }
-        if still, let displayed, model.hasFrame {
-            return finish(model, .displayed(displayed))
-        }
-        if !askedAgain, now >= repeatAt, now < model.deadline {
+        case (.beforeAsk, .asked(let now)):
             var next = model
-            next.state = .waiting(repeatAt: repeatAt, askedAgain: true)
-            return ScreenshotWaitTransition(model: next, outcome: .wait, actions: [.askAgain])
+            next.state = .waiting(askedAt: now, repeatAt: now + repeatAfter, askedAgain: false)
+            return ScreenshotWaitTransition(model: next, outcome: .wait, actions: [])
+        case (.beforeAsk, .tick(let now, _, _, _)):
+            // No ask has gone out: only the bound can end the call.
+            return now >= model.deadline
+                ? finish(model, .fail)
+                : ScreenshotWaitTransition(model: model, outcome: .wait,
+                                            actions: [.wait(seconds: pollInterval)])
+        case (.waiting(let askedAt, let repeatAt, let askedAgain),
+              .tick(let now, let frame, let stillAt, let displayed)):
+            if let frame {
+                return finish(model, .keyframe(frame))
+            }
+            if stillVouches(stillAt, askedAt: askedAt), let displayed, model.hasFrame {
+                return finish(model, .displayed(displayed))
+            }
+            if !askedAgain, now >= repeatAt, now < model.deadline {
+                var next = model
+                next.state = .waiting(askedAt: askedAt, repeatAt: repeatAt, askedAgain: true)
+                return ScreenshotWaitTransition(model: next, outcome: .wait, actions: [.askAgain])
+            }
+            if now >= model.deadline {
+                return finish(model, .fail)
+            }
+            return ScreenshotWaitTransition(model: model, outcome: .wait,
+                                             actions: [.wait(seconds: pollInterval)])
+        case (.waiting, .asked(let now)):
+            // A second `asked` is the repeat ask; its moment already stands.
+            var next = model
+            if case .waiting(_, let repeatAt, _) = model.state {
+                next.state = .waiting(askedAt: now, repeatAt: repeatAt, askedAgain: true)
+            }
+            return ScreenshotWaitTransition(model: next, outcome: .wait, actions: [])
         }
-        if now >= model.deadline {
-            return finish(model, .fail)
-        }
-        return ScreenshotWaitTransition(model: model, outcome: .wait,
-                                         actions: [.wait(seconds: pollInterval)])
     }
 
     /// The call ends: `.fail` for `no_frame`. The outcome is the whole signal,

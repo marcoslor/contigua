@@ -226,19 +226,21 @@ enum Screenshot {
                                       window: id)
         }
         let image = FrameGrab.scaledSize(sourceWidth: frameSize.0, sourceHeight: frameSize.1, crop: frameCrop)
+        // MCP-20: the age now, when the answer is made, not at decode.
+        var frameObject = FrameClock.object(
+            seq: frame.seq,
+            ageMs: FrameClock.ms(since: frame.at, now: ProcessInfo.processInfo.systemUptime))
+        // MCP-60: a frame the phone said is still the picture is marked so; a
+        // keyframe from after the call is a live frame and carries no flag. The
+        // flag sits in `frame` because it explains that frame's own age.
+        if frame.origin == .displayed { frameObject["still"] = true }
         var answer: [String: Any] = [
             "window": id,
             "state": state(),
-            // MCP-20: the age now, when the answer is made, not at decode.
-            "frame": FrameClock.object(seq: frame.seq,
-                                       ageMs: FrameClock.ms(since: frame.at,
-                                                            now: ProcessInfo.processInfo.systemUptime)),
+            "frame": frameObject,
             "image": [image.0, image.1],
             "size": [size.0, size.1],
         ]
-        // MCP-60: a frame the phone said is still the picture is marked so; a
-        // keyframe from after the call is a live frame and carries no flag.
-        if frame.origin == .displayed { answer["still"] = true }
         if encoded.1 { answer["blank"] = true }
         if let crop { answer["crop"] = crop }
         return .image(png, answer)
@@ -248,36 +250,40 @@ enum Screenshot {
     /// (MCP-60, MCP-61): the one state machine, driven against the window.
     private static func waitForFrame(id: Int, state: () -> String,
                                       source: ScreenshotSource) async throws -> SnapshotFrame {
-        let now = ProcessInfo.processInfo.systemUptime
-        let model = ScreenshotWait.model(askAt: now, hasFrame: source.newestAt != nil)
+        // MCP-61: the bound runs from the call, and covers Live Text's hold.
+        var wait = ScreenshotWait.model(callStart: ProcessInfo.processInfo.systemUptime,
+                                        hasFrame: source.newestAt != nil)
         // Live Text's freeze holds the one snapshot decoder: wait for it to let
         // go rather than take it away, inside the same bound (MCP-61).
-        var wait = model
         while source.isCapturing, ProcessInfo.processInfo.systemUptime < wait.deadline {
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
         guard !source.isCapturing else { throw boundFailure(id: id, state: state) }
 
         // MCP-60: ask, and decode the first keyframe counted after the call.
-        let asked = ProcessInfo.processInfo.systemUptime
+        // PATH-41: the repeat is counted from this ask, not from the call, so a
+        // Live Text hold longer than it cannot leave the repeat already due.
         let startSeq = source.newestSeq
         var answered: SnapshotFrame?
-        let ticket = source.beginSnapshot(after: startSeq,
-                                          until: max(0, wait.deadline - asked)) { frame in
+        let ticket = source.beginSnapshot(
+            after: startSeq,
+            until: max(0, wait.deadline - ProcessInfo.processInfo.systemUptime)) { frame in
             MainActor.assumeIsolated {
                 if answered == nil { answered = frame }
             }
         }
         defer { source.cancelSnapshot(ticket) }
+        wait = ScreenshotWait.transition(wait, .asked(now: ProcessInfo.processInfo.systemUptime)).model
 
-        // The wait proper: a frame wins, a still with a shown picture answers,
-        // and one more ask covers the phone's duplicate-IDR gate (PATH-41).
+        // The wait proper: a frame wins, a still sent since the ask with a shown
+        // picture answers, and one more ask covers the phone's duplicate-IDR
+        // gate (PATH-41).
         while true {
             let tick = ProcessInfo.processInfo.systemUptime
             let transition = ScreenshotWait.transition(
                 wait,
                 .tick(now: tick, frame: answered,
-                      still: source.stillSince != nil,
+                      stillAt: source.stillSince,
                       displayed: displayedFrame(source)))
             wait = transition.model
             for action in transition.actions {
@@ -301,15 +307,18 @@ enum Screenshot {
         }
     }
 
-    /// The frame on the display, when the answer may honestly claim it. The
-    /// window's `stillSince` is already only a still sent since the newest
-    /// frame (a quiet window repeats one each second, PHONE-21), so a still that
-    /// exists vouches for that frame. Without a counted frame there is nothing
-    /// to vouch for and the display is never read: a still is not a first
-    /// picture (MCP-61). A keyframe arriving first wins by the machine's order.
+    /// The frame on the display, when the answer may honestly claim it. It is
+    /// read only while the phone is saying the window is still, so a moving
+    /// window never touches the display layer. `stillSince` is only the last
+    /// still the phone sent, so the machine decides whether it came since the
+    /// ask; a frame older than the call is still the picture then (MCP-61) and
+    /// its `frame.ageMs` says how old it is, a static page left open for minutes
+    /// being exactly what this route is for. Without a counted frame there is
+    /// nothing to vouch for and the display is never read: a still is not a
+    /// first picture (MCP-61). A keyframe arriving first wins by the machine's
+    /// order.
     private static func displayedFrame(_ source: ScreenshotSource) -> SnapshotFrame? {
         guard source.stillSince != nil, let at = source.newestAt,
-              ScreenshotWait.stillFrameUsable(age: ProcessInfo.processInfo.systemUptime - at),
               let buffer = source.copyDisplayedFrame() else { return nil }
         return SnapshotFrame(buffer: buffer, seq: source.newestSeq, at: at, origin: .displayed)
     }
