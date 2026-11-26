@@ -1709,7 +1709,8 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
     characters `KeyCharacterMap.VIRTUAL_KEYBOARD` can produce is injected as KEY events at the
     cursor, with the key map's meta state and stamped like KEY frames from the Mac (`via: "keys"`); with `clear`, ctrl+A and DEL
     come first unless the focused node takes `ACTION_SET_TEXT`, in which case the text is set
-    whole. Any other text is set whole on the focused node: `ACTION_SET_TEXT` with the
+    whole — and with no node holding input focus `clear` answers `no_field` and sends nothing,
+    since those keys would reach whatever else has key focus (#270). Any other text is set whole on the focused node: `ACTION_SET_TEXT` with the
     node's text before its selection + `text` + the text after it (a shown hint counts as
     empty; no selection puts it at the end; with `clear`, `text` alone), then
     `ACTION_SET_SELECTION` to just after the typed text (`via: "set_text"`). With `submit`,
@@ -1718,7 +1719,7 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
     after the last key or action — `entry` `"inserted"`, `"replaced"` (`clear`) or `"unknown"`
     (keys sent with no node holding input focus) — or, typing nothing,
     `{"t":"ui.type","stream":N,"seq":S,"ok":false,"code":C,"message":"…"}` with `no_field`
-    (set text needed and no node has input focus), `not_supported` (the node offers no
+    (set text needed, or `clear`, and no node has input focus), `not_supported` (the node offers no
     `ACTION_SET_TEXT`, or is a password field holding text without `clear`), `no_window`,
     `busy` or `failed` (the app refused the action, the phone could not read the focused field,
     or `text` is missing or outside 1–2000 characters). Characters are counted as code points. The

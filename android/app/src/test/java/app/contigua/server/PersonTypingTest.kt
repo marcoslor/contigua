@@ -1,9 +1,13 @@
 package app.contigua.server
 
+import android.app.UiAutomation
 import android.content.ClipData
 import android.content.ClipDescription
+import android.content.Context
+import android.os.Looper
 import android.view.InputEvent
 import android.view.KeyEvent
+import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -14,6 +18,7 @@ import org.robolectric.annotation.Config
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * The person's typing (WIN-80) in order and without stalling the reader: a
@@ -151,6 +156,66 @@ class PersonTypingTest {
         holder.join(5_000)
         assertTrue("the reader thread was not held by the tree (took $typedMs ms)", typedMs < 1_000)
         assertEquals("the run went in by the fallback's paste", listOf<String?>("é"), pastes.toList())
+    }
+
+    /**
+     * WIN-80 bounds the person's wait for the tree at 150 ms, but only the
+     * lock wait was inside it: behind it, on the session's reader thread, sat a
+     * connect of up to 2.5 s and a 300 ms sleep when no window has focus, so
+     * each character could hold back the person's touches and keys by that
+     * much. The person's path takes the tree as it is: an unconnected tree is
+     * unreadable at once and never connects, and a connected one with no
+     * focused field answers without the settle sleep.
+     */
+    @Test
+    fun testThePersonNeverWaitsForAConnectOrASettle() { // [WIN-80]
+        val tree = UiAutomationTree(log = {})
+        val made = automation()
+        val connects = AtomicInteger()
+        tree.connector = { connects.incrementAndGet(); made }
+        try {
+            var ran = false
+            val started = System.nanoTime()
+            val answer = tree.withFocus(0) { ran = true; "read" }
+            val waitedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
+            assertEquals("an unconnected tree is unreadable", null, answer)
+            assertFalse("nothing ran without a tree", ran)
+            assertEquals("the person's typing never connects", 0, connects.get())
+            assertTrue("answered at once (waited $waitedMs ms)", waitedMs < 150)
+
+            // The tree connected for an agent's read; no window has focus, so
+            // the settle sleep would be the price of every character typed.
+            assertTrue("the agent's read connected", tree.ensureAutomation() != null)
+            tree.withFocus(0) { } // a warm-up read: it pays the platform's class loading, not the tree
+            val connectsBefore = connects.get()
+            var ranAgain = false
+            var fastest = Long.MAX_VALUE
+            repeat(3) {
+                val second = System.nanoTime()
+                val none = tree.withFocus(0) { ranAgain = true; "read" }
+                fastest = minOf(fastest, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - second))
+                assertEquals("a connected tree runs the block", "read", none)
+            }
+            assertTrue("the block ran", ranAgain)
+            assertEquals("no second connect", connectsBefore, connects.get())
+            assertTrue("no settle sleep, which alone is 300 ms (fastest $fastest ms)", fastest < 150)
+        } finally {
+            tree.disconnect()
+        }
+    }
+
+    /** An unconnected `UiAutomation`, built the way the tree builds its own. */
+    private fun automation(): UiAutomation {
+        val iface = Class.forName("android.app.IUiAutomationConnection")
+        val connection = Class.forName("android.app.UiAutomationConnection")
+            .getDeclaredConstructor().newInstance()
+        return runCatching {
+            UiAutomation::class.java.getDeclaredConstructor(Context::class.java, iface)
+                .newInstance(ApplicationProvider.getApplicationContext<Context>(), connection)
+        }.getOrElse {
+            UiAutomation::class.java.getDeclaredConstructor(Looper::class.java, iface)
+                .newInstance(Looper.getMainLooper(), connection)
+        }
     }
 
     private companion object {

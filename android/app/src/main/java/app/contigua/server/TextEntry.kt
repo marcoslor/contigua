@@ -109,13 +109,18 @@ object TextEntry {
      * The decision (item 10): key-map text goes as keys unless `clear` can set
      * it whole; other text needs a focused node that offers set text and whose
      * text can be read (a password field holding text cannot) unless `clear`.
+     * `clear` needs a field to clear: ctrl+A and DEL with none focused would
+     * reach whatever else has key focus, so that is `no_field` (#270).
      */
     private fun plan(text: String, clear: Boolean, field: Field?, strokes: List<KeyStroke>?): Plan {
         val typed = text.length
         if (strokes != null) {
             if (!clear) return Plan.Keys(strokes, if (field == null) UNKNOWN else INSERTED)
-            if (field != null && field.setsText) return Plan.Set(text, typed, REPLACED)
-            return Plan.Keys(CLEAR + strokes, if (field == null) UNKNOWN else REPLACED)
+            // #270: ctrl+A and DEL with no field clear something else (a mail
+            // list selects everything and deletes it). Only a field is cleared.
+            if (field == null) return Plan.Refuse(NO_FIELD)
+            if (field.setsText) return Plan.Set(text, typed, REPLACED)
+            return Plan.Keys(CLEAR + strokes, REPLACED)
         }
         if (field == null) return Plan.Refuse(NO_FIELD)
         if (!field.setsText) return Plan.Refuse(NOT_SUPPORTED)

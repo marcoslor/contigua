@@ -160,13 +160,23 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
     /**
      * The person's typing (WIN-80): [displayId]'s node with input focus, under
      * the one read at a time, waited on for [FOCUS_WAIT_MS] at most because
-     * the caller is the session's reader thread. Null when the tree is busy
-     * or cannot be read; nothing runs then.
+     * the caller is the session's reader thread. Null when the tree is busy or
+     * cannot be read; nothing runs then.
+     *
+     * The wait is the whole bound: it never connects (a connect can take
+     * seconds) and never waits for the settle (a window that lists its nodes a
+     * moment later is not the person's to wait for), so an unconnected tree or
+     * one whose window shows no focused field is unreadable at once and the run
+     * takes the fallback under its guards. An agent's own `ui.type` still goes
+     * through [focused], which connects and settles (#270).
      */
     override fun <T> withFocus(displayId: Int, block: (TextEntry.Focus?) -> T): T? {
         if (!readLock.tryLock(FOCUS_WAIT_MS, TimeUnit.MILLISECONDS)) return null
         try {
-            return focused(displayId, block)
+            if (disconnected) return null
+            val automation = synchronized(lock) { automation } ?: return null
+            val node = inputFocusOn(automation, displayId)
+            return block(node?.let { NodeFocus(it) })
         } finally {
             readLock.unlock()
         }
