@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tree-keys: a row's `k` on a real shell server (MCP-71; docs/design/mcp-plan.md B2).
+# tree-keys: a row's `k` on a real shell server (MCP-71).
 #
 #   bash tools/emulator/tree-keys.sh --check   # rehearse: no device, no boot
 #   bash tools/emulator/tree-keys.sh           # boot, pair, prove, kill (one boot)
