@@ -235,8 +235,11 @@ object UiTree {
      * is not visible to the user, is still kept when it has something to read:
      * it is `off` (F9), counted (MCP-106), and sent marked only on an
      * `offscreen` read.
+     *
+     * `ui.press`'s label applies the same rule (MCP-86), so a press is never
+     * labelled by a node a client's tree never showed.
      */
-    private fun kept(node: Node): Boolean {
+    fun kept(node: Node): Boolean {
         if (!drawn(node)) return false
         return node.password || node.clickable || node.editable || node.scrollable ||
             node.checkable || node.selected || node.focused ||

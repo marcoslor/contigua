@@ -10,6 +10,8 @@ import android.os.Looper
 import android.os.SystemClock
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
+import java.util.Collections
+import java.util.WeakHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
@@ -34,7 +36,19 @@ import kotlin.concurrent.withLock
 internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSource, UiPressSource, UiTypeSource, FocusedFieldSource {
 
     private val lock = Any()
+
+    /** Tests only: stands in for [connect] (the platform's hidden connection). */
+    @Volatile internal var connector: (() -> UiAutomation)? = null
     private val startLock = Any()
+
+    /**
+     * The sessions that ended before this tree's watch thread existed (#273):
+     * `cancel` has nothing to cancel then (no looper, no [SettleWatches]), and
+     * the session's own `ui.settle` would start the thread and watch on a dead
+     * session (MCP-81). Kept here instead, so that watch never starts. Guarded
+     * by itself; weak keys, so an entry goes with its session.
+     */
+    private val ended: MutableSet<Any> = Collections.newSetFromMap(WeakHashMap())
     /**
      * One read or action at a time. Internal so the JVM tests can hold it:
      * the person's typing waits on it for [FOCUS_WAIT_MS] only (WIN-80).
@@ -257,11 +271,16 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
      */
     override fun settle(displayId: Int, quietMs: Long, timeoutMs: Long, arrivedAt: Long, owner: Any): SettleAnswer {
         val deadline = arrivedAt + timeoutMs + WATCH_MARGIN_MS
+        // #273: its session ended before this tree's watch thread existed. The
+        // watch would never listen, so it does not even connect (MCP-81).
+        if (hasEnded(owner)) return SettleAnswer.Cancelled
         if (disconnected) return SettleAnswer.Failure(UiCodes.NOT_AVAILABLE, NO_WATCH)
         if (ensureAutomation() == null) {
             return SettleAnswer.Failure(UiCodes.NOT_AVAILABLE, synchronized(lock) { failure } ?: NO_WATCH)
         }
         val all = watches ?: return SettleAnswer.Failure(UiCodes.NOT_AVAILABLE, NO_WATCH)
+        // The end can land while the thread starts (the first check missed it).
+        if (hasEnded(owner)) return SettleAnswer.Cancelled
         val watch = all.start(owner, displayId, quietMs, timeoutMs, arrivedAt)
             ?: return SettleAnswer.Failure(UiCodes.NOT_AVAILABLE, NO_WATCH)
         if (!watch.gate.await(maxOf(0L, deadline - now()), TimeUnit.MILLISECONDS)) {
@@ -272,8 +291,16 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
     }
 
     override fun cancel(owner: Any) {
+        // #273: no watch thread exists yet (no `ui.tree` or `ui.settle` started
+        // it), so there is nothing to post to: record the end here, and the
+        // session's own watch never listens (MCP-81). With a thread, the
+        // watches hold it (weak, cleared with its session).
+        synchronized(ended) { ended.add(owner) }
         watches?.cancel(owner)
     }
+
+    /** Whether [owner]'s session ended; guarded by [ended] itself. */
+    private fun hasEnded(owner: Any): Boolean = synchronized(ended) { owner in ended }
 
     /**
      * Whether any node on [displayId] is a loading signal (MCP-103), or the
@@ -332,21 +359,28 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
      * The one connection, made once. Another client taking the automation
      * makes the next read fail, and [restart] gives this one a fresh connection.
      */
-    private fun ensureAutomation(): UiAutomation? {
+    internal fun ensureAutomation(): UiAutomation? {
         synchronized(lock) { automation?.let { return it } }
         startThread()
         val gate = CountDownLatch(1)
         val posted = handler?.post {
+            // A connect that outlasted an earlier read's wait lands before this
+            // runs (one looper): keep it. The platform refuses a second
+            // connection while one is held, and that refusal must not drop it.
+            if (synchronized(lock) { automation } != null) {
+                gate.countDown()
+                return@post
+            }
             val made = try {
-                connect()
+                connector?.invoke() ?: connect()
             } catch (t: Throwable) {
                 synchronized(lock) { failure = sentence(t) } // WIN-79 F10: under the lock
                 log(connectFailureLine(t)) // log-ok: class names only
                 null
             }
-            synchronized(lock) {
+            if (made != null) synchronized(lock) {
                 automation = made
-                if (made != null) failure = null
+                failure = null
             }
             gate.countDown()
         } ?: return null

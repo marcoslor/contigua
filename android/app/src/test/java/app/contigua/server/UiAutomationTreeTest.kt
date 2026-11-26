@@ -1,7 +1,11 @@
 package app.contigua.server
 
+import android.app.UiAutomation
+import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
+import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -58,6 +62,41 @@ class UiAutomationTreeTest {
         outer.initCause(inner)
         val line = UiAutomationTree.connectFailureLine(outer)
         assertEquals(true, line.startsWith("ui.tree: connect RuntimeException root="))
+    }
+
+    /** An unconnected `UiAutomation`, built the way the tree builds its own. */
+    private fun automation(): UiAutomation {
+        val iface = Class.forName("android.app.IUiAutomationConnection")
+        val connection = Class.forName("android.app.UiAutomationConnection")
+            .getDeclaredConstructor().newInstance()
+        return runCatching {
+            UiAutomation::class.java.getDeclaredConstructor(Context::class.java, iface)
+                .newInstance(ApplicationProvider.getApplicationContext<Context>(), connection)
+        }.getOrElse {
+            UiAutomation::class.java.getDeclaredConstructor(Looper::class.java, iface)
+                .newInstance(Looper.getMainLooper(), connection)
+        }
+    }
+
+    /**
+     * #273: a session ends before any `ui.tree` or `ui.settle` started the
+     * watch thread, so `cancel` finds no watch to cancel and the end is lost.
+     * Its own settle then starts the thread and answers a session that is gone
+     * (MCP-81). The end is kept: the watch it starts answers nothing.
+     */
+    @Test(timeout = 10_000)
+    fun aCancelBeforeTheWatchThreadExistsSendsNothing() { // [MCP-81]
+        val made = automation()
+        val tree = UiAutomationTree(log = {})
+        tree.connector = { made }
+        val ended = Any()
+        try {
+            tree.cancel(ended) // no `ui.tree` or `ui.settle` has started the watch thread yet
+            val answer = tree.settle(5, 300, 200, SystemClock.uptimeMillis(), ended)
+            assertEquals("the ended session's watch answers nothing", SettleAnswer.Cancelled, answer)
+        } finally {
+            tree.disconnect()
+        }
     }
 
     @Test

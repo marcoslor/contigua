@@ -79,12 +79,14 @@ object UiPress {
      * first, each trimmed as a row's label is; `""` when none has one. A node
      * under it that the tree would mark `off` on a display of [size]
      * ([UiTree.off], the same rule) gives no label of its own, as the Mac
-     * skips an `off` row (MCP-86, MCP-106); a shown hint is no text (MCP-104). A password node's
-     * text is never a label, as it is never a row's. An editable node's text is
-     * its value, not what it is (#188): its label is its description, else its
-     * view id as a row shortens it (a password field's, its view id alone, as
-     * its row carries no desc), and under another node it and its subtree
-     * give none.
+     * skips an `off` row (MCP-86, MCP-106); neither does a node the tree folds
+     * away at all ([UiTree.kept]: no drawable bounds, a collapsed row), whose
+     * children take its place as they do in the reply's walk (MCP-86, WIN-79);
+     * a shown hint is no text (MCP-104). A password node's text is never a
+     * label, as it is never a row's. An editable node's text is its value, not
+     * what it is (#188): its label is its description, else its view id as a
+     * row shortens it (a password field's, its view id alone, as its row
+     * carries no desc), and under another node it and its subtree give none.
      */
     fun label(node: UiTree.Node, size: IntSize): String {
         // A password field's row carries neither text nor desc (item 2): its id alone.
@@ -96,7 +98,9 @@ object UiPress {
     private fun find(node: UiTree.Node, size: IntSize, depth: Int): String? {
         if (depth > UiTree.MAX_DEPTH) return null
         if (depth > 0 && node.editable) return null
-        if (!node.password && !(depth > 0 && UiTree.off(node, size))) {
+        // A node the tree folds away is not a row a client ever saw; its
+        // children keep its place, so the walk goes on (MCP-86, WIN-79).
+        if (!node.password && !(depth > 0 && (UiTree.off(node, size) || !UiTree.kept(node)))) {
             val text = if (node.showingHint) null else UiTree.label(node.text)
             (text ?: UiTree.label(node.desc))?.let { return it }
         }

@@ -1511,7 +1511,7 @@ The MCP `ui_tree` tool reads a window's screen as accessibility nodes instead of
 paired session: the Settings › Automation switch is the Mac's own gate on the tool, not
 something the phone checks.
 
-Items 1–5 are the read as it ships. PR #162 changes them before any #171 task starts:
+Items 1–5 are the read as #162 shipped it:
 the phone sends no `ref` and the Mac names refs `s<snapshot>e<row>` from its own per-window
 read count (S1); the reply carries `size: [w, h]`, the pixel space of `box`, and `at` is
 TOUCH's 0..1 input space (S2); `windows`/`w` become `layers`/`l` (S3); a node off the display,
@@ -1600,7 +1600,9 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
    `TYPE_WINDOWS_CHANGED`, `TYPE_VIEW_TEXT_CHANGED`, `TYPE_VIEW_SCROLLED` — whose window is on
    the stream's display (by window id, from the latest `windowsOnAllDisplays` read, refreshed
    when the watch starts, on every `TYPE_WINDOWS_CHANGED`, and once for each window id it does
-   not know); every other event type is ignored. The connection asks for no event type at all
+   not know; an event whose window that refresh no longer lists counts when the read before it
+   placed the window on the display, so a window removed from the display is a change); every
+   other event type is ignored. The connection asks for no event type at all
    while no watch runs, and for only these five while one does. A display listed with no window, or not listed yet, is still opening: it counts as loading at the start and at every check, and its first window is a counted change. When no counted event came for
    `Q` ms it checks the display for a loading signal (item 9's `loading`) and answers only
    when there is none, else watches on and checks again after every later quiet period; at
@@ -1610,7 +1612,9 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
    only when `settled` is false: `"loading"` (the last check found a loading signal and no
    change came after it) or `"changes"`; `waitedMs` from the request's arrival; `events` the
    counted events. The whole request answers by its arrival + `T` + 2.5 s, under the Mac's
-   `T` + 5 s. A session that ends during its watch stops it, and nothing is sent. The watch starts when the phone reads the request: input frames sent
+   `T` + 5 s. A session that ends during its watch, or before its watch starts — the phone still
+   connecting, or no `ui.tree` or `ui.settle` has started the watch thread yet — stops it, and
+   nothing is sent. The watch starts when the phone reads the request: input frames sent
    before it on the session's ordered reliable lane have been injected by then. A watch that
    cannot happen answers
    `{"t":"ui.settle","stream":N,"seq":S,"ok":false,"code":C,"message":"…"}` with `no_window`,
@@ -1634,8 +1638,10 @@ older phone ignores an unknown `t` or request field, and the Mac's deadline answ
    exists, is `isVisibleToUser` and is on the display (item 2's `off` rule), reads its bounds
    now, computes the covering node as `covered` does (item 9) at the bounds' centre, reads the
    same label of the refreshed node (its text, else its description, else the first node under
-   it with either that the tree would not mark `off` — item 2's rule, the same predicate as
-   the row's `off` — depth first within item 2's depth cap, each trimmed as item 2 trims a label;
+   it with either that the tree would keep and not mark `off` — item 2's rule, the same
+   predicates as the row's `off` and fold: a node with no drawable bounds gives no label and
+   its own children take its place — depth first within item 2's depth cap, each trimmed as
+   item 2 trims a label;
    an editable node is labelled by its description, else its view id as item 2 shortens it, a
    password one by its view id alone, and
    under another node an editable node and its subtree give none),

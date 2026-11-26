@@ -224,6 +224,25 @@ class UiPressTest {
     }
 
     @Test
+    fun testACollapsedRowGivesNoLabel() { // [MCP-86]
+        // A labelled node the tree folds away: no box at all, or an empty one
+        // with empty bounds in its parent (a collapsed row). `UiTree.kept`
+        // drops it, so the Mac never shows it and the press must not be
+        // labelled by it. Its on-screen sibling is the label.
+        val noBox = UiTree.Node(role = "android.widget.TextView", text = "Item 3")
+        val collapsed = UiTree.Node(role = "android.widget.TextView", text = "Item 2",
+            box = UiTree.Box(0, 0, 0, 0), sized = false)
+        for (folded in listOf(noBox, collapsed)) {
+            val row = UiTree.Node(role = "android.widget.LinearLayout",
+                box = UiTree.Box(0, 1_800, 1_080, 2_400), clickable = true,
+                children = listOf(folded,
+                    UiTree.Node(role = "android.widget.TextView", text = "Item 4", box = UiTree.Box(0, 1_800, 1_080, 2_100))))
+            assertEquals("the folded $folded gives no label", "Item 4", UiPress.label(row, size))
+            assertTrue(UiPress.decide(Fake(true, row), size, "Item 4", ::nobody) is UiPress.Decision.Press)
+        }
+    }
+
+    @Test
     fun testAnOffScreenChildGivesNoLabel() { // [MCP-86]
         val row = containerWithAnOffScreenFirstChild()
         assertEquals("Item 4", UiPress.label(row, size))
