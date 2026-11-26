@@ -653,6 +653,125 @@ final class MCPToolHostTests: XCTestCase {
         XCTAssertEqual(rows.first?["id"] as? Int, Int(stream))
     }
 
+    /// [MCP-52] A window dropped for a forgotten phone, a trust loss or a
+    /// re-pairing keeps a close record: the person changed the phone
+    /// (`phone_switched` by `person`) or the phone closed it (`phone_closed`
+    /// by `phone`) (#194 item 1).
+    @MainActor
+    func testClosesWithNoRecordKeepTheirReason_MCP52() throws {
+        let phone = PhoneRef(id: "phone-1", name: "Pixel 9", model: "Pixel 9")
+
+        // A forgotten phone: the person changed which phone is used.
+        do {
+            let (controller, profile) = offlineController()
+            defer { dispose(controller, profile) }
+            controller.remembered.remember(phone)
+            let stream = controller.windows.openOrRaise(pkg: "com.android.settings").stream
+            let remembered = try XCTUnwrap(controller.remembered.phone(id: phone.id))
+            controller.forget(remembered)
+            XCTAssertNil(controller.windows.controller(for: stream), "the forgotten phone's window stayed open")
+            let record = try XCTUnwrap(controller.windows.ledger.closeRecord(
+                stream, asker: MCPClientID(1), now: ProcessInfo.processInfo.systemUptime), "no close record")
+            XCTAssertEqual(record.reason, "phone_switched")
+            XCTAssertEqual(record.closedBy, "person")
+        }
+
+        // A trust loss: the phone closed it, not the person.
+        do {
+            let (controller, profile) = offlineController()
+            defer { dispose(controller, profile) }
+            controller.remembered.remember(phone)
+            let stream = controller.windows.openOrRaise(pkg: "com.android.settings").stream
+            var machine = LinkMachine(link: .online(phone))
+            machine.handle(.restoreTrustLost(phone, .told), at: Date())
+            controller.machine = machine
+            controller.apply(PhoneBookEventResult(affectsCurrent: true))
+            XCTAssertNil(controller.windows.controller(for: stream), "the trust-lost phone's window stayed open")
+            let record = try XCTUnwrap(controller.windows.ledger.closeRecord(
+                stream, asker: MCPClientID(1), now: ProcessInfo.processInfo.systemUptime), "no close record")
+            XCTAssertEqual(record.reason, "phone_closed")
+            XCTAssertEqual(record.closedBy, "phone")
+        }
+    }
+
+    /// [MCP-53] A window that closes while `screenshot` waits answers the
+    /// ledger's close record, like `tap` does, never a bare `no_window`
+    /// (#194 item 2).
+    @MainActor
+    func testAScreenshotOfAWindowThatClosedKeepsItsClose_MCP53() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        let window = try await fixture.liveWindow()
+        window.noteFirstFrame()
+        // A real H.264 parameter set: the snapshot decoder is armed and the
+        // call asks the phone for a keyframe, so it really waits.
+        let sets: [UInt8] = [0, 0, 0, 1, 0x27, 0x64, 0x00, 0x0D, 0xAC, 0x56, 0x50, 0x50, 0x7E, 0x40,
+                             0, 0, 0, 1, 0x28, 0xEE, 0x3C, 0xB0]
+        window.videoView.configure(VideoConfig(width: 590, height: 1280, parameterSets: sets),
+                                  picture: .full(width: 590, height: 1280))
+        let host = MCPToolHost(controller: fixture.controller, client: MCPClientID(1))
+        let call = Task { () -> MCPToolError? in
+            do {
+                _ = try await host.screenshot(Int(window.stream), ref: nil, wait: .none)
+                return nil
+            } catch let error as MCPToolError {
+                return error
+            } catch {
+                return MCPToolError.failed("unexpected")
+            }
+        }
+        let asked = await fixture.wait { !fixture.sent("window.keyframe").isEmpty }
+        XCTAssertTrue(asked, "the screenshot asked for no keyframe: \(fixture.sentTypes())")
+        window.window?.close()
+        let failure = await call.value
+        let error = try XCTUnwrap(failure, "a closed window answered a screenshot")
+        XCTAssertEqual(error.code, .noWindow)
+        let closed = try XCTUnwrap(error.extra["closed"] as? [String: Any], "no close record: \(error.extra)")
+        XCTAssertEqual(closed["reason"] as? String, "closed")
+        XCTAssertEqual(closed["closedBy"] as? String, "person")
+        XCTAssertTrue(closed["closedAgoMs"] is Int)
+    }
+
+    /// [MCP-50] Every `list_windows` row carries `label` (the app's own label,
+    /// null for the Phone Mirror and an app not yet named) and `title` (the
+    /// phone's task title, null before one arrives) (#194 item 3).
+    @MainActor
+    func testListWindowsRowsCarryLabelAndTitle_MCP50() throws {
+        let (controller, profile) = offlineController()
+        defer { dispose(controller, profile) }
+        controller.windows.appsByPkg = [
+            "com.android.settings": AppInfo(json: ["pkg": "com.android.settings", "label": "Settings"])!,
+        ]
+        let window = controller.windows.openOrRaise(pkg: "com.android.settings")
+        window.noteFirstFrame()
+        let host = MCPToolHost(controller: controller, client: MCPClientID(1))
+
+        func row(_ id: UInt32) -> [String: Any]? {
+            (host.listWindows()["windows"] as? [[String: Any]] ?? []).first { $0["id"] as? Int == Int(id) }
+        }
+        let app = try XCTUnwrap(row(window.stream))
+        XCTAssertEqual(app["label"] as? String, "Settings", "the app's label")
+        XCTAssertTrue(app["title"] is NSNull, "no task title has arrived: \(app)")
+
+        controller.windows.setTaskLabel("Network & internet", stream: window.stream)
+        XCTAssertEqual(row(window.stream)?["title"] as? String, "Network & internet")
+
+        let mirror = controller.windows.openPhoneWindow()
+        let mirrorRow = try XCTUnwrap(row(mirror.stream))
+        XCTAssertEqual(mirrorRow["kind"] as? String, "mirror")
+        XCTAssertTrue(mirrorRow["package"] is NSNull)
+        XCTAssertTrue(mirrorRow["label"] is NSNull, "the Phone Mirror has no app label: \(mirrorRow)")
+        XCTAssertTrue(mirrorRow["title"] is NSNull)
+
+        // The schema says both, as nullable strings.
+        let schema = MCPOutputSchemas.schema(for: .listWindows)
+        let items = ((schema["properties"] as? [String: Any])?["windows"] as? [String: Any])?["items"]
+            as? [String: Any]
+        let properties = items?["properties"] as? [String: Any] ?? [:]
+        XCTAssertEqual(properties["label"] as? [String], ["string", "null"])
+        XCTAssertEqual(properties["title"] as? [String], ["string", "null"])
+    }
+
     private static let settingsMulti: [String: Any] = ["pkg": "com.android.settings", "label": "Settings",
                                                        "multi": true]
     private static let clockOne: [String: Any] = ["pkg": "com.android.deskclock", "label": "Clock",
