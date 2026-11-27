@@ -836,7 +836,7 @@ final class MCPToolHostTests: XCTestCase {
                        "an offline phone was asked: \(fixture.sentTypes())")
     }
 
-    /// [MCP-33] A phone that never answers the refresh costs a call 2 s, never
+    /// [MCP-33] A phone that never answers the refresh costs a call 5 s, never
     /// more, and two calls that arrive together share one `apps.list`: the
     /// bound is per caller, and one caller's expiry never resumes another's.
     @MainActor
@@ -863,8 +863,8 @@ final class MCPToolHostTests: XCTestCase {
                 .compactMap { $0["label"] }
             XCTAssertEqual(labels, ["Settings"], "the cached list answered: \(labels)")
         }
-        XCTAssertGreaterThanOrEqual(waited, .milliseconds(1900), "the call did not wait for the answer")
-        XCTAssertLessThan(waited, .milliseconds(3500), "the call waited past its 2 s bound: \(waited)")
+        XCTAssertGreaterThanOrEqual(waited, .milliseconds(4800), "the call did not wait for the answer")
+        XCTAssertLessThan(waited, .milliseconds(6500), "the call waited past its 5 s bound: \(waited)")
 
         // The phone finally answers: the next call's refresh resolves at once.
         fixture.release("apps.list")

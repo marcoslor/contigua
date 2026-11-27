@@ -3869,7 +3869,7 @@ final class ConnectionController {
     /// from the cached `apps`, so a silent phone never holds a tool call. A
     /// caller's timeout takes only its own waiter out, and a reply, a link
     /// drop or a phone change resumes every waiter left.
-    func refreshApps(timeout: Duration = .seconds(2)) async {
+    func refreshApps(timeout: Duration = .seconds(5)) async {
         guard link.isOnline, session != nil else { return }
         let id = appsRefreshNext
         appsRefreshNext += 1

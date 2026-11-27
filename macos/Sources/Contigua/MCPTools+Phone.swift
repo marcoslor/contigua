@@ -94,7 +94,7 @@ extension MCPToolHost {
     }
 
     /// MCP-33: the phone's launchable apps. While the phone in use is online the
-    /// call asks it once more and waits up to 2 s for that list, so an app
+    /// call asks it once more and waits up to 5 s for that list, so an app
     /// installed since the session came up is listed (a store install, a
     /// sideload, `adb install`); a phone that does not answer in time, or is
     /// offline, answers from the Mac's cache instead.
