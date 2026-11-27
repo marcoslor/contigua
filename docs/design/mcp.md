@@ -442,7 +442,7 @@ cached stays what it was until something asks again — and an app installed in
 the meantime (from a store, a sideload, `adb install`, not only a Mac
 drag-and-drop APK) would be missing. Both tools that answer from the list
 therefore refresh it on demand (MCP-33, MCP-40): `list_apps` asks the online
-phone for its list once more and waits at most 2 s for the reply, sharing one
+phone for its list once more and waits at most 5 s for the reply, sharing one
 `apps.list` between calls that arrive together, and answers the Mac's cached
 list when the phone is offline or silent. `open_app` resolves the app from the
 list it has, so a known app opens with no round trip; only a miss (`not_found`,
