@@ -88,6 +88,30 @@ final class MCPToolErrorTests: XCTestCase {
         XCTAssertEqual((ambiguous.extra["matches"] as? [[String: String]])?.count, 2)
     }
 
+    // [MCP-109] S3: a caller that already passed clear: true is not told to
+    // pass it again — the way through is plain keyboard characters.
+    func testTypeRefusalWithClearTrueDoesNotSuggestClear_MCP109() throws {
+        let plain = try XCTUnwrap(MCPToolError.typeRefusal(code: "not_supported", window: 4, clear: false))
+        XCTAssertEqual(plain.code, .notSupported)
+        XCTAssertTrue(plain.message.contains("clear: true"), plain.message)
+        XCTAssertEqual(plain.extra["window"] as? Int, 4)
+
+        let cleared = try XCTUnwrap(MCPToolError.typeRefusal(code: "not_supported", window: 4, clear: true))
+        XCTAssertEqual(cleared.code, .notSupported)
+        XCTAssertFalse(cleared.message.contains("clear: true"),
+                       "a call that cleared is told to clear again: \(cleared.message)")
+        XCTAssertTrue(cleared.message.contains("keyboard"), cleared.message)
+        XCTAssertTrue(cleared.message.lowercased().contains("no accents"), cleared.message)
+        XCTAssertEqual(cleared.extra["window"] as? Int, 4)
+        XCTAssertEqual(cleared.message,
+                       "The focused field on window 4 can't take non-keyboard characters: type only plain letters, digits and symbols a keyboard has (no accents or emoji).")
+
+        // no_field keeps its one sentence either way; an unknown code has none.
+        XCTAssertEqual(MCPToolError.typeRefusal(code: "no_field", window: 4, clear: true)?.message,
+                       "Window 4 has no focused text field. Tap the field first.")
+        XCTAssertNil(MCPToolError.typeRefusal(code: "failed", window: 4, clear: true))
+    }
+
     // [MCP-6]
     func testAFailureIsJSONWithCodeAndSentence() throws {
         let failure = MCPToolError(.noWindow, "No window 9. Call list_windows to see what is open.",

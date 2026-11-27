@@ -248,4 +248,37 @@ class UiPressTest {
         assertEquals("Item 4", UiPress.label(row, size))
         assertTrue(UiPress.decide(Fake(true, row), size, "Item 4", ::nobody) is UiPress.Decision.Press)
     }
+
+    @Test
+    fun testAScrolledItemIsPressedInsideItsScrollablesViewport_MCP86() { // [MCP-86]
+        // One geometry rule with `ui_tree`: a card partially scrolled past the
+        // top of a list at y=208..1197 is pressed inside the visible strip
+        // (y=208..224 -> y=216), never at its unclipped midpoint (y=148, inside
+        // the fixed search bar above the list). A card with < 8 px inside the
+        // list is refused `off_screen`.
+        val phone = IntSize(590, 1_280)
+        val listBounds = listOf(UiTree.Box(0, 208, 590, 1_197))
+        fun inList(node: UiTree.Node) = object : UiPress.Target {
+            override fun refresh() = true
+            override fun read() = node
+            override fun viewport(size: IntSize) = UiTree.viewport(size, listBounds)
+        }
+
+        val partial = button("Place A", UiTree.Box(0, 72, 590, 224))
+        val press = UiPress.decide(inList(partial), phone, "Place A", ::nobody) as UiPress.Decision.Press
+        assertEquals(295, press.x)
+        assertEquals(216, press.y)
+        assertEquals(listOf(0, 208, 590, 224), press.reply["box"])
+
+        val sliver = button("Place B", UiTree.Box(0, 60, 590, 212))
+        assertEquals("off_screen", refused(UiPress.decide(inList(sliver), phone, "Place B", ::nobody)).code)
+
+        // A child scrolled out of the scrollable viewport gives no label.
+        val card = UiTree.Node(role = "android.view.View", box = UiTree.Box(0, 72, 590, 300),
+            clickable = true, children = listOf(
+                UiTree.Node(role = "android.widget.TextView", text = "Scrolled out", box = UiTree.Box(0, 72, 590, 210)),
+                UiTree.Node(role = "android.widget.TextView", text = "Visible title", box = UiTree.Box(0, 220, 590, 280)),
+            ))
+        assertTrue(UiPress.decide(inList(card), phone, "Visible title", ::nobody) is UiPress.Decision.Press)
+    }
 }

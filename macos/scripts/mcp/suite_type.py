@@ -82,6 +82,21 @@ def suite(args):
         refused = [e for e in since(args.events, start, window) if e.get("ev") == "type"]
         report(len(refused) == 1 and refused[0].get("code") == "not_supported",
                "[MCP-109] MCP the refused ui.type reached the phone once and typed nothing")
+
+        # S3: a call that already cleared is never told to clear again — the
+        # way through is plain keyboard characters, without accents.
+        start = time.time()
+        reply = client.tool("type_text", {"window": window, "text": "Florianópolis", "clear": True,
+                                          "observe": "none"}, timeout=30)
+        error = error_of(reply)
+        message = error.get("message") or ""
+        report(reply.get("isError") is True and error.get("code") == "not_supported",
+               "[MCP-109] MCP a cleared field that can't take the text fails not_supported (%s)"
+               % error.get("code"))
+        report("clear: true" not in message,
+               "[MCP-109] MCP the not_supported sentence does not suggest clear again (%r)" % message)
+        report("keyboard" in message and "accents" in message,
+               "[MCP-109] MCP the not_supported sentence names plain keyboard characters")
     finally:
         mode(args)
         client.close()

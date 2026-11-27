@@ -5657,6 +5657,12 @@ class Session(object):
         "failed": "The focused field on window %s refused the text.",
     }
 
+    # S3: a call that already passed `clear` is not told to pass it again — the
+    # way through is plain keyboard characters.
+    UI_TYPE_CLEARED_SENTENCE = ("The focused field on window %s can't take non-keyboard characters: "
+                                "type only plain letters, digits and symbols a keyboard has "
+                                "(no accents or emoji).")
+
     def _on_ui_type(self, msg):
         """Type into the fake's focused field, which takes set text: printable
         ASCII goes as keys (one key input each), anything else as set text;
@@ -5679,8 +5685,8 @@ class Session(object):
                 file=sys.stderr)
             self._send(reply)
 
-        def refuse(code):
-            sentence = self.UI_TYPE_SENTENCES[code]
+        def refuse(code, message=None):
+            sentence = message or self.UI_TYPE_SENTENCES[code]
             self.phone.events.ui_type(stream, characters, code=code)
             answer({"ok": False, "code": code,
                     "message": sentence % (stream,) if "%s" in sentence else sentence})
@@ -5693,7 +5699,10 @@ class Session(object):
             return
         refusal = mode_value(self.phone.args, "type_refuse", self.UI_TYPE_SENTENCES)
         if refusal:
-            refuse(refusal)
+            # A field that takes no set text and a call that already cleared
+            # (S3): the sentence names the keyboard, never `clear: true` again.
+            cleared = refusal == "not_supported" and msg.get("clear") is True
+            refuse(refusal, self.UI_TYPE_CLEARED_SENTENCE if cleared else None)
             return
         if not characters or characters > 2000:
             refuse("failed")

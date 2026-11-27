@@ -10,9 +10,10 @@ package app.contigua.server
  * view ids are shortened, defaults are omitted, and every on-screen node
  * carries the centre of its visible bounds as 0..1 of the display's input space
  * (the same coordinates TOUCH and `tap` take). A node whose box does not
- * intersect the display, that is not visible to the user, or whose visible part
- * is under 8×8 px is `off` ([off], F9): it is left out and counted (`omitted`,
- * a scrollable's `hidden`, MCP-106), or, on a read that asks `offscreen`, kept
+ * intersect the display — or the visible viewport of a scrollable ancestor that
+ * holds it — that is not visible to the user, or whose visible part is under
+ * 8×8 px is `off` ([off], F9): it is left out and counted (`omitted`, a
+ * scrollable's `hidden`, MCP-106), or, on a read that asks `offscreen`, kept
  * with `off: true` and no tap point. A password field never carries its text.
  *
  * The shape follows what accessibility-driven automation clients settled on:
@@ -26,9 +27,12 @@ package app.contigua.server
  * (MCP-71), `heading` when the node is one (MCP-72), and `covered` when a node
  * that takes a touch for itself, drawn after it, or a window above it, holds
  * its tap point (MCP-73): a plain label drawn over the point is not clickable,
- * so the platform lets the press through and it covers nothing. A
- * field showing its hint says so instead of reading as filled (MCP-104), and
- * only the active layer's focused node carries `focus` (MCP-105).
+ * so the platform lets the press through and it covers nothing. A scrollable's
+ * descendants are clipped to its visible viewport, so a card scrolled out of a
+ * list's top covers neither a fixed bar the list comes after nor a point on it
+ * (MCP-73, MCP-106). A field showing its hint says so instead of reading as
+ * filled (MCP-104), and only the active layer's focused node carries `focus`
+ * (MCP-105).
  */
 object UiTree {
 
@@ -259,16 +263,26 @@ object UiTree {
      * `off` (or it has no box). One rule for a row's `off` and for `ui.press`'s
      * label, which skips what the tree would leave out (MCP-86, MCP-106).
      */
-    fun visible(node: Node, size: IntSize): Box? {
+    fun visible(node: Node, size: IntSize): Box? = visible(node, Box(0, 0, size.w, size.h))
+
+    /**
+     * The same rule inside [bounds]: the display, or a scrollable's visible
+     * viewport, which clips its descendants as a fixed bar over it does not
+     * (MCP-73, MCP-106).
+     */
+    internal fun visible(node: Node, bounds: Box): Box? {
         val box = node.box ?: return null
-        val clipped = clip(box, size) ?: return null
+        val clipped = clip(box, bounds) ?: return null
         if (!node.visibleToUser || clipped.width < MIN_VISIBLE || clipped.height < MIN_VISIBLE) return null
         return clipped
     }
 
     /** Whether a node with a box is one F9 marks `off` (WIN-79) and MCP-106 leaves out. */
-    fun off(node: Node, size: IntSize): Boolean =
-        drawn(node) && visible(node, size) == null
+    fun off(node: Node, size: IntSize): Boolean = off(node, Box(0, 0, size.w, size.h))
+
+    /** [off] inside [bounds]: the display, or a scrollable's visible viewport. */
+    internal fun off(node: Node, bounds: Box): Boolean =
+        drawn(node) && visible(node, bounds) == null
 
     /**
      * Whether the node has drawable bounds (WIN-79): a box with an area, or an
@@ -280,15 +294,32 @@ object UiTree {
         return !box.empty || node.sized
     }
 
-    /** The part of [box] on the display, or null when none (F9). */
-    private fun clip(box: Box, size: IntSize): Box? {
-        if (size.w <= 0 || size.h <= 0 || box.empty) return null
+    /** The part of [box] inside [bounds], or null when none (F9). */
+    private fun clip(box: Box, bounds: Box): Box? {
+        if (bounds.empty || box.empty) return null
         val clipped = Box(
-            box.left.coerceIn(0, size.w), box.top.coerceIn(0, size.h),
-            box.right.coerceIn(0, size.w), box.bottom.coerceIn(0, size.h),
+            maxOf(box.left, bounds.left), maxOf(box.top, bounds.top),
+            minOf(box.right, bounds.right), minOf(box.bottom, bounds.bottom),
         )
         return if (clipped.empty) null else clipped
     }
+
+    /**
+     * Narrows [bounds] to a scrollable container's [scrollableBox] when it has
+     * a non-empty box of its own: one viewport rule shared by [Builder.add] and
+     * [UiPress.decide] so `ui_tree` and `ui.press` agree on `box`, `at` and
+     * `off_screen` (MCP-73, MCP-86).
+     */
+    internal fun narrow(bounds: Box, scrollableBox: Box?): Box =
+        if (scrollableBox != null && !scrollableBox.empty) {
+            clip(scrollableBox, bounds) ?: Box(0, 0, 0, 0)
+        } else {
+            bounds
+        }
+
+    /** The visible viewport for a node inside [scrollAncestors] on a display of [size]. */
+    internal fun viewport(size: IntSize, scrollAncestors: List<Box>): Box =
+        scrollAncestors.fold(Box(0, 0, size.w, size.h)) { bounds, box -> narrow(bounds, box) }
 
     /**
      * One step from a layer's root to a node: its drawing order among its
@@ -332,7 +363,7 @@ object UiTree {
         private val scrolls = ArrayList<Hidden>()
 
         fun layer(index: Int, layer: Layer) {
-            add(index, layer.nodes, -1, 0, emptyList(), layer.focused, emptyList())
+            add(index, layer.nodes, -1, 0, emptyList(), layer.focused, emptyList(), Box(0, 0, size.w, size.h))
         }
 
         /** Gives each scrollable row with left-out descendants its `hidden` (MCP-106). */
@@ -424,20 +455,22 @@ object UiTree {
 
         /**
          * Which way a swipe must go to reach an `off` row (MCP-75): `above`,
-         * `below`, `left` or `right` of the display, `hidden` when the box has
-         * its 8×8 px on the display and only the user cannot see it (a
-         * collapsed tab, a DOM node swiping cannot reveal), or — when the
-         * platform clipped its box to nothing — `before` or `after` the list's
-         * first on-screen row (`hidden`'s `[before, after]`), `hidden` with no
-         * list to swipe.
+         * `below`, `left` or `right` of [clip] — the display, or the visible
+         * viewport of the scrollable that holds it, so a row scrolled out of
+         * a list's top is `above` there and not just off the display —
+         * `hidden` when the box has its 8×8 px inside [clip] and only the user
+         * cannot see it (a collapsed tab, a DOM node swiping cannot reveal),
+         * or — when the platform clipped its box to nothing — `before` or
+         * `after` the list's first on-screen row (`hidden`'s `[before,
+         * after]`), `hidden` with no list to swipe.
          */
-        private fun where(node: Node, open: List<Hidden>): String {
+        private fun where(node: Node, open: List<Hidden>, clip: Box): String {
             val box = node.box
             if (box != null && !box.empty) {
-                if (box.bottom <= MIN_VISIBLE) return "above"
-                if (box.top >= size.h - MIN_VISIBLE) return "below"
-                if (box.right <= MIN_VISIBLE) return "left"
-                if (box.left >= size.w - MIN_VISIBLE) return "right"
+                if (box.bottom <= clip.top + MIN_VISIBLE) return "above"
+                if (box.top >= clip.bottom - MIN_VISIBLE) return "below"
+                if (box.right <= clip.left + MIN_VISIBLE) return "left"
+                if (box.left >= clip.right - MIN_VISIBLE) return "right"
                 return "hidden"
             }
             val scroll = open.lastOrNull() ?: return "hidden"
@@ -447,7 +480,9 @@ object UiTree {
         /**
          * Walks [list] under the row [parent]. [active] is whether the layer
          * has input focus (MCP-105); [open] the scrollable rows the walk is
-         * inside, which count what is left out under them (MCP-106).
+         * inside, which count what is left out under them (MCP-106); [clip]
+         * the box a node's visible bounds are within — the display, or the
+         * visible viewport of the scrollable it is inside (MCP-73).
          */
         private fun add(
             layer: Int,
@@ -457,6 +492,7 @@ object UiTree {
             path: List<Step>,
             active: Boolean,
             open: List<Hidden>,
+            clip: Box,
         ) {
             if (depth > MAX_DEPTH) {
                 truncated = true
@@ -468,25 +504,26 @@ object UiTree {
                     return
                 }
                 val here = path + Step(node.drawingOrder, position)
+                val childClip = if (node.scrollable) narrow(clip, node.box) else clip
                 if (!kept(node)) {
                     // Fold it: its children keep its parent.
-                    add(layer, node.children, parent, depth + 1, here, active, open)
+                    add(layer, node.children, parent, depth + 1, here, active, open, childClip)
                     continue
                 }
-                if (!offscreen && off(node, size)) {
+                if (!offscreen && off(node, clip)) {
                     // Left out, counted (MCP-106): its children keep its parent.
                     omitted++
                     for (it in open) if (it.shown) it.after++ else it.before++
-                    add(layer, node.children, parent, depth + 1, here, active, open)
+                    add(layer, node.children, parent, depth + 1, here, active, open, childClip)
                     continue
                 }
                 // MCP-75: an `off` row on an off-screen read says which way a
                 // swipe must go. Zero bytes on a normal read, which leaves it out.
-                val away = off(node, size)
-                val where = if (offscreen && away) where(node, open) else null
+                val away = off(node, clip)
+                val where = if (offscreen && away) where(node, open, clip) else null
                 if (!away) for (it in open) it.shown = true
                 val index = nodes.size
-                val row = row(layer, index, parent, node, active, where)
+                val row = row(layer, index, parent, node, active, clip, where)
                 nodes.add(row)
                 val visible = (row["box"] as? List<*>)?.takeIf { row["at"] != null }
                     ?.let { Box(it[0] as Int, it[1] as Int, it[2] as Int, it[3] as Int) }
@@ -499,11 +536,11 @@ object UiTree {
                     interactive = node.clickable || node.editable || node.checkable,
                 ))
                 val inside = if (node.scrollable) open + Hidden(index).also { scrolls.add(it) } else open
-                add(layer, node.children, index, depth + 1, here, active, inside)
+                add(layer, node.children, index, depth + 1, here, active, inside, childClip)
             }
         }
 
-        private fun row(layer: Int, index: Int, parent: Int, node: Node, active: Boolean,
+        private fun row(layer: Int, index: Int, parent: Int, node: Node, active: Boolean, bounds: Box,
                         where: String? = null): LinkedHashMap<String, Any?> {
             val row = LinkedHashMap<String, Any?>()
             row["i"] = index
@@ -532,11 +569,12 @@ object UiTree {
             viewId(node.viewId)?.let { row["id"] = it }
             val box = node.box
             if (box != null && drawn(node)) {
-                // `box` is the part on the display; `at` only when a person
-                // could tap it, else `off` with no tap point (F9). A box the
-                // platform clipped to nothing sends no `box` (MCP-106).
-                clip(box, size)?.let { row["box"] = listOf(it.left, it.top, it.right, it.bottom) }
-                val visible = visible(node, size)
+                // `box` is the part on the display and inside the scrollable
+                // that holds it; `at` only when a person could tap it, else
+                // `off` with no tap point (F9). A box the platform clipped to
+                // nothing sends no `box` (MCP-106).
+                clip(box, bounds)?.let { row["box"] = listOf(it.left, it.top, it.right, it.bottom) }
+                val visible = visible(node, bounds)
                 if (visible == null) row["off"] = true else row["at"] = at(visible)
             }
             // MCP-75: which way an off-screen row is, so `find` never guesses.

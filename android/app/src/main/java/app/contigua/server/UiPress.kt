@@ -20,6 +20,13 @@ object UiPress {
 
         /** The node as it reads after [refresh], its subtree included (for its label). */
         fun read(): UiTree.Node
+
+        /**
+         * The viewport the node sits inside (the display clipped by every
+         * scrollable ancestor's bounds, MCP-86): the same clip `ui_tree` uses,
+         * so a partially scrolled card is pressed inside its list, never above it.
+         */
+        fun viewport(size: IntSize): UiTree.Box = UiTree.Box(0, 0, size.w, size.h)
     }
 
     sealed class Decision {
@@ -49,8 +56,9 @@ object UiPress {
         if (target == null || !target.refresh()) return refuse(GONE, "That element is no longer on the screen.")
         val node = target.read()
         if (!node.visibleToUser) return refuse(NOT_VISIBLE, "That element is not visible to the user.")
-        val box = UiTree.visible(node, size) ?: return refuse(OFF_SCREEN, "That element is off screen.")
-        val now = label(node, size)
+        val bounds = target.viewport(size)
+        val box = UiTree.visible(node, bounds) ?: return refuse(OFF_SCREEN, "That element is off screen.")
+        val now = label(node, bounds)
         if (expect != null && now != expect) {
             return refuse(CHANGED, "That element now reads differently.").also { it.reply["now"] = now }
         }
@@ -88,23 +96,26 @@ object UiPress {
      * row shortens it (a password field's, its view id alone, as its row
      * carries no desc), and under another node it and its subtree give none.
      */
-    fun label(node: UiTree.Node, size: IntSize): String {
+    fun label(node: UiTree.Node, size: IntSize): String = label(node, UiTree.Box(0, 0, size.w, size.h))
+
+    internal fun label(node: UiTree.Node, bounds: UiTree.Box): String {
         // A password field's row carries neither text nor desc (item 2): its id alone.
         if (node.editable && node.password) return UiTree.viewId(node.viewId) ?: ""
         if (node.editable) return UiTree.label(node.desc) ?: UiTree.viewId(node.viewId) ?: ""
-        return find(node, size, 0) ?: ""
+        return find(node, bounds, 0) ?: ""
     }
 
-    private fun find(node: UiTree.Node, size: IntSize, depth: Int): String? {
+    private fun find(node: UiTree.Node, bounds: UiTree.Box, depth: Int): String? {
         if (depth > UiTree.MAX_DEPTH) return null
         if (depth > 0 && node.editable) return null
         // A node the tree folds away is not a row a client ever saw; its
         // children keep its place, so the walk goes on (MCP-86, WIN-79).
-        if (!node.password && !(depth > 0 && (UiTree.off(node, size) || !UiTree.kept(node)))) {
+        if (!node.password && !(depth > 0 && (UiTree.off(node, bounds) || !UiTree.kept(node)))) {
             val text = if (node.showingHint) null else UiTree.label(node.text)
             (text ?: UiTree.label(node.desc))?.let { return it }
         }
-        for (child in node.children) find(child, size, depth + 1)?.let { return it }
+        val childBounds = if (node.scrollable) UiTree.narrow(bounds, node.box) else bounds
+        for (child in node.children) find(child, childBounds, depth + 1)?.let { return it }
         return null
     }
 

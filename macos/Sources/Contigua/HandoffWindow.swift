@@ -63,6 +63,7 @@ final class HandoffWindowController: StreamWindowController {
     func adopt(pkg: String) {
         guard self.pkg == nil, !pkg.isEmpty, pkg != "app.contigua" else { return }
         self.pkg = pkg
+        manager.noteAdoptedPackage(pkg, stream: stream)
         reapplyStoredStyle()
         reapplyStoredDensity()
         refreshBarTitle()

@@ -235,4 +235,18 @@ assert not [e for e in events if e.get("last_input") == "type"], "a refused type
 print("  refused %s" % reply["code"])
 PY
 
+note "ui-type --type-refuse not_supported with clear: the sentence does not suggest clear again (MCP-109)"
+types typerefuseclear --type-refuse not_supported -- --text "Florianópolis" --clear
+"$PY" - "$WORK/typerefuseclear.jsonl" "$WORK/typerefuseclear-events.jsonl" <<'PY' || die "ui-type clear refusal assertions failed"
+import json, sys
+(reply,) = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+events = list(map(json.loads, open(sys.argv[2])))
+assert reply["ok"] is False and reply["code"] == "not_supported", reply
+assert "clear: true" not in reply["message"], reply
+assert "keyboard" in reply["message"] and "accents" in reply["message"], reply
+assert [e.get("code") for e in events if e.get("ev") == "type"] == ["not_supported"], events
+assert not [e for e in events if e.get("last_input") == "type"], "a refused type typed"
+print("  refused %s, no clear: true in the sentence" % reply["code"])
+PY
+
 echo "TREE-KEYS OK"
