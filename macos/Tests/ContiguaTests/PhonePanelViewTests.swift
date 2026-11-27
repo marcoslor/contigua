@@ -85,7 +85,7 @@ final class PhonePanelViewTests: XCTestCase {
         return descendants(view)
             .filter {
                 let name = String(describing: type(of: $0))
-                return name.contains("KeyViewProxy") || $0 is NSSwitch || name.contains("PopupButton")
+                return name.contains("KeyViewProxy") || $0 is NSSwitch || $0 is NSSlider || name.contains("PopupButton")  // NSSlider: macOS 26 hosts it bare
             }
             .sorted { a, b in
                 let fa = a.convert(a.bounds, to: view), fb = b.convert(b.bounds, to: view)
@@ -209,6 +209,8 @@ final class PhonePanelViewTests: XCTestCase {
         let items = PhonePanelItem.focusOrder(for: state)
         let laidOut = controls(in: view)
         XCTAssertEqual(laidOut.count, items.count)
+        // A short list fails above; indexing it would crash the whole test process.
+        guard laidOut.count == items.count else { return }
         let ys = laidOut.map { frame($0, in: view).minY }
         XCTAssertEqual(ys, ys.sorted(), "the controls are top to bottom in the model's order")
         XCTAssertEqual(Array(items.prefix(5)), [.volume, .dnd, .ringer, .ring, .screen])

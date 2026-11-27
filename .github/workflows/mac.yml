@@ -1,0 +1,55 @@
+# K2: the Mac unit tests, on every PR and push to main that touches the Mac.
+# The repository is public, so the standard macOS runner costs nothing.
+name: Mac
+on:
+  pull_request:
+    paths: ['macos/**', '.github/workflows/mac.yml']
+  push:
+    branches: [main]
+    paths: ['macos/**', '.github/workflows/mac.yml']
+  workflow_dispatch:
+    inputs:
+      filter:
+        description: 'swift test --filter (empty: every test)'
+        required: false
+        default: ''
+concurrency:
+  group: mac-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+# bash -eo pipefail: without it `swift test | tee` reports tee's exit, and a
+# failed or crashed test run passed the job.
+defaults:
+  run:
+    shell: bash
+jobs:
+  k2:
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: sw_vers && xcodebuild -version && swift --version
+      - uses: actions/cache@v4
+        with:
+          path: macos/.build
+          key: k2-${{ runner.os }}-${{ hashFiles('macos/Package.resolved') }}-${{ github.sha }}
+          restore-keys: k2-${{ runner.os }}-${{ hashFiles('macos/Package.resolved') }}-
+      - name: Keyboard navigation on, as on a developer's Mac
+        # The panel's key-order tests (PANEL-7) assume Tab reaches every
+        # control; the runner's default (mode 0) lets nothing but text fields
+        # take focus. Mode 2 is System Settings > Keyboard > Keyboard navigation.
+        run: defaults write -g AppleKeyboardUIMode -int 2
+      - name: Build
+        working-directory: macos
+        run: swift build --build-tests
+      - name: Unit tests
+        working-directory: macos
+        env:
+          FILTER: ${{ inputs.filter }}
+        run: swift test --skip-build ${FILTER:+--filter "$FILTER"} 2>&1 | tee k2.log
+      - name: Failing tests
+        if: failure()
+        working-directory: macos
+        run: grep -E "error:|Fatal error|' failed \(" k2.log | head -100 || true

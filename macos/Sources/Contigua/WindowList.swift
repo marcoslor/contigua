@@ -44,7 +44,7 @@ enum WindowListMenu {
             observers.append(NotificationCenter.default.addObserver(
                 forName: name, object: nil, queue: .main
             ) { note in
-                MainActor.assumeIsolated { include(note.object as? NSWindow) }
+                MainActor.assumeIsolated { _ = include(note.object as? NSWindow) }
             })
         }
         observers.append(NotificationCenter.default.addObserver(

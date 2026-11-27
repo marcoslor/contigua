@@ -367,7 +367,7 @@ final class PhonePanelTests: XCTestCase {
         return descendants(view)
             .filter {
                 let name = String(describing: type(of: $0))
-                return name.contains("KeyViewProxy") || $0 is NSSwitch || name.contains("PopupButton")
+                return name.contains("KeyViewProxy") || $0 is NSSwitch || $0 is NSSlider || name.contains("PopupButton")  // NSSlider: macOS 26 hosts it bare
             }
             .sorted { a, b in
                 let fa = frame(a, in: view), fb = frame(b, in: view)
@@ -454,6 +454,8 @@ final class PhonePanelTests: XCTestCase {
         let items = PhonePanelItem.focusOrder(for: state)
         let controls = laidOut(in: view)
         XCTAssertEqual(controls.count, items.count, "one laid-out control per enabled item")
+        // A short list fails above; indexing it would crash the whole test process.
+        guard controls.count == items.count else { return }
 
         let slider = try XCTUnwrap(controls.first { control in
             let rect = frame(control, in: view)
@@ -477,6 +479,8 @@ final class PhonePanelTests: XCTestCase {
         let items = PhonePanelItem.focusOrder(for: state)
         let controls = laidOut(in: view)
         XCTAssertEqual(controls.count, items.count)
+        // A short list fails above; indexing it would crash the whole test process.
+        guard controls.count == items.count else { return }
 
         let volume = frame(controls[items.firstIndex(of: .volume)!], in: view)
         let dnd = frame(controls[items.firstIndex(of: .dnd)!], in: view)

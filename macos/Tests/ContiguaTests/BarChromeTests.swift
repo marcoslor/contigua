@@ -1,7 +1,8 @@
 // The bar's controls (docs/design/mac-redesign.md "Bar controls"): which
 // actions share a capsule, the symbols, the Live Text freeze, and the contrast
 // of the symbols over white, black and busy frames. All pure except the
-// off-screen render, which draws the real HeaderBarView.
+// contrast pictures, which draw the real HeaderBarView in a window (off screen
+// only where the window server cannot capture it).
 
 import AppKit
 import XCTest
@@ -116,35 +117,50 @@ final class HeaderActionPolicyTests: XCTestCase {
     }
 }
 
-/// Off-screen render of the real bar over the frames the person sees through
-/// it. The symbols must keep at least 3:1 against the capsule they sit on
-/// (AGENTS.md Testing rules, contrast).
+/// The real bar over the frames the person sees through it: the symbols must
+/// keep at least 3:1 against the capsule they sit on (WIN-22, MIRROR-22;
+/// AGENTS.md Testing rules, contrast). Measured on screen, from the window
+/// server's capture of a real window, so the glass and Reduce Transparency are
+/// in the picture (#243: on macos-26 the off-screen render left the glass out
+/// and read 19.66:1 where the screen showed 2.24:1). Where capture is
+/// unavailable the test measures the off-screen render instead and says so.
 @MainActor
 final class BarContrastTests: XCTestCase {
     private let barWidth: CGFloat = 900
     private let barHeight = HeaderBar.buttonHeight
+    /// Backdrop above and below each bar, so the glass at one frame's edge
+    /// samples that frame and not the next one.
+    private let rowPad: CGFloat = 24
+    private let backdrops: [NFRBackdropView.Kind] = [.white, .black, .busy]
+
+    private var rowHeight: CGFloat { barHeight + 2 * rowPad }
+    private var stackSize: CGSize { CGSize(width: barWidth, height: CGFloat(backdrops.count) * rowHeight) }
 
     private func actions() -> [HeaderAction] {
         [.back {}, .home {}, .recents {}]
     }
 
-    private func render(kind: NFRBackdropView.Kind, material: HeaderBar.Material,
-                        symbols: Bool) -> NSBitmapImageRep {
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: barWidth, height: barHeight))
-        let backdrop = NFRBackdropView(kind: kind, frame: container.bounds)
-        container.addSubview(backdrop)
-        let width = HeaderBar.rowWidth(actions())
-        let bar = HeaderBarView(frame: NSRect(x: barWidth - HeaderBar.rightInset - width, y: 0,
-                                              width: width, height: barHeight))
-        bar.material = material
-        bar.setActions(actions(), liveTextActive: false)
-        if !symbols {
-            // The same capsules and geometry, without the glyphs: what the
-            // symbols sit on.
-            bar.subviews.compactMap { $0 as? HeaderActionButton }.forEach { $0.removeFromSuperview() }
+    /// One row per backdrop, top to bottom, each with the real bar at its
+    /// right end, as the chrome places it.
+    private func stack(material: HeaderBar.Material, symbols: Bool) -> NSView {
+        let container = NSView(frame: NSRect(origin: .zero, size: stackSize))
+        for (index, kind) in backdrops.enumerated() {
+            let y = stackSize.height - CGFloat(index + 1) * rowHeight
+            container.addSubview(NFRBackdropView(kind: kind, frame: NSRect(x: 0, y: y, width: barWidth,
+                                                                          height: rowHeight)))
+            let width = HeaderBar.rowWidth(actions())
+            let bar = HeaderBarView(frame: NSRect(x: barWidth - HeaderBar.rightInset - width, y: y + rowPad,
+                                                  width: width, height: barHeight))
+            bar.material = material
+            bar.setActions(actions(), liveTextActive: false)
+            if !symbols {
+                // The same capsules and geometry, without the glyphs: what the
+                // symbols sit on.
+                bar.subviews.compactMap { $0 as? HeaderActionButton }.forEach { $0.removeFromSuperview() }
+            }
+            container.addSubview(bar)
         }
-        container.addSubview(bar)
-        return NFROffscreen.render(container, size: container.bounds.size)
+        return container
     }
 
     /// The glyph's own pixels in the mask render: magenta, not the capsule or
@@ -154,38 +170,85 @@ final class BarContrastTests: XCTestCase {
         return srgb.redComponent > 0.5 && srgb.blueComponent > 0.5 && srgb.greenComponent < 0.35
     }
 
-    private func assertContrast(_ dark: Bool, backdrop: NFRBackdropView.Kind,
-                                file: StaticString = #filePath, line: UInt = #line) {
-        let material = HeaderBar.material(dark: dark)
-        // The glyph mask comes from a render with an unmistakable ink (so the
+    private struct Row {
+        var worst = Double.infinity
+        var inkPixels = 0
+    }
+
+    /// The shipped ink against what is under each glyph pixel in the
+    /// symbol-less picture, one result per backdrop row.
+    private func measure(masked: NSBitmapImageRep, bare: NSBitmapImageRep, inkLum: Double) -> [Row] {
+        let width = min(masked.pixelsWide, bare.pixelsWide)
+        let height = min(masked.pixelsHigh, bare.pixelsHigh)
+        let rowPixels = CGFloat(height) / CGFloat(backdrops.count)
+        return backdrops.indices.map { index in
+            var row = Row()
+            let top = Int((CGFloat(index) * rowPixels).rounded())
+            let bottom = min(height, Int((CGFloat(index + 1) * rowPixels).rounded()))
+            for x in 0..<width {
+                for y in top..<bottom {
+                    guard let mask = masked.colorAt(x: x, y: y), isMaskColor(mask),
+                          let background = bare.colorAt(x: x, y: y) else { continue }
+                    row.inkPixels += 1
+                    row.worst = min(row.worst, NFRContrast.ratio(inkLum, NFRContrast.relativeLuminance(background)))
+                }
+            }
+            return row
+        }
+    }
+
+    /// The mask and the bare pictures, on screen where the window server can
+    /// capture them, else off screen with the reason.
+    private func pictures(material: HeaderBar.Material, appearance: NSAppearance.Name)
+        -> (masked: NSBitmapImageRep, bare: NSBitmapImageRep, onScreen: String?) {
+        // The glyph mask comes from a picture with an unmistakable ink (so the
         // mask exists even when the real symbol would vanish into the frame);
         // the contrast is then measured with the symbol colour that ships.
         var maskMaterial = material
         maskMaterial.symbol = .magenta
-        let masked = render(kind: backdrop, material: maskMaterial, symbols: true)
-        let bare = render(kind: backdrop, material: material, symbols: false)
-        let inkLum = NFRContrast.relativeLuminance(material.symbol)
-        var worst = Double.infinity
-        var inkPixels = 0
-        for x in 0..<masked.pixelsWide {
-            for y in 0..<masked.pixelsHigh {
-                guard let mask = masked.colorAt(x: x, y: y), let background = bare.colorAt(x: x, y: y),
-                      isMaskColor(mask) else { continue }
-                inkPixels += 1
-                worst = min(worst, NFRContrast.ratio(inkLum, NFRContrast.relativeLuminance(background)))
-            }
+        let reason: String
+        switch (NFROnScreen.capture(stack(material: maskMaterial, symbols: true), size: stackSize,
+                                    appearance: appearance),
+                NFROnScreen.capture(stack(material: material, symbols: false), size: stackSize,
+                                    appearance: appearance)) {
+        case let (.picture(masked), .picture(bare)):
+            let rows = measure(masked: masked, bare: bare, inkLum: 0)
+            if rows.allSatisfy({ $0.inkPixels > 40 }) { return (masked, bare, nil) }
+            reason = "the capture shows no symbols (ink pixels \(rows.map(\.inkPixels)))"
+        case let (.unavailable(why), _), let (_, .unavailable(why)):
+            reason = why
         }
-        XCTAssertGreaterThan(inkPixels, 40, "the render drew no symbols", file: file, line: line)
-        let required = NFRTestLimits.shared.double("contrast_min")
-        XCTAssertGreaterThanOrEqual(worst, required,
-            "\(dark ? "dark" : "light") appearance over \(backdrop): worst symbol contrast \(worst):1, wanted \(required):1",
-            file: file, line: line)
+        let masked = NFROffscreen.render(stack(material: maskMaterial, symbols: true), size: stackSize,
+                                         appearance: appearance)
+        let bare = NFROffscreen.render(stack(material: material, symbols: false), size: stackSize,
+                                       appearance: appearance)
+        return (masked, bare, reason)
     }
 
+    /// WIN-22 / MIRROR-22. Each material in the appearance that carries it
+    /// (`HeaderBar.material(for:)`, as the chrome picks it): the dark capsule
+    /// is only ever drawn in a dark appearance.
     func testSymbolsKeepThreeToOneOverWhiteBlackAndBusyFrames() {
-        for dark in [false, true] {
-            for backdrop in [NFRBackdropView.Kind.white, .black, .busy] {
-                assertContrast(dark, backdrop: backdrop)
+        let required = NFRTestLimits.shared.double("contrast_min")
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            let material = HeaderBar.material(for: NSAppearance(named: appearance))
+            let name = appearance == .darkAqua ? "dark" : "light"
+            let (masked, bare, offScreenReason) = pictures(material: material, appearance: appearance)
+            let surface = offScreenReason == nil ? "on screen" : "off screen"
+            if let offScreenReason {
+                let line = "BarContrastTests [WIN-22]: \(name): on-screen capture unavailable (\(offScreenReason)); "
+                    + "measured the off-screen render, which cannot see the glass or Reduce Transparency"
+                print(line) // log-ok: an appearance, a capture reason and counts only
+            }
+            let rows = measure(masked: masked, bare: bare, inkLum: NFRContrast.relativeLuminance(material.symbol))
+            for (kind, row) in zip(backdrops, rows) {
+                let line = "BarContrastTests [WIN-22]: \(name) over \(kind), \(surface): worst "
+                    + String(format: "%.2f", row.worst) + ":1 over \(row.inkPixels) ink pixels, reduceTransparency "
+                    + "\(NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency)"
+                print(line) // log-ok: an appearance, a backdrop, a ratio, a count and a setting only
+                XCTAssertGreaterThan(row.inkPixels, 40, "\(name) over \(kind), \(surface): the picture drew no symbols")
+                XCTAssertGreaterThanOrEqual(row.worst, required,
+                    "\(name) appearance over \(kind), \(surface): worst symbol contrast \(row.worst):1, wanted \(required):1")
             }
         }
     }
