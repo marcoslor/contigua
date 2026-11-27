@@ -802,6 +802,106 @@ final class MCPToolHostTests: XCTestCase {
         XCTAssertEqual(windows.appWindows(pkg: "com.android.settings").first?.stream, front.stream)
     }
 
+    // MARK: list_apps and open_app refresh on demand (MCP-33, MCP-40)
+
+    /// [MCP-33] A phone online answers `list_apps` with its list as it is now,
+    /// not as it was when the session came up: an app installed since (a store
+    /// install, a sideload, `adb install`, never a Mac drag-and-drop) is found,
+    /// because the call asks the phone once more and waits for that answer.
+    @MainActor
+    func testListAppsRefreshesFromTheOnlinePhone_MCP33() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        _ = try await fixture.liveWindow()
+        let settings: [String: Any] = ["pkg": "com.android.settings", "label": "Settings"]
+        await fixture.sendApps([settings])
+        fixture.phoneApps = [settings, ["pkg": "com.example.newapp", "label": "New App"]]
+
+        let (answer, _) = await fixture.call("list_apps", [:])
+        XCTAssertEqual(answer["isError"] as? Bool, false, "list_apps failed: \(answer)")
+        let lists = fixture.sent("apps.list")
+        XCTAssertEqual(lists.count, 1, "list_apps sent \(lists.count) apps.list: \(fixture.sentTypes())")
+        let labels = ((answer["structuredContent"] as? [String: Any])?["apps"] as? [[String: String]] ?? [])
+            .compactMap { $0["label"] }
+        XCTAssertEqual(labels, ["New App", "Settings"], "the list is the one the phone just answered: \(labels)")
+
+        // A phone offline is never asked: the cached list answers as it did.
+        fixture.server.stop()
+        let offline = await fixture.wait { !fixture.controller.link.isOnline }
+        XCTAssertTrue(offline, "the link did not drop")
+        let before = fixture.sent("apps.list").count
+        let cached = await fixture.call("list_apps", [:], clearSent: false)
+        XCTAssertEqual(cached.0["isError"] as? Bool, false, "the cached list must still answer: \(cached.0)")
+        XCTAssertEqual(fixture.sent("apps.list").count, before,
+                       "an offline phone was asked: \(fixture.sentTypes())")
+    }
+
+    /// [MCP-33] A phone that never answers the refresh costs a call 2 s, never
+    /// more, and two calls that arrive together share one `apps.list`: the
+    /// bound is per caller, and one caller's expiry never resumes another's.
+    @MainActor
+    func testListAppsSharesOneRefreshAndAnswersTheCacheWhenThePhoneIsSilent_MCP33() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        _ = try await fixture.liveWindow()
+        let settings: [String: Any] = ["pkg": "com.android.settings", "label": "Settings"]
+        await fixture.sendApps([settings])
+        fixture.hold("apps.list")
+
+        let started = ContinuousClock.now
+        let before = fixture.sent("apps.list").count
+        let first = Task { await fixture.call("list_apps", [:], client: MCPClientID(1), clearSent: false) }
+        let second = Task { await fixture.call("list_apps", [:], client: MCPClientID(2), clearSent: false) }
+        let (a, _) = await first.value
+        let (b, _) = await second.value
+        let waited = ContinuousClock.now - started
+        XCTAssertEqual(fixture.sent("apps.list").count - before, 1,
+                       "two calls sent \(fixture.sent("apps.list").count - before) apps.list: \(fixture.sentTypes())")
+        for answer in [a, b] {
+            XCTAssertEqual(answer["isError"] as? Bool, false, "a silent phone failed the call: \(answer)")
+            let labels = ((answer["structuredContent"] as? [String: Any])?["apps"] as? [[String: String]] ?? [])
+                .compactMap { $0["label"] }
+            XCTAssertEqual(labels, ["Settings"], "the cached list answered: \(labels)")
+        }
+        XCTAssertGreaterThanOrEqual(waited, .milliseconds(1900), "the call did not wait for the answer")
+        XCTAssertLessThan(waited, .milliseconds(3500), "the call waited past its 2 s bound: \(waited)")
+
+        // The phone finally answers: the next call's refresh resolves at once.
+        fixture.release("apps.list")
+        let (next, _) = await fixture.call("list_apps", [:])
+        XCTAssertEqual(next["isError"] as? Bool, false, "\(next)")
+    }
+
+    /// [MCP-40] `open_app` on a cache hit spends no round trip; on a miss it
+    /// asks the phone once and retries, so an app installed since the session
+    /// came up opens instead of failing `not_found`.
+    @MainActor
+    func testOpenAppRefreshesOnNotFoundForANewlyInstalledApp_MCP40() async throws {
+        let fixture = try TypeTextFixture()
+        defer { fixture.close() }
+        _ = try await fixture.liveWindow()
+        let settings: [String: Any] = ["pkg": "com.android.settings", "label": "Settings"]
+        await fixture.sendApps([settings])
+        fixture.phoneApps = [settings, ["pkg": "com.example.newapp", "label": "New App"]]
+
+        // A cache hit: the app the Mac already knows opens with no apps.list.
+        let (hit, _) = await fixture.call("open_app", ["app": "Settings", "wait": "none",
+                                                       "observe": "none"])
+        XCTAssertEqual(hit["isError"] as? Bool, false, "open_app on a known app failed: \(hit)")
+        XCTAssertEqual(fixture.sent("apps.list").count, 0,
+                       "a cache hit asked the phone: \(fixture.sentTypes())")
+
+        // A miss: one apps.list, then the open proceeds on the phone's answer.
+        let (opened, _) = await fixture.call("open_app", ["app": "New App", "wait": "none",
+                                                          "observe": "none"])
+        XCTAssertEqual(opened["isError"] as? Bool, false, "open_app did not refresh: \(opened)")
+        XCTAssertEqual(fixture.sent("apps.list").count, 1,
+                       "a miss sent \(fixture.sent("apps.list").count) apps.list: \(fixture.sentTypes())")
+        let structured = try XCTUnwrap(opened["structuredContent"] as? [String: Any])
+        XCTAssertEqual(structured["package"] as? String, "com.example.newapp")
+        XCTAssertEqual(structured["label"] as? String, "New App")
+    }
+
     /// [MCP-42] `newWindow: true` at the window cap fails `too_many_windows`,
     /// as the phone's own refusal does, and opens nothing.
     @MainActor
@@ -1092,7 +1192,8 @@ final class TypeTextFixture {
             guard let self else { return }
             self.record(message, from: connection)
             if !self.held(message, on: connection) {
-                Self.answer(message, on: connection, treeFailure: self.treeFailure, nodes: self.treeNodes)
+                Self.answer(message, on: connection, treeFailure: self.treeFailure, nodes: self.treeNodes,
+                            apps: self.phoneApps)
             }
         }
     }
@@ -1145,7 +1246,8 @@ final class TypeTextFixture {
         heldMessages.removeAll { $0.0.t == type }
         lock.unlock()
         for (message, connection) in due {
-            Self.answer(message, on: connection, treeFailure: treeFailure, nodes: treeNodes)
+            Self.answer(message, on: connection, treeFailure: treeFailure, nodes: treeNodes,
+                        apps: phoneApps)
         }
     }
 
@@ -1156,15 +1258,29 @@ final class TypeTextFixture {
         connection?.sendJSON(object)
     }
 
+    /// The app list the fake phone answers a `apps.list` with (MCP-33): the
+    /// test changes it to the phone's new installs between calls.
+    nonisolated var phoneApps: [[String: Any]] {
+        get { lock.lock(); defer { lock.unlock() }; return appList }
+        set { lock.lock(); appList = newValue; lock.unlock() }
+    }
+    nonisolated(unsafe) private var appList: [[String: Any]] = []
+
     /// The phone's app list (MCP-33); waits until the controller has it.
     func sendApps(_ apps: [[String: Any]]) async {
+        phoneApps = apps
         phoneSends(["t": "apps", "apps": apps])
         let loaded = await wait { self.controller.appsLoaded && self.controller.apps.count == apps.count }
         XCTAssertTrue(loaded, "the app list never arrived")
     }
 
     nonisolated private static func answer(_ message: JSONMessage, on connection: FakeServer.Connection,
-                                           treeFailure: String?, nodes: [[String: Any]]) {
+                                           treeFailure: String?, nodes: [[String: Any]],
+                                           apps: [[String: Any]]) {
+        if message.t == "apps.list" {
+            connection.sendJSON(["t": "apps", "apps": apps])
+            return
+        }
         guard let stream = message.int("stream"), let seq = message.int("seq") else { return }
         switch message.t {
         case "ui.type":

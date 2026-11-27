@@ -420,13 +420,18 @@ enum MCPOutputSchemas {
     }
 
     /// MCP-20's `frame` object, carried by every answer that reflects a screen.
-    private static let frameObject = object(["seq": integer, "ageMs": nullable("integer")],
-                                            required: ["seq", "ageMs"])
+    private static let frameObject = object(
+        ["seq": integer,
+         "ageMs": describing(nullable("integer"),
+                             "Milliseconds since the window's newest frame arrived (null before the first frame).")],
+        required: ["seq", "ageMs"])
     /// MCP-60's `frame` on a screenshot: the same, plus `still` on an answer
     /// made from the frame the window shows rather than a keyframe from after
     /// the call, so the flag explains why `ageMs` is older than the call.
     private static let screenshotFrameObject = object(
-        ["seq": integer, "ageMs": nullable("integer"),
+        ["seq": integer,
+         "ageMs": describing(nullable("integer"),
+                             "Milliseconds since the window's newest frame arrived (null before the first frame)."),
          "still": describing(boolean,
                              "Present and true when the window was still and answered its displayed frame.")],
         required: ["seq", "ageMs"])
@@ -449,21 +454,35 @@ enum MCPOutputSchemas {
         let row = object([
             "i": integer, "ref": string, "p": integer, "l": integer, "role": string,
             "text": string, "desc": string, "id": string, "box": array(integer),
-            "at": array(number), "off": boolean, "where": whereToken,
+            "at": array(number), "off": boolean,
+            "where": describing(
+                whereToken,
+                "Direction to swipe to reach an off-screen match, or hidden if swiping cannot reveal it."),
             "click": boolean, "edit": boolean,
             "scroll": boolean, "check": boolean, "sel": boolean, "focus": boolean,
             "disabled": boolean, "pwd": boolean, "loading": boolean, "heading": boolean,
-            "covered": string, "hint": boolean, "hintText": string,
-            "hidden": array(integer), "in": string,
+            "covered": describing(
+                string,
+                "Ref of the topmost element covering this node's tap point, or \"window\" for another window."),
+            "hint": boolean, "hintText": string,
+            "hidden": describing(
+                array(integer),
+                "[before, after] count of omitted off-screen descendants in this scrollable."),
+            "in": string,
         ], required: ["i", "role"])
         let layer = object([
             "i": integer, "title": nullable("string"), "type": string, "active": boolean,
         ], required: ["i", "type"])
         return [
             "window": integer, "ok": boolean, "displayId": integer, "snapshot": integer,
-            "size": array(integer), "truncated": boolean,
+            "size": array(integer),
+            "truncated": describing(boolean,
+                                    "True when the tree hit its node or depth cap and rows were cut."),
             "layers": array(layer), "nodes": array(row),
-            "note": string, "loading": boolean, "omitted": integer,
+            "note": string, "loading": boolean,
+            "omitted": describing(
+                integer,
+                "Count of off-screen or too-small nodes omitted from nodes; use find to locate them or swipe a scrollable."),
         ]
     }
 
@@ -488,11 +507,15 @@ enum MCPOutputSchemas {
 
     /// MCP-81's settle: a closed state, how long it waited, and why it stopped.
     private static let settleObject = object([
-        "state": ["type": "string",
-                  "enum": ["settled", "still_changing", "not_waited", "not_ready", "unavailable",
-                           "window_closed", "interrupted"]],
+        "state": describing(
+            ["type": "string",
+             "enum": ["settled", "still_changing", "not_waited", "not_ready", "unavailable",
+                      "window_closed", "interrupted"]],
+            "settled when quiet with nothing loading; still_changing is not an error."),
         "waitedMs": integer,
-        "reason": ["type": "string", "enum": ["changes", "loading", "deadline"]],
+        "reason": describing(
+            ["type": "string", "enum": ["changes", "loading", "deadline"]],
+            "Why settle stopped early: changes, loading, or deadline."),
     ], required: ["state"])
 
     /// MCP-80: the act envelope every input tool answers. No `ok`. `did` is a

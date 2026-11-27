@@ -6,7 +6,8 @@
 //
 // Pure: a parsed tree in, text or a filtered answer out. The text and the
 // query are on-screen content and a client's words: they go to the client,
-// never to a log line.
+// never to a log line. A row has one parser, `UITree.Node.parse` (a wire row
+// and an encoded one alike), so this view and `find` cannot drift apart.
 
 import Foundation
 
@@ -25,68 +26,37 @@ struct UITreeFind: Equatable {
 enum UITreeText {
     // MARK: The text view (MCP-74)
 
-    /// What a line is made of: a parsed node, or a row of an answer already
-    /// encoded (an observed read, MCP-82).
-    private struct Row {
-        var ref = "", role = "", text: String?, desc: String?, hintText: String?
-        var heading = false, hint = false, click = false, edit = false, scroll = false
-        var check: Bool?
-        var selected = false, focused = false, disabled = false, password = false, off = false
-        /// Which way an off-screen row is (MCP-75): `above`, `below`, `left`,
-        /// `right`, `before`, `after` or `hidden`.
-        var whereOff: String?
-        var hidden: [Int]?
-        /// The covering node's ref, or `window` (MCP-73): the row's point is
-        /// under it, so a tap there would hit the cover.
-        var covered: String?
-
-        init(_ node: UITree.Node) {
-            ref = node.ref; role = node.role; text = node.text; desc = node.desc
-            hintText = node.hintText; heading = node.heading; hint = node.hint
-            click = node.click; edit = node.edit; scroll = node.scroll; check = node.check
-            selected = node.selected; focused = node.focused; disabled = node.disabled
-            password = node.password; off = node.off; whereOff = node.whereOff; hidden = node.hidden
-            covered = node.covered
-        }
-
-        /// A row as `UITree.encoded()` writes it.
-        init(_ row: [String: Any]) {
-            func flag(_ key: String) -> Bool { row[key] as? Bool ?? false }
-            ref = row["ref"] as? String ?? ""; role = row["role"] as? String ?? ""
-            text = row["text"] as? String; desc = row["desc"] as? String
-            hintText = row["hintText"] as? String; heading = flag("heading"); hint = flag("hint")
-            click = flag("click"); edit = flag("edit"); scroll = flag("scroll"); check = row["check"] as? Bool
-            selected = flag("sel"); focused = flag("focus"); disabled = flag("disabled")
-            password = flag("pwd"); off = flag("off"); whereOff = row["where"] as? String
-            hidden = (row["hidden"] as? [Int]).flatMap { $0.count == 2 ? $0 : nil }
-            covered = row["covered"] as? String
-        }
-    }
-
     /// One line per labelled or actionable node, in reading order.
     /// [within] adds `, in <ref>` to an off-screen match's bracket.
     static func text(_ nodes: [UITree.Node], within: [Int: String] = [:]) -> String {
-        lines(nodes.map { (Row($0), $0.index, $0.parent, within[$0.index]) })
+        lines(nodes.map { ($0, within[$0.index]) })
     }
 
-    /// The text view of an encoded `ui_tree` answer (an observed read, MCP-82).
+    /// The text view of an encoded `ui_tree` answer (an observed read, MCP-82):
+    /// the same rows again, parsed by the one parser, with each row's `in` as
+    /// the `find` that answered it named it.
     static func text(answer: [String: Any]) -> String {
-        lines((answer["nodes"] as? [[String: Any]] ?? []).map { row in
-            (Row(row), row["i"] as? Int ?? -1, row["p"] as? Int, row["in"] as? String)
-        })
+        let rows = answer["nodes"] as? [[String: Any]] ?? []
+        var within: [Int: String] = [:]
+        let nodes = rows.compactMap { row -> UITree.Node? in
+            guard let node = UITree.Node.parse(row) else { return nil }
+            if let holder = row["in"] as? String { within[node.index] = holder }
+            return node
+        }
+        return text(nodes, within: within)
     }
 
-    /// The lines of [rows], each with its `i`, its parent's `i` and a `find`'s
-    /// scrollable. An unlabelled clickable wrapper adopts its non-actionable
-    /// children's labels onto its own line (MCP-74): a cross-platform
-    /// toolkit's icon button is one `View` a client can press, wrapping the
-    /// text it shows, and two disconnected lines read as two controls.
-    private static func lines(_ rows: [(Row, Int, Int?, String?)]) -> String {
+    /// The lines of [rows], each with the `find`'s scrollable. An unlabelled
+    /// clickable wrapper adopts its non-actionable children's labels onto its
+    /// own line (MCP-74): a cross-platform toolkit's icon button is one `View`
+    /// a client can press, wrapping the text it shows, and two disconnected
+    /// lines read as two controls.
+    private static func lines(_ rows: [(UITree.Node, String?)]) -> String {
         let absorbed = wrappers(rows)
         var out: [String] = []
         for (at, entry) in rows.enumerated() {
             if absorbed.swallowed.contains(at) { continue }
-            let (row, _, _, within) = entry
+            let (row, within) = entry
             guard let line = line(row, within: within, label: absorbed.joined[at] ?? label(row)) else {
                 continue
             }
@@ -102,7 +72,7 @@ enum UITreeText {
         var swallowed: Set<Int> = []
     }
 
-    private static func wrappers(_ rows: [(Row, Int, Int?, String?)]) -> Absorbed {
+    private static func wrappers(_ rows: [(UITree.Node, String?)]) -> Absorbed {
         var out = Absorbed()
         guard rows.count > 1 else { return out }
         /// The positions under [at], pre-order: the run after it until a row
@@ -111,20 +81,22 @@ enum UITreeText {
         /// every real screen — so both sides of the comparison are `i`. `next`
         /// advances every pass, so a malformed parent loop ends at the row count.
         func descendants(of at: Int) -> [Int] {
-            var under: Set<Int> = [rows[at].1]
+            var under: Set<Int> = [rows[at].0.index]
             var found: [Int] = []
             var next = at + 1
             while next < rows.count {
-                guard let parent = rows[next].2, under.contains(parent) else { break }
-                under.insert(rows[next].1)
+                guard let parent = rows[next].0.parent, under.contains(parent) else { break }
+                under.insert(rows[next].0.index)
                 found.append(next)
                 next += 1
             }
             return found
         }
-        func acts(_ row: Row) -> Bool { row.click || row.edit || row.scroll || row.check != nil }
+        func acts(_ node: UITree.Node) -> Bool {
+            node.click || node.edit || node.scroll || node.check != nil
+        }
         for (at, entry) in rows.enumerated() {
-            let (row, _, _, _) = entry
+            let row = entry.0
             // Only a clickable wrapper with no label of its own, and not a
             // field, a list or a check: those act on themselves.
             guard row.click, !row.edit, !row.scroll, row.check == nil, label(row) == nil else { continue }
@@ -144,12 +116,12 @@ enum UITreeText {
     /// `# ` for a heading, the label (a shown hint as `<hint> (hint)`, never a
     /// password's text), then `[<ref> <role> <states>]` for a node a client can
     /// act on; nil for a node with neither.
-    private static func line(_ row: Row, within: String?, label: String? = nil) -> String? {
+    private static func line(_ node: UITree.Node, within: String?, label: String? = nil) -> String? {
         var parts: [String] = []
-        if let label = label ?? self.label(row) {
-            parts.append(row.heading ? "# " + label : label)
+        if let label = label ?? self.label(node) {
+            parts.append(node.heading ? "# " + label : label)
         }
-        if let bracket = bracket(row, within: within) { parts.append(bracket) }
+        if let bracket = bracket(node, within: within) { parts.append(bracket) }
         return parts.isEmpty ? nil : parts.joined(separator: " ")
     }
 
@@ -158,39 +130,39 @@ enum UITreeText {
     /// "36 reais com 69 centavos" as `desc` — so both are said, and neither
     /// the visible text nor what the page reads out is lost (MCP-74). A
     /// password field's text never is.
-    private static func label(_ row: Row) -> String? {
-        if row.hint, let hint = row.hintText, !hint.isEmpty { return hint + " (hint)" }
-        if !row.password, let text = row.text, !text.isEmpty {
-            if let desc = row.desc, !desc.isEmpty, desc != text { return text + " — " + desc }
+    private static func label(_ node: UITree.Node) -> String? {
+        if node.hint, let hint = node.hintText, !hint.isEmpty { return hint + " (hint)" }
+        if !node.password, let text = node.text, !text.isEmpty {
+            if let desc = node.desc, !desc.isEmpty, desc != text { return text + " — " + desc }
             return text
         }
-        if let desc = row.desc, !desc.isEmpty { return desc }
+        if let desc = node.desc, !desc.isEmpty { return desc }
         return nil
     }
 
     /// A node takes a tap, text, a swipe or a check; an off-screen match is
     /// bracketed too, so the reader sees it is off and where.
-    private static func bracket(_ row: Row, within: String?) -> String? {
-        let acts = row.click || row.edit || row.scroll || row.check != nil
-        guard acts || row.off else { return nil }
-        var words: [String] = row.ref.isEmpty ? [] : [row.ref]
-        words.append(row.role)
+    private static func bracket(_ node: UITree.Node, within: String?) -> String? {
+        let acts = node.click || node.edit || node.scroll || node.check != nil
+        guard acts || node.off else { return nil }
+        var words: [String] = node.ref.isEmpty ? [] : [node.ref]
+        words.append(node.role)
         // The row's own keys, in the row's order (WIN-79), true ones only.
         // MCP-75: an off-screen row names which way it is, right after `off`.
         let states: [(Bool, String)] = [
-            (row.edit, "edit"), (row.scroll, "scroll"), (row.check == true, "check"),
-            (row.selected, "sel"), (row.focused, "focus"), (row.disabled, "disabled"),
-            (row.password, "pwd"),
-            (row.off, row.whereOff.map { "off \($0)" } ?? "off"),
+            (node.edit, "edit"), (node.scroll, "scroll"), (node.check == true, "check"),
+            (node.selected, "sel"), (node.focused, "focus"), (node.disabled, "disabled"),
+            (node.password, "pwd"),
+            (node.off, node.whereOff.map { "off \($0)" } ?? "off"),
         ]
         words += states.filter(\.0).map(\.1)
         var inside = words.joined(separator: " ")
-        if let hidden = row.hidden, hidden.count == 2 {
+        if let hidden = node.hidden, hidden.count == 2 {
             inside += ", \(hidden[0]) before, \(hidden[1]) after"
         }
         // MCP-73: a covered row says what sits over it, so a text read tells
         // a promo modal's button from one nothing covers.
-        if let covered = row.covered, !covered.isEmpty { inside += ", covered by \(covered)" }
+        if let covered = node.covered, !covered.isEmpty { inside += ", covered by \(covered)" }
         if let within { inside += ", in \(within)" }
         return "[" + inside + "]"
     }

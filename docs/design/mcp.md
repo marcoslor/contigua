@@ -437,6 +437,18 @@ the phone is locked; the Phone Mirror shows the lock screen until the person
 unlocks it."}`. `foregroundError` (`not_supported`, `timeout`) appears when
 `foreground` is null because the phone could not answer.
 
+The Mac hears the phone's app list once when the session comes up, so a list it
+cached stays what it was until something asks again — and an app installed in
+the meantime (from a store, a sideload, `adb install`, not only a Mac
+drag-and-drop APK) would be missing. Both tools that answer from the list
+therefore refresh it on demand (MCP-33, MCP-40): `list_apps` asks the online
+phone for its list once more and waits at most 2 s for the reply, sharing one
+`apps.list` between calls that arrive together, and answers the Mac's cached
+list when the phone is offline or silent. `open_app` resolves the app from the
+list it has, so a known app opens with no round trip; only a miss (`not_found`,
+or `not_ready` with no list at all) asks the phone once and tries the refreshed
+list once more before it answers.
+
 ## Freshness
 
 `frame.seq` counts the access units the Mac received for that window (a whole
