@@ -113,6 +113,20 @@ internal class UiAutomationTree(private val log: (String) -> Unit) : UiTreeSourc
                 object : UiPress.Target {
                     override fun refresh(): Boolean = runCatching { found.refresh() }.getOrDefault(false)
                     override fun read(): UiTree.Node = this@UiAutomationTree.node(found, 0, HashMap())
+                    override fun viewport(size: IntSize): UiTree.Box {
+                        val ancestors = ArrayList<UiTree.Box>()
+                        var parent = runCatching { found.parent }.getOrNull()
+                        var steps = 0
+                        while (parent != null && steps < UiTree.MAX_DEPTH) {
+                            steps++
+                            if (parent.isScrollable) {
+                                val r = Rect().also { parent.getBoundsInScreen(it) }
+                                ancestors.add(UiTree.Box(r.left, r.top, r.right, r.bottom))
+                            }
+                            parent = runCatching { parent.parent }.getOrNull()
+                        }
+                        return UiTree.viewport(size, ancestors)
+                    }
                 }
             }
             UiPress.decide(target, size, expect) { coverNow(automation, displayId, size, keys, k) }

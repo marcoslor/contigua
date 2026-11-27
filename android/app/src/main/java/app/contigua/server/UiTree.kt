@@ -305,6 +305,23 @@ object UiTree {
     }
 
     /**
+     * Narrows [bounds] to a scrollable container's [scrollableBox] when it has
+     * a non-empty box of its own: one viewport rule shared by [Builder.add] and
+     * [UiPress.decide] so `ui_tree` and `ui.press` agree on `box`, `at` and
+     * `off_screen` (MCP-73, MCP-86).
+     */
+    internal fun narrow(bounds: Box, scrollableBox: Box?): Box =
+        if (scrollableBox != null && !scrollableBox.empty) {
+            clip(scrollableBox, bounds) ?: Box(0, 0, 0, 0)
+        } else {
+            bounds
+        }
+
+    /** The visible viewport for a node inside [scrollAncestors] on a display of [size]. */
+    internal fun viewport(size: IntSize, scrollAncestors: List<Box>): Box =
+        scrollAncestors.fold(Box(0, 0, size.w, size.h)) { bounds, box -> narrow(bounds, box) }
+
+    /**
      * One step from a layer's root to a node: its drawing order among its
      * siblings and its index among them, folded nodes included.
      */
@@ -487,16 +504,17 @@ object UiTree {
                     return
                 }
                 val here = path + Step(node.drawingOrder, position)
+                val childClip = if (node.scrollable) narrow(clip, node.box) else clip
                 if (!kept(node)) {
                     // Fold it: its children keep its parent.
-                    add(layer, node.children, parent, depth + 1, here, active, open, clip)
+                    add(layer, node.children, parent, depth + 1, here, active, open, childClip)
                     continue
                 }
                 if (!offscreen && off(node, clip)) {
                     // Left out, counted (MCP-106): its children keep its parent.
                     omitted++
                     for (it in open) if (it.shown) it.after++ else it.before++
-                    add(layer, node.children, parent, depth + 1, here, active, open, clip)
+                    add(layer, node.children, parent, depth + 1, here, active, open, childClip)
                     continue
                 }
                 // MCP-75: an `off` row on an off-screen read says which way a
@@ -518,15 +536,6 @@ object UiTree {
                     interactive = node.clickable || node.editable || node.checkable,
                 ))
                 val inside = if (node.scrollable) open + Hidden(index).also { scrolls.add(it) } else open
-                // A scrollable clips its descendants to its visible viewport:
-                // a card scrolled out of a list's top is not drawn over a fixed
-                // bar the list comes after (MCP-73). A scrollable with no box,
-                // or an empty one, clips nothing.
-                val childClip = if (node.scrollable && node.box?.empty == false) {
-                    clip(node.box, clip) ?: Box(0, 0, 0, 0)
-                } else {
-                    clip
-                }
                 add(layer, node.children, index, depth + 1, here, active, inside, childClip)
             }
         }
