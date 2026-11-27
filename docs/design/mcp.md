@@ -205,7 +205,7 @@ window) or `"window"` (MCP-100, "A window an agent opens" below).
 | `list_windows` | — | Every open window: its id, what it shows, who opened it (you, another agent, the person or the app itself), its state and how fresh its picture is, and the windows that closed in the last 10 minutes with the reason. A window id is a handle, never reused for another window while Contigua runs. |
 | `close_window` | `window`, `force`? | Close a window. On the phone this ends the app's screen on that window's own display; the app is not uninstalled and its data (a browser's tabs, a document) stays. A window the person opened needs force: true. |
 | `screenshot` | `window`, `ref`?, `wait`? | A PNG of the window, from a frame the phone sends after this call (never an older one), longest side at most 1280 px. A window that is not moving answers the frame it shows, with frame.still: true and that frame's own age. ui_tree's box values are in the window's pixels (size), not the image's. Pass ref to get only that element. |
-| `ui_tree` | `window`, `wait`? (default `"none"`), `format`? (`"tree"`/`"text"`), `find`? | What the window shows, as accessibility nodes in reading order: text, role, view id, states, a tap point (at, 0..1) and a ref for tap; box is in the display's pixels (size). A ref names one element for as long as it is on screen, across reads; a ref whose element is gone is refused. Only what is on screen is listed: a list says how many items it hides before and after; swipe the list to reach them. A field showing its hint has hint: true and no text. loading: true means the screen is still loading. Exact, and cheaper than a screenshot for finding what to press. find keeps only the nodes whose text, description or view id contains it, ignoring case and accents, off-screen ones included (off: true, no at, where says whether it is above, below, left, right, hidden from swipes, or before/after its list, and in names the list to swipe), and says how many matched of the total. format: "text" answers text instead of nodes: one line per label in reading order, # before a heading, [ref role states] after what can be acted on, and a value whose description differs as text — description. |
+| `ui_tree` | `window`, `wait`? (default `"none"`), `format`? (`"tree"`/`"text"`), `find`? | What the window shows, as accessibility nodes in reading order: text, role, view id, states, a tap point (at, 0..1) and a ref for tap; box is in the display's pixels (size). A ref names one element for as long as it is on screen, across reads; a ref whose element is gone is refused. Only what is on screen is listed: a list says how many items it hides before and after; swipe the list to reach them. A field showing its hint has hint: true and no text. loading: true means the screen is still loading. Exact, and cheaper than a screenshot for finding what to press. find keeps only the nodes whose text, description, hint or view id contains it, ignoring case and accents, off-screen ones included (off: true, no at, where says whether it is above, below, left, right, hidden from swipes, or before/after its list, and in names the list to swipe), and says how many matched of the total. format: "text" answers text instead of nodes: one line per label in reading order, # before a heading, [ref role states] after what can be acted on, a value whose description differs as text — description, and a covered element adds its cover to the bracket: covered by the cover's ref, or covered by window. |
 | `wait` | `window`, one of `ms` (1–30000), `text` (+ `gone`?) or `settle: true`; `timeoutMs`? (≤ 30000, default 10000), `observe`? | Wait on a window: for ms milliseconds, until text appears on it (with gone: true, until it disappears), or with settle: true until it stops changing and nothing on it is loading, at most timeoutMs; if timeoutMs ends first, reason says whether it was still loading. Use this instead of sleeping or re-reading the tree as a clock. |
 | `tap` | `window`, `ref` or `x`+`y`, `holdMs`? (1–3000), `wait`?, `observe`? | Tap an element by its ref from ui_tree (preferred), or a point x, y (0..1 of the window); holdMs makes it a long press. A ref names one element for as long as it is on screen, across reads; a ref whose element is gone is refused. A ref whose element is off screen or covered is refused too, and nothing is pressed. The answer names what was pressed (its role and label). By default the call waits for the screen to settle and returns the new tree. |
 | `swipe` | `window`, `direction` (+ `ref`?) or `x1`,`y1`,`x2`,`y2`; `ms`? (1–2000, default 300), `wait`?, `observe`? | Swipe in a window. direction is the way the finger moves (swipe up to see what is further down), through the centre of ref's element or of the window; or give the points x1,y1 to x2,y2. By default the call waits for the screen to settle and returns the new tree. |
@@ -321,7 +321,7 @@ the node is on screen, across reads, and the phone resolves it at the press.
 ```json
 {"window": 3, "ok": true, "snapshot": 8, "state": "live", "frame": {"seq": 1340, "ageMs": 35},
  "format": "text",
- "text": "# Ada Lovelace\nSearch Wikipedia (hint) [e7 EditText edit focus]\n[e20 RecyclerView scroll, 0 before, 41 after]\nRead more [e9 Button]"}
+ "text": "# Ada Lovelace\nSearch Wikipedia (hint) [e7 EditText edit focus]\n[e20 RecyclerView scroll, 0 before, 41 after]\nRead more [e9 Button, covered by e31]"}
 ```
 
 ### `screenshot` (MCP-60…64)
@@ -644,8 +644,16 @@ clients learned the hard way:
   instead of printing two disconnected lines; a wrapper with an actionable or
   off-screen descendant keeps them (a clickable card still shows its inner
   button). Round 1's own two failures.
-  `find` keeps only matching nodes: a browser page's ninety rows become the one
-  the client was looking for.
+  The fold walks a row's `p` against its children's `i`, never against their
+  position in the read: the rows left out off screen make a row's `i` and its
+  position differ on every real screen, and a fold that compared positions
+  quietly stopped folding. A covered node says so in its bracket
+  (`Read more [e9 Button, covered by e31]`, or `covered by window`), so a
+  button a promo modal sits over does not read like a free one (MCP-73).
+  `find` keeps only matching nodes — text, description, hint or view id, case
+  and accents ignored — so a browser page's ninety rows become the one the
+  client was looking for, and an empty search bar, whose words are its hint
+  (MCP-104) rather than its text, is found too.
 - **Only what is on screen, and how much is not (MCP-106).** A node off the
   display, not visible to the user or under 8×8 visible pixels is left out;
   a long WebView list sends only its on-screen rows and counts the rest.

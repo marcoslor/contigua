@@ -109,7 +109,61 @@ final class UITreeTextTests: XCTestCase {
         XCTAssertEqual(UITreeText.text(answer: try answer(read)), expected)
     }
 
+    // [MCP-74] The tree omits off-screen rows, so a row's `i` and its position
+    // in the read differ: the wrapper fold compares nodes by `i`, never by
+    // position, or it silently stops folding on a real screen.
+    func testUnlabelledClickableWrapperFoldsWithNonContiguousIndices_MCP74() throws {
+        let read = try tree([
+            ["i": 0, "k": 1, "role": "TextView", "text": "Before", "box": box(0), "at": [0.5, 0.0]],
+            ["i": 10, "k": 10, "role": "LinearLayout", "click": true,
+             "box": box(1), "at": [0.5, 0.01]],
+            ["i": 11, "k": 11, "p": 10, "role": "TextView", "hint": true, "hintText": "Search",
+             "box": box(2), "at": [0.5, 0.02]],
+            ["i": 20, "k": 20, "role": "View", "click": true, "box": box(3), "at": [0.5, 0.03]],
+            ["i": 21, "k": 21, "p": 20, "role": "TextView", "desc": "Settings",
+             "box": box(4), "at": [0.5, 0.04]],
+        ])
+        let expected = "Before\nSearch (hint) [e10 LinearLayout]\nSettings [e20 View]"
+        XCTAssertEqual(UITreeText.text(read.nodes), expected)
+        // The encoded answer's rows fold the same way.
+        XCTAssertEqual(UITreeText.text(answer: try answer(read)), expected)
+    }
+
     // MARK: find (MCP-75, MCP-106)
+
+    // [MCP-75] A shown hint is where an empty field keeps its words (MCP-104),
+    // so `find` reads it too: a search bar with no text still matches.
+    func testFindMatchesHintText_MCP75() throws {
+        let read = try tree([
+            ["i": 0, "k": 7, "role": "EditText", "hint": true, "hintText": "Buscar productos",
+             "edit": true, "box": box(0), "at": [0.5, 0.0]],
+            ["i": 1, "k": 8, "role": "EditText", "hint": true, "hintText": "Café",
+             "edit": true, "box": box(1), "at": [0.5, 0.01]],
+            ["i": 2, "k": 9, "role": "TextView", "text": "Tea", "box": box(2), "at": [0.5, 0.02]],
+        ])
+        XCTAssertEqual(UITreeText.find("buscar", in: read.nodes).rows, [0])
+        XCTAssertEqual(UITreeText.find("PRODUCTOS", in: read.nodes).rows, [0], "case")
+        XCTAssertEqual(UITreeText.find("cafe", in: read.nodes).rows, [1], "diacritics")
+        XCTAssertEqual(UITreeText.find("nowhere", in: read.nodes).matched, 0)
+    }
+
+    // [MCP-73] [MCP-74] A covered node says so in the text view: a promo
+    // modal's button is not the same control as one nothing sits over.
+    func testCoveredNodeIsMarkedInTextView_MCP74() throws {
+        let read = try tree([
+            ["i": 0, "k": 9, "role": "Button", "text": "Read more", "click": true,
+             "box": box(0), "at": [0.5, 0.0], "covered": 31],
+            ["i": 1, "k": 10, "role": "Button", "text": "Read more", "click": true,
+             "box": box(1), "at": [0.5, 0.01], "covered": "window"],
+            ["i": 2, "k": 11, "role": "Button", "text": "Read more", "click": true,
+             "box": box(2), "at": [0.5, 0.02]],
+        ])
+        let expected = "Read more [e9 Button, covered by e31]\n"
+            + "Read more [e10 Button, covered by window]\nRead more [e11 Button]"
+        XCTAssertEqual(UITreeText.text(read.nodes), expected)
+        // An observed read comes back encoded: it reads the same way.
+        XCTAssertEqual(UITreeText.text(answer: try answer(read)), expected)
+    }
 
     // [MCP-75]
     func testFindKeepsOnlyMatches() throws {

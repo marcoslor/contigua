@@ -1,7 +1,8 @@
 // Reading less of a window (docs/design/mcp.md "ui_tree", plan T9, #170): the
-// text view of a tree (MCP-74), a hint read as a hint (MCP-104), and `find`,
-// which keeps only the matching nodes, the off-screen ones included, each of
-// those naming the scrollable to swipe (MCP-75, MCP-106).
+// text view of a tree (MCP-74) — a covered node saying what sits over it
+// (MCP-73) — a hint read as a hint (MCP-104, and `find` reading it), and
+// `find`, which keeps only the matching nodes, the off-screen ones included,
+// each of those naming the scrollable to swipe (MCP-75, MCP-106).
 //
 // Pure: a parsed tree in, text or a filtered answer out. The text and the
 // query are on-screen content and a client's words: they go to the client,
@@ -35,6 +36,9 @@ enum UITreeText {
         /// `right`, `before`, `after` or `hidden`.
         var whereOff: String?
         var hidden: [Int]?
+        /// The covering node's ref, or `window` (MCP-73): the row's point is
+        /// under it, so a tap there would hit the cover.
+        var covered: String?
 
         init(_ node: UITree.Node) {
             ref = node.ref; role = node.role; text = node.text; desc = node.desc
@@ -42,6 +46,7 @@ enum UITreeText {
             click = node.click; edit = node.edit; scroll = node.scroll; check = node.check
             selected = node.selected; focused = node.focused; disabled = node.disabled
             password = node.password; off = node.off; whereOff = node.whereOff; hidden = node.hidden
+            covered = node.covered
         }
 
         /// A row as `UITree.encoded()` writes it.
@@ -54,6 +59,7 @@ enum UITreeText {
             selected = flag("sel"); focused = flag("focus"); disabled = flag("disabled")
             password = flag("pwd"); off = flag("off"); whereOff = row["where"] as? String
             hidden = (row["hidden"] as? [Int]).flatMap { $0.count == 2 ? $0 : nil }
+            covered = row["covered"] as? String
         }
     }
 
@@ -99,20 +105,17 @@ enum UITreeText {
     private static func wrappers(_ rows: [(Row, Int, Int?, String?)]) -> Absorbed {
         var out = Absorbed()
         guard rows.count > 1 else { return out }
-        let place = Dictionary(rows.enumerated().map { ($0.element.1, $0.offset) },
-                                uniquingKeysWith: { first, _ in first })
         /// The positions under [at], pre-order: the run after it until a row
-        /// whose parent is not one of them. Bounded by the row count, so a
-        /// malformed parent loop ends.
+        /// whose parent is not one of them. A row's `p` names a node's `i`, not
+        /// its position — the rows left out off screen make the two differ on
+        /// every real screen — so both sides of the comparison are `i`. `next`
+        /// advances every pass, so a malformed parent loop ends at the row count.
         func descendants(of at: Int) -> [Int] {
             var under: Set<Int> = [rows[at].1]
             var found: [Int] = []
             var next = at + 1
-            var steps = 0
-            while next < rows.count, steps <= rows.count {
-                steps += 1
-                guard let parent = rows[next].2, let parentAt = place[parent],
-                      under.contains(parentAt) else { break }
+            while next < rows.count {
+                guard let parent = rows[next].2, under.contains(parent) else { break }
                 under.insert(rows[next].1)
                 found.append(next)
                 next += 1
@@ -185,14 +188,19 @@ enum UITreeText {
         if let hidden = row.hidden, hidden.count == 2 {
             inside += ", \(hidden[0]) before, \(hidden[1]) after"
         }
+        // MCP-73: a covered row says what sits over it, so a text read tells
+        // a promo modal's button from one nothing covers.
+        if let covered = row.covered, !covered.isEmpty { inside += ", covered by \(covered)" }
         if let within { inside += ", in \(within)" }
         return "[" + inside + "]"
     }
 
     // MARK: find (MCP-75, MCP-106)
 
-    /// The rows whose text, description or view id contains [needle],
-    /// ignoring case and accents, as `wait`'s text does (MCP-97).
+    /// The rows whose text, description, hint or view id contains [needle],
+    /// ignoring case and accents, as `wait`'s text does (MCP-97). An empty
+    /// field keeps its words in `hintText` (MCP-104), so `find` reads it or a
+    /// search bar can never be found.
     static func find(_ needle: String, in nodes: [UITree.Node]) -> UITreeFind {
         func has(_ value: String?) -> Bool {
             value?.range(of: needle, options: [.caseInsensitive, .diacriticInsensitive]) != nil
@@ -201,7 +209,7 @@ enum UITreeText {
         for node in nodes where byIndex[node.index] == nil { byIndex[node.index] = node }
         var rows: [Int] = []
         var within: [Int: String] = [:]
-        for node in nodes where has(node.text) || has(node.desc) || has(node.id) {
+        for node in nodes where has(node.text) || has(node.desc) || has(node.hintText) || has(node.id) {
             rows.append(node.index)
             if node.off, let holder = scrollable(holding: node, in: byIndex, limit: nodes.count) {
                 within[node.index] = holder
