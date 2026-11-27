@@ -129,6 +129,78 @@ final class UITreeTextTests: XCTestCase {
         XCTAssertEqual(UITreeText.text(answer: try answer(read)), expected)
     }
 
+    // [MCP-74] [MCP-75] One gapped tree read three ways — the parsed nodes, the
+    // encoded answer and a `find`'s answer — keeps every feature in parity: a
+    // heading, a password, a shown hint, a distinct desc, both covers, a
+    // scrollable's counts, an off-screen row with its way and list, and an
+    // unlabelled clickable wrapper. Every feature a row can carry lives in one
+    // parser (UITree.Node.parse), so the text view cannot drift from `find`.
+    func testEveryNodeFeatureStaysInParityAcrossTreeTextObserveAndFind_MCP74_MCP75() throws {
+        let read = try tree([
+            ["i": 0, "k": 3, "role": "TextView", "text": "Ada Lovelace", "heading": true,
+             "box": box(0), "at": [0.5, 0.0]],
+            ["i": 10, "k": 4, "role": "EditText", "pwd": true, "edit": true, "text": "hunter2",
+             "id": "password_field", "box": box(1), "at": [0.5, 0.01]],
+            ["i": 11, "k": 7, "role": "EditText", "hint": true, "hintText": "Buscar ofertas",
+             "edit": true, "box": box(2), "at": [0.5, 0.02]],
+            ["i": 20, "k": 31, "role": "TextView", "text": "R$ 36 69",
+             "desc": "36 reais com 69 centavos", "box": box(3), "at": [0.5, 0.03]],
+            ["i": 30, "k": 40, "role": "Button", "text": "Read more", "click": true,
+             "covered": 99, "box": box(4), "at": [0.5, 0.04]],
+            ["i": 31, "k": 41, "role": "Button", "text": "Continue", "click": true,
+             "covered": "window", "box": box(5), "at": [0.5, 0.05]],
+            ["i": 40, "k": 20, "role": "RecyclerView", "scroll": true, "hidden": [2, 5],
+             "box": box(6), "at": [0.5, 0.06]],
+            ["i": 50, "k": 33, "p": 40, "role": "TextView", "text": "Row 50",
+             "off": true, "where": "below"],
+            ["i": 60, "k": 16, "role": "View", "click": true, "box": box(7), "at": [0.5, 0.07]],
+            ["i": 61, "k": 17, "p": 60, "role": "TextView", "desc": "Settings",
+             "box": box(8), "at": [0.5, 0.08]],
+        ])
+
+        // 1. The parsed nodes and the encoded answer read identically, every
+        // feature on its own line's words.
+        let fromNodes = UITreeText.text(read.nodes)
+        XCTAssertEqual(UITreeText.text(answer: try answer(read)), fromNodes,
+                       "the encoded answer drifted from the parsed nodes")
+        let lines = fromNodes.split(separator: "\n").map(String.init)
+        XCTAssertEqual(lines, [
+            "# Ada Lovelace",
+            "[e4 EditText edit pwd]",
+            "Buscar ofertas (hint) [e7 EditText edit]",
+            "R$ 36 69 — 36 reais com 69 centavos",
+            "Read more [e40 Button, covered by e99]",
+            "Continue [e41 Button, covered by window]",
+            "[e20 RecyclerView scroll, 2 before, 5 after]",
+            "Row 50 [e33 TextView off below]",
+            "Settings [e16 View]",
+        ], "the text view lost a feature: \(lines)")
+
+        // 2. `find` reads every field the text view does, and its answer's text
+        // is the text of the rows it kept, with the same `in`.
+        let needles: [(String, [Int])] = [
+            ("buscar", [11]),          // a shown hint's words (MCP-104)
+            ("ada", [0]),              // a heading's text
+            ("reais", [20]),           // a desc that differs from the text
+            ("password_field", [10]),  // a view id
+            ("row 50", [50]),          // an off-screen row, by its text
+            ("settings", [61]),        // a wrapped child's desc
+        ]
+        for (needle, rows) in needles {
+            let found = UITreeText.find(needle, in: read.nodes)
+            XCTAssertEqual(found.rows, rows, "find \(needle): \(found.rows)")
+            XCTAssertEqual(found.total, read.nodes.count, "find \(needle) lost rows from total")
+            let filtered = UITreeText.findAnswer(try answer(read), found)
+            let kept = read.nodes.filter { Set(found.rows).contains($0.index) }
+            XCTAssertEqual(UITreeText.text(answer: filtered),
+                           UITreeText.text(kept, within: found.within),
+                           "find \(needle)'s answer drifted from its own rows")
+        }
+        XCTAssertEqual(UITreeText.find("row 50", in: read.nodes).within, [50: "e20"],
+                       "an off-screen match lost the list that holds it")
+        XCTAssertEqual(UITreeText.find("nowhere", in: read.nodes).matched, 0)
+    }
+
     // MARK: find (MCP-75, MCP-106)
 
     // [MCP-75] A shown hint is where an empty field keeps its words (MCP-104),

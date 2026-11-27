@@ -342,6 +342,11 @@ final class ConnectionController {
     private(set) var rememberedPhones: [RememberedPhone] = []
     private(set) var apps: [AppInfo] = []
     private(set) var appsLoaded = false
+    /// MCP-33/MCP-40: the callers waiting for the next `apps` reply, by id, and
+    /// the id the next one takes. One request answers them all; a caller's own
+    /// timeout takes only its id out, so a continuation is never resumed twice.
+    @ObservationIgnored private var appsRefreshWaiters: [Int: CheckedContinuation<Void, Never>] = [:]
+    @ObservationIgnored private var appsRefreshNext = 0
     private(set) var icons: [String: NSImage] = [:]
     /// The adaptive layers of the icons that have them.
     private(set) var iconLayers: [String: AppIconLayers] = [:]
@@ -2683,6 +2688,7 @@ final class ConnectionController {
     private func resetPhoneData(for ref: PhoneRef) {
         resetFrontApp()
         failUITrees(.notConnected)
+        resolveAppsRefresh()
         windows.setPhoneName(displayName(for: ref))
         apps = appsCache.load(deviceId: ref.id)
         appsLoaded = !apps.isEmpty
@@ -3192,6 +3198,7 @@ final class ConnectionController {
                 clearPathOutage()
                 resetFrontApp()
                 failUITrees(.notConnected)
+                resolveAppsRefresh()
                 stopClipboardSync()
                 apkInstaller.connectionLost()
                 dropFlow.sessionEnded()
@@ -3210,6 +3217,7 @@ final class ConnectionController {
                 clearPathOutage()
                 resetFrontApp()
                 failUITrees(.notConnected)
+                resolveAppsRefresh()
                 stopClipboardSync()
                 apkInstaller.connectionLost()
                 dropFlow.sessionEnded()
@@ -3851,9 +3859,50 @@ final class ConnectionController {
         driver.run()
     }
 
+    /// MCP-33/MCP-40: ask the online phone for its app list and wait for the
+    /// answer, so a call sees an app installed since the session came up (a
+    /// store install, a sideload, `adb install`) — the Mac asks once on
+    /// connect, and only a Mac drag-and-drop APK asks again today.
+    ///
+    /// Concurrent callers share one `apps.list`: the first sends it, the rest
+    /// wait on the same reply. Each waits at most [timeout] and then answers
+    /// from the cached `apps`, so a silent phone never holds a tool call. A
+    /// caller's timeout takes only its own waiter out, and a reply, a link
+    /// drop or a phone change resumes every waiter left.
+    func refreshApps(timeout: Duration = .seconds(2)) async {
+        guard link.isOnline, session != nil else { return }
+        let id = appsRefreshNext
+        appsRefreshNext += 1
+        let fresh = appsRefreshWaiters.isEmpty
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            appsRefreshWaiters[id] = continuation
+            if fresh { session?.requestApps() }
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: timeout)
+                self?.expireAppsRefresh(id)
+            }
+        }
+    }
+
+    /// One caller's bound passed: drop its waiter and let it answer from the
+    /// cache. A waiter a reply already resumed is gone, so nothing resumes twice.
+    private func expireAppsRefresh(_ id: Int) {
+        appsRefreshWaiters.removeValue(forKey: id)?.resume()
+    }
+
+    /// The reply arrived, the link dropped or the phone changed: every caller
+    /// waiting on the list answers now (MCP-33).
+    private func resolveAppsRefresh() {
+        guard !appsRefreshWaiters.isEmpty else { return }
+        let waiting = Array(appsRefreshWaiters.values)
+        appsRefreshWaiters.removeAll()
+        for waiter in waiting { waiter.resume() }
+    }
+
     private func appsReceived(_ list: [AppInfo]) {
         apps = list
         appsLoaded = true
+        resolveAppsRefresh()
         windows.appsByPkg = Dictionary(list.map { ($0.pkg, $0) }, uniquingKeysWith: { first, _ in first })
         windows.applyLabels()
         prunePins(installed: list)

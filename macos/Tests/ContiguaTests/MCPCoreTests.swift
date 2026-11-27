@@ -371,6 +371,44 @@ final class MCPCoreTests: XCTestCase {
                        "Present and true when the window was still and answered its displayed frame.")
     }
 
+    // [MCP-5] The fields a client could misread from their names alone in the
+    // tree, settle and frame objects say what they are: `omitted` is a count,
+    // `where` is a swipe's way, `ageMs` is an age, and a `still_changing`
+    // settle is not an error.
+    func testTreeSettleAndFrameSchemasDescribeTheirFields_MCP5() throws {
+        let tree = MCPOutputSchemas.schema(for: .uiTree)
+        let properties = try XCTUnwrap(tree["properties"] as? [String: Any])
+        func described(_ properties: [String: Any], _ key: String) -> String? {
+            (properties[key] as? [String: Any])?["description"] as? String
+        }
+        XCTAssertEqual(described(properties, "omitted"),
+                       "Count of off-screen or too-small nodes omitted from nodes; use find to locate them or swipe a scrollable.")
+        XCTAssertEqual(described(properties, "truncated"),
+                       "True when the tree hit its node or depth cap and rows were cut.")
+        let rows = try XCTUnwrap((properties["nodes"] as? [String: Any])?["items"] as? [String: Any])
+        let row = try XCTUnwrap(rows["properties"] as? [String: Any])
+        XCTAssertEqual(described(row, "hidden"),
+                       "[before, after] count of omitted off-screen descendants in this scrollable.")
+        XCTAssertEqual(described(row, "where"),
+                       "Direction to swipe to reach an off-screen match, or hidden if swiping cannot reveal it.")
+        XCTAssertEqual(described(row, "covered"),
+                       "Ref of the topmost element covering this node's tap point, or \"window\" for another window.")
+        let settle = try XCTUnwrap(properties["settle"] as? [String: Any])
+        let settleProperties = try XCTUnwrap(settle["properties"] as? [String: Any])
+        XCTAssertEqual(described(settleProperties, "state"),
+                       "settled when quiet with nothing loading; still_changing is not an error.")
+        XCTAssertEqual(described(settleProperties, "reason"),
+                       "Why settle stopped early: changes, loading, or deadline.")
+        let frame = try XCTUnwrap(properties["frame"] as? [String: Any])
+        let frameProperties = try XCTUnwrap(frame["properties"] as? [String: Any])
+        XCTAssertEqual(described(frameProperties, "ageMs"),
+                       "Milliseconds since the window's newest frame arrived (null before the first frame).")
+        let screenshot = MCPOutputSchemas.schema(for: .screenshot)
+        let shotFrame = try XCTUnwrap((screenshot["properties"] as? [String: Any])?["frame"] as? [String: Any])
+        XCTAssertEqual(described(try XCTUnwrap(shotFrame["properties"] as? [String: Any]), "ageMs"),
+                       "Milliseconds since the window's newest frame arrived (null before the first frame).")
+    }
+
     // [MCP-5]
     func testImageAnswerPutsTheImageFirst() async throws {
         let png = Data([0x89, 0x50, 0x4e, 0x47])

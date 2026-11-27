@@ -69,6 +69,67 @@ struct UITree: Equatable {
         var hintText: String? = nil
         /// A scrollable's left-out rows `[before, after]` (MCP-106).
         var hidden: [Int]? = nil
+
+        /// One row, from a wire reply or from a tree already encoded as an
+        /// answer (`encoded()`): a row has one parser (MCP-74, MCP-75).
+        ///
+        /// A wire row names its phone key `k` (the ref is `e<k>`, MCP-71), a
+        /// covering node as that key (`covered: 31`) and its counts as numbers;
+        /// an encoded row carries the ref the Mac issued, the cover as a word
+        /// (`"e31"` or `"window"`) and the counts as `[Int]`. A row with no
+        /// `role` or no `i` names no node and is refused.
+        static func parse(_ raw: [String: Any]) -> Node? {
+            guard let role = raw["role"] as? String, let index = raw["i"] as? Int else { return nil }
+            let key = raw["k"] as? Int
+            var covered: String?
+            if let word = raw["covered"] as? String { covered = word }
+            else if let number = raw["covered"] as? Int { covered = "e\(number)" }
+            let points = Self.numbers(raw["at"]).flatMap { values -> Point? in
+                guard values.count == 2 else { return nil }
+                return Point(x: values[0], y: values[1])
+            }
+            return Node(index: index,
+                        ref: raw["ref"] as? String ?? key.map { "e\($0)" } ?? "",
+                        parent: raw["p"] as? Int,
+                        layer: raw["l"] as? Int ?? 0,
+                        role: role,
+                        text: raw["text"] as? String,
+                        desc: raw["desc"] as? String,
+                        id: raw["id"] as? String,
+                        box: Self.integers(raw["box"]),
+                        at: points,
+                        off: raw["off"] as? Bool ?? false,
+                        whereOff: raw["where"] as? String,
+                        click: raw["click"] as? Bool ?? false,
+                        edit: raw["edit"] as? Bool ?? false,
+                        scroll: raw["scroll"] as? Bool ?? false,
+                        check: raw["check"] as? Bool,
+                        selected: raw["sel"] as? Bool ?? false,
+                        focused: raw["focus"] as? Bool ?? false,
+                        disabled: raw["disabled"] as? Bool ?? false,
+                        password: raw["pwd"] as? Bool ?? false,
+                        loading: raw["loading"] as? Bool ?? false,
+                        k: key,
+                        heading: raw["heading"] as? Bool ?? false,
+                        covered: covered,
+                        hint: raw["hint"] as? Bool ?? false,
+                        hintText: raw["hintText"] as? String,
+                        hidden: Self.integers(raw["hidden"]).flatMap { $0.count == 2 ? $0 : nil })
+        }
+
+        /// An array of numbers as integers: JSON arrives as `NSNumber`, a tree
+        /// built in Swift as `Int`.
+        static func integers(_ raw: Any?) -> [Int]? {
+            if let values = raw as? [NSNumber] { return values.map(\.intValue) }
+            if let values = raw as? [Int] { return values }
+            return nil
+        }
+
+        static func numbers(_ raw: Any?) -> [Double]? {
+            if let values = raw as? [NSNumber] { return values.map(\.doubleValue) }
+            if let values = raw as? [Double] { return values }
+            return nil
+        }
     }
 
     let seq: Int
@@ -116,45 +177,7 @@ struct UITree: Equatable {
                          type: type,
                          active: raw["active"] as? Bool ?? false)
         }
-        self.nodes = (message.array("nodes") ?? []).compactMap { raw in
-            guard let role = raw["role"] as? String, let index = raw["i"] as? Int else { return nil }
-            let at = (raw["at"] as? [NSNumber]).flatMap { values -> Point? in
-                guard values.count == 2 else { return nil }
-                return Point(x: values[0].doubleValue, y: values[1].doubleValue)
-            }
-            var covered: String?
-            if let key = raw["covered"] as? Int { covered = "e\(key)" }
-            else if let word = raw["covered"] as? String { covered = word }
-            let key = raw["k"] as? Int
-            var node = Node(index: index,
-                        ref: key.map { "e\($0)" } ?? "",
-                        parent: raw["p"] as? Int,
-                        layer: raw["l"] as? Int ?? 0,
-                        role: role,
-                        text: raw["text"] as? String,
-                        desc: raw["desc"] as? String,
-                        id: raw["id"] as? String,
-                        box: (raw["box"] as? [NSNumber])?.map(\.intValue),
-                        at: at,
-                        off: raw["off"] as? Bool ?? false,
-                        click: raw["click"] as? Bool ?? false,
-                        edit: raw["edit"] as? Bool ?? false,
-                        scroll: raw["scroll"] as? Bool ?? false,
-                        check: raw["check"] as? Bool,
-                        selected: raw["sel"] as? Bool ?? false,
-                        focused: raw["focus"] as? Bool ?? false,
-                        disabled: raw["disabled"] as? Bool ?? false,
-                        password: raw["pwd"] as? Bool ?? false,
-                        loading: raw["loading"] as? Bool ?? false,
-                        k: key,
-                        heading: raw["heading"] as? Bool ?? false,
-                        covered: covered,
-                        hint: raw["hint"] as? Bool ?? false,
-                        hintText: raw["hintText"] as? String,
-                        hidden: (raw["hidden"] as? [NSNumber]).flatMap { $0.count == 2 ? $0.map(\.intValue) : nil })
-            node.whereOff = raw["where"] as? String
-            return node
-        }
+        self.nodes = (message.array("nodes") ?? []).compactMap { Node.parse($0) }
     }
 
     init(seq: Int, stream: UInt32, ok: Bool, code: String?, message: String?,

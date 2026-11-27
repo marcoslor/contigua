@@ -24,9 +24,21 @@ extension MCPToolHost {
 
     private var opener: MCPWindowLedger.Opener { client.map { .client($0) } ?? .person }
 
+    /// MCP-40: `open_app` asks the phone's list once more when the Mac's copy
+    /// has no match, so an app installed since the session came up (a store
+    /// install, a sideload, `adb install`) opens instead of failing
+    /// `not_found` (or `not_ready` while no list has arrived at all). A cache
+    /// hit answers from the Mac's own list with no round trip; the refreshed
+    /// list is tried once, never in a loop.
     func openApp(_ query: String, newWindow: Bool, shape: MCPWindowShape = .phone, wait: MCPWait, observe: MCPObserve) async throws -> [String: Any] {
         let phone = try onlinePhone()
-        let app = try Self.chooseApp(query, in: IntentsBridge.apps(for: phone, in: controller))
+        let app: AppInfo
+        do {
+            app = try Self.chooseApp(query, in: IntentsBridge.apps(for: phone, in: controller))
+        } catch let mismatch as MCPToolError where mismatch.code == .notFound || mismatch.code == .notReady {
+            await controller.refreshApps()
+            app = try Self.chooseApp(query, in: IntentsBridge.apps(for: phone, in: controller))
+        }
         let addWindow = try newWindow && addsWindow(app, phone: phone.id)
         let before = Set(controller.windows.openStreams)
         // MCP-51: a window this call creates is this connection's. The answer

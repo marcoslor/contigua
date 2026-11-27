@@ -59,7 +59,7 @@ struct MCPToolHost {
             case .phoneStatus:
                 return .answer(await phoneStatus())
             case .listApps(let query, let limit):
-                return .answer(try listApps(query: query, limit: limit))
+                return .answer(try await listApps(query: query, limit: limit))
             case .openApp(let query, let newWindow, let shape, let wait, let observe):
                 return .answer(try await openApp(query, newWindow: newWindow, shape: shape, wait: wait,
                                                  observe: observe))

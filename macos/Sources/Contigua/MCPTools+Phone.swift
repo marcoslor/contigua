@@ -93,8 +93,17 @@ extension MCPToolHost {
         return answer
     }
 
-    func listApps(query: String?, limit: Int?) throws -> [String: Any] {
-        let phone = try IntentsBridge.resolve(nil)
-        return try Self.appsAnswer(IntentsBridge.apps(for: phone), query: query, limit: limit)
+    /// MCP-33: the phone's launchable apps. While the phone in use is online the
+    /// call asks it once more and waits up to 2 s for that list, so an app
+    /// installed since the session came up is listed (a store install, a
+    /// sideload, `adb install`); a phone that does not answer in time, or is
+    /// offline, answers from the Mac's cache instead.
+    func listApps(query: String?, limit: Int?) async throws -> [String: Any] {
+        let phone = try IntentsBridge.resolve(nil, in: controller)
+        if controller.link.isOnline, controller.link.phone?.id == phone.id {
+            await controller.refreshApps()
+        }
+        return try Self.appsAnswer(IntentsBridge.apps(for: phone, in: controller),
+                                   query: query, limit: limit)
     }
 }
