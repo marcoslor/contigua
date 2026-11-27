@@ -95,8 +95,11 @@ Spec of every state, copy and transitions: [design/mac-redesign.md](design/mac-r
   centred together, so the margin past the rail grows with a wider window); A–Z + `#` at 9 pt in an 11 pt rest box on a
   rest pitch of at most 20 pt, giving way down to 18 pt (and then to every other or every third letter) before the rail
   hides — each letter is a 20 pt target at rest, and a short window never shrinks it; current letter accent, empty
-  letters dimmed. Shows when the search field is empty and there are ≥ 30 apps; a click/drag scrolls to that letter's
-  first app, and an empty letter skips forward. The current letter follows the first app in the top visible row.
+  letters dimmed. A condensed rail draws one 2.5 pt vertical dot centred in the letter column for each gap whose two
+  drawn letters leave letters between them (never beside a letter), in the neutral `.secondary` and never the accent,
+  at 35 % when none of the skipped letters has an app. Shows when the search field is empty and there are ≥ 30 apps; a
+  click/drag scrolls to that letter's first app, and an empty letter skips forward. The current letter follows the
+  first app in the top visible row.
   While the mouse button is down on the rail (a press, or a drag across letters) the letter a jump would land on
   lights its All Apps tiles: each at 1.08× (a transform, so nothing reflows) with a semibold label, and every other
   All Apps tile at 30 % opacity. Hover alone lights nothing on the grid. The Open on this Mac and Pinned sections —

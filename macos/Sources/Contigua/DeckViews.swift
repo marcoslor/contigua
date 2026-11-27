@@ -1766,10 +1766,31 @@ private struct DeckIndexRail: View {
         let drawn = layout
         let drawnScales = scales
         let hoveredSlot = hovered
+        // The skipped-letter dots live between the drawn letters, so they read
+        // the same shown letter each slot does.
+        let hoveredIndex: (slot: Int, letterIndex: Int)? = hoveredSlot.flatMap { entry in
+            DeckRail.letters.firstIndex(of: entry.letter).map {
+                (slot: entry.slot, letterIndex: $0)
+            }
+        }
+        let gapDots = RailCondensed.dots(slots: slots, layout: drawn,
+                                         scales: drawnScales, entries: entries,
+                                         hovered: hoveredIndex, currentIndex: currentIndex,
+                                         reduceMotion: reduceMotion, arcRoom: arcRoom)
         return ZStack(alignment: .topLeading) {
             ForEach(Array(slots.enumerated()), id: \.offset) { index, slot in
                 slotView(index: index, slot: slot, box: drawn[index],
                          scale: drawnScales[index], hovered: hoveredSlot)
+            }
+            ForEach(gapDots, id: \.afterSlot) { dot in
+                Circle()
+                    .fill(.secondary)
+                    .frame(width: RailCondensed.dotDiameter, height: RailCondensed.dotDiameter)
+                    .opacity(dot.hasApps ? 1 : 0.35)
+                    .frame(width: Self.width, height: RailCondensed.dotDiameter, alignment: .center)
+                    .offset(x: dot.xOffset, y: dot.y - RailCondensed.dotDiameter / 2)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
             }
         }
         .frame(width: Self.width, height: height, alignment: .topLeading)
@@ -1831,41 +1852,36 @@ private struct DeckIndexRail: View {
                           scale: CGFloat, hovered: (slot: Int, letter: String)?) -> some View {
         let hoveredHere = hovered?.slot == index
         let range = slot.first..<(slot.first + slot.count)
-        let containsCurrent = currentIndex.map(range.contains) ?? false
-        let shown = hoveredHere ? (hovered?.letter ?? DeckRail.letters[slot.first])
-            : containsCurrent ? (currentLetter ?? DeckRail.letters[slot.first])
-            : DeckRail.letters[slot.first]
-        let highlighted = reduceMotion && pointer.showsHelpTag && hoveredHere
-        let isCurrent = shown == currentLetter
         let hasApps = range.contains { entries[$0].index != nil }
-        return HStack(spacing: 0) {
-            Text(shown)
-                .modifier(RailLetterSize(size: 9 * scale,
-                                         weight: isCurrent || highlighted ? .semibold : .regular))
-            if !hoveredHere && slot.count > 1 {
-                // A bullet for each skipped letter in this slot, so the
-                // condensed rail still reads as the whole alphabet.
-                Text(String(repeating: "•", count: slot.count - 1))
-                    .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(.secondary)
+        // The same shown letter the gap dots read, so the two never disagree.
+        let hoveredIndex = hovered.flatMap { entry in
+            DeckRail.letters.firstIndex(of: entry.letter).map {
+                (slot: entry.slot, letterIndex: $0)
             }
         }
-        .foregroundStyle(isCurrent ? AnyShapeStyle(Color.accentColor)
-                                   : AnyShapeStyle(.secondary))
-        .opacity(hasApps ? 1 : 0.35)
-        // The letters stay centred in the column; only a magnified one reaches
-        // left, out of the column, toward the grid.
-        .frame(width: Self.width, height: box.height, alignment: .center)
-        .offset(x: arcOffset(scale))
-        .background(RoundedRectangle(cornerRadius: 4)
-            .fill(Color.primary.opacity(highlighted ? 0.12 : 0)))
-        .contentShape(.rect)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilityLabel(slot))
-        .accessibilityHint("Scrolls to \(DeckRail.letters[slot.first])")
-        .accessibilityAddTraits(.isButton)
-        .accessibilityAction { pick(DeckRail.letters[slot.first]) }
-        .offset(y: box.y)
+        let shown = DeckRail.letters[RailCondensed.shownLetterIndex(
+            for: index, slot: slot, hovered: hoveredIndex, currentIndex: currentIndex)]
+        let highlighted = reduceMotion && pointer.showsHelpTag && hoveredHere
+        let isCurrent = shown == currentLetter
+        return Text(shown)
+            .modifier(RailLetterSize(size: 9 * scale,
+                                     weight: isCurrent || highlighted ? .semibold : .regular))
+            .foregroundStyle(isCurrent ? AnyShapeStyle(Color.accentColor)
+                                       : AnyShapeStyle(.secondary))
+            .opacity(hasApps ? 1 : 0.35)
+            // The letters stay centred in the column; only a magnified one
+            // reaches left, out of the column, toward the grid.
+            .frame(width: Self.width, height: box.height, alignment: .center)
+            .offset(x: arcOffset(scale))
+            .background(RoundedRectangle(cornerRadius: 4)
+                .fill(Color.primary.opacity(highlighted ? 0.12 : 0)))
+            .contentShape(.rect)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(accessibilityLabel(slot))
+            .accessibilityHint("Scrolls to \(DeckRail.letters[slot.first])")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { pick(DeckRail.letters[slot.first]) }
+            .offset(y: box.y)
     }
 
     /// The hovered real letter's tag, left of the rail and centred on its slot.
