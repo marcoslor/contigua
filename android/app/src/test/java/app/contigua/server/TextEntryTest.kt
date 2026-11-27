@@ -2,6 +2,7 @@ package app.contigua.server
 
 import android.view.KeyEvent
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -195,6 +196,26 @@ class TextEntryTest {
         assertEquals(TextEntry.NOT_SUPPORTED, (type("café", canvas, clear = true) as TextEntry.Outcome.Refused).code)
         assertEquals(emptyList<String>(), canvas.actions)
         assertEquals(emptyList<KeyStroke>(), keys.pressed)
+    }
+
+    @Test
+    fun testNotSupportedWithClearAlreadyTrueDoesNotSuggestClear_MCP109() {
+        // S3: a booking app's destination field offers no set text; the caller
+        // passed clear: true, so suggesting it again hides the real fix (plain
+        // keyboard characters, no accents).
+        val canvas = RecordingFocus(TextEntry.Field("Florianópolis", 12, 12, setsText = false))
+        val refused = type("Florianópolis", canvas, clear = true)
+        assertTrue(refused is TextEntry.Outcome.Refused)
+        val sentence = (refused as TextEntry.Outcome.Refused).sentence
+        assertEquals(TextEntry.NOT_SUPPORTED, refused.code)
+        assertFalse("the sentence suggests clear again: $sentence", sentence.contains("clear: true"))
+        assertTrue("the sentence does not name the keyboard: $sentence", sentence.contains("keyboard"))
+        assertTrue("the sentence does not rule out accents: $sentence", sentence.contains("no accents"))
+        assertEquals(emptyList<String>(), canvas.actions)
+        assertEquals(emptyList<KeyStroke>(), keys.pressed)
+        // Without clear the way through is still named.
+        val plain = type("Florianópolis", RecordingFocus(TextEntry.Field("x", 1, 1, setsText = false)))
+        assertTrue((plain as TextEntry.Outcome.Refused).sentence.contains("clear: true"))
     }
 
     @Test

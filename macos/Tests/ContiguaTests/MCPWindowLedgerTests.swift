@@ -53,6 +53,53 @@ final class MCPWindowLedgerTests: XCTestCase {
     }
 
     // [MCP-52]
+    func testAnAdoptedPackageStaysInRecentlyClosed_MCP52() {
+        // S2: a link window learns the package that displays it after it
+        // opened (`window.title`); the close record keeps it, not the nil the
+        // ledger captured when the window was created.
+        var ledger = MCPWindowLedger()
+        ledger.opened(3, kind: .link, package: nil, by: .client(c1), now: 0)
+        ledger.setPackage("com.example.browser", for: 3)
+        ledger.closed(3, cause: .phone("app_exited"), now: 10)
+        let closed = ledger.recentlyClosed(asker: c1, now: 12)
+        XCTAssertEqual(closed.first?["package"] as? String, "com.example.browser")
+        XCTAssertFalse(closed.first?["package"] is NSNull, "the close record kept the opening nil")
+        XCTAssertEqual(ledger.closeRecord(3, asker: c1, now: 12)?.reason, "app_exited")
+
+        // An empty package changes nothing, and a window the ledger does not
+        // hold is left alone.
+        var untouched = MCPWindowLedger()
+        untouched.opened(4, kind: .handoff, package: "com.a", by: .person, now: 0)
+        untouched.setPackage("", for: 4)
+        untouched.setPackage("com.b", for: 9)
+        untouched.closed(4, cause: .mac(.person), now: 10)
+        XCTAssertEqual(untouched.recentlyClosed(asker: c1, now: 11).first?["package"] as? String, "com.a")
+    }
+
+    // [MCP-52]
+    @MainActor
+    func testAnAdoptedPackageReachesTheCloseRecordThroughTheWindow_MCP52() throws {
+        // The real path (S2): send_link opens a link window with no package,
+        // `window.title` adopts the app that displays it, and closing it keeps
+        // the adopted package in `recentlyClosed` — not the nil it opened with.
+        let fixture = MultiWindowFixture()
+        let link = fixture.manager.openLink("https://example.com")
+        let stream = link.stream
+        XCTAssertNil(link.pkg)
+        fixture.manager.handle(.windowTitle(stream: stream, label: "Browser",
+                                            pkg: "com.example.browser", title: nil))
+        XCTAssertEqual(link.pkg, "com.example.browser", "the window never adopted the package")
+
+        link.window?.close()
+        let now = ProcessInfo.processInfo.systemUptime
+        let rows = fixture.manager.ledger.recentlyClosed(asker: c1, now: now)
+        XCTAssertEqual(rows.first?["id"] as? Int, Int(stream))
+        XCTAssertEqual(rows.first?["kind"] as? String, "link")
+        XCTAssertEqual(rows.first?["package"] as? String, "com.example.browser")
+        XCTAssertFalse(rows.first?["package"] is NSNull, "the close record kept the window's opening nil")
+    }
+
+    // [MCP-52]
     func testOnlyTheLast16ForTenMinutesAreKept() {
         var ledger = MCPWindowLedger()
         for id in UInt32(1)...17 {

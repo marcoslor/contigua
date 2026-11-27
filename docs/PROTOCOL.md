@@ -1546,9 +1546,13 @@ for it.
      `tap` tool take), and the states that are true: `click`, `edit`, `scroll`, `check`
      (true **or** false, only when the node is checkable), `sel`, `focus` (only in the
      active layer, item 9), `disabled`, `pwd`.
-   - A node whose box does not intersect the display, that is not visible to the user, or
-     whose visible part is under 8×8 px is `off`. It is left out of the reply and
-     counted (item 9); a read that asks `offscreen: true` keeps it with `off: true`, no
+   - A node whose box does not intersect the display — or the visible viewport of a
+     scrollable ancestor that holds it, which clips its descendants as the display does —
+     that is not visible to the user, or whose visible part is under 8×8 px is `off`.
+     Clipping to that viewport keeps a card scrolled out of a list's top from covering a
+     fixed bar the list comes after in the tree, or from taking a tap point on it. It is
+     left out of the reply and counted (item 9); a read that asks `offscreen: true` keeps
+     it with `off: true`, no
      `at` and `where` (the way a swipe must go, item 9), its text still there so a reader
      knows to scroll. A tap by its ref is refused
      either way. `box` is the clipped part and `at` the centre of it, never a clamped
@@ -1707,11 +1711,12 @@ for it.
      in reading order, and the rest. The reply carries `omitted`, the count of left-out rows.
      A request `{"t":"ui.tree","stream":N,"seq":S,"offscreen":true}` keeps them, marked `off`
      as item 2 sends them, and each carries `where`, one closed word for the way a swipe must
-     go: `above` when its box ends above the display, `below` when it starts below it, `left`
-     or `right` when it lies wholly to a side, `hidden` when its bounds do have their 8×8 px
-     on the display but the user cannot see it (a collapsed tab, a DOM node swiping cannot
-     reveal); a row whose box the platform clipped to nothing (item 2's empty screen box) is
-     `before` or `after` instead, whether it comes before or after its nearest open
+     go: `above` when its box ends above the display (or the visible viewport of the
+     scrollable holding it), `below` when it starts below it, `left` or `right` when it lies
+     wholly to a side, `hidden` when its bounds do have their 8×8 px inside it but the user
+     cannot see it (a collapsed tab, a DOM node swiping cannot reveal); a row whose box
+     the platform clipped to nothing (item 2's empty screen box) is `before` or `after`
+     instead, whether it comes before or after its nearest open
      scrollable's first on-screen row — the same split as that scrollable's `hidden` — and
      `hidden` with no scrollable holding it. `where` is sent only on such a read; the Mac asks
      so only for the MCP `find` argument, and passes it through.
@@ -1732,7 +1737,9 @@ for it.
     (keys sent with no node holding input focus) — or, typing nothing,
     `{"t":"ui.type","stream":N,"seq":S,"ok":false,"code":C,"message":"…"}` with `no_field`
     (set text needed, or `clear`, and no node has input focus), `not_supported` (the node offers no
-    `ACTION_SET_TEXT`, or is a password field holding text without `clear`), `no_window`,
+    `ACTION_SET_TEXT`, or is a password field holding text without `clear`; its sentence names
+    `clear: true` only when the call did not set it, and otherwise names the text a keyboard can
+    type, without accents, since the field already had its text replaced), `no_window`,
     `busy` or `failed` (the app refused the action, the phone could not read the focused field,
     or `text` is missing or outside 1–2000 characters). Characters are counted as code points. The
     phone logs the stream, the outcome,

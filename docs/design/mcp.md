@@ -141,7 +141,7 @@ that names the next step. Extra fields depend on the code:
 | `bad_url` | LinkPolicy refused the URL | That link can't be opened: only http, https, geo, tel and mailto links up to 8 KiB are allowed. | — |
 | `bad_file` | the path is missing, unreadable, not a regular file or over the cap | That file can't be sent: it must be an absolute path to a readable regular file of at most <cap>. | — |
 | `no_frame` | no keyframe arrived within 2 s, and the phone did not say the window is still with a frame to show | Window <id> is <state word>: no new picture arrived in 2 s. Use ui_tree, or try again. — or, for an `opening` window: Window <id> is opening: no picture yet. Try again in a few seconds. | `window`, `state` |
-| `not_supported` | this phone, or the focused field, cannot do it (no tree, no foreground read, a field that takes no set text) | <phone> can't <read this window's accessibility tree \| …>. — or, for `type_text`: The focused field on window <id> can't take this text: type only letters, digits and symbols a keyboard has, or pass clear: true to replace what is there. | `window` for a field |
+| `not_supported` | this phone, or the focused field, cannot do it (no tree, no foreground read, a field that takes no set text) | <phone> can't <read this window's accessibility tree \| …>. — or, for `type_text`: The focused field on window <id> can't take this text: type only letters, digits and symbols a keyboard has, or pass clear: true to replace what is there. — and when the call already passed `clear: true`, never suggesting it again: The focused field on window <id> can't take non-keyboard characters: type only plain letters, digits and symbols a keyboard has (no accents or emoji). | `window` for a field |
 | `timeout` | the phone did not answer within the call's bound | <phone> did not answer in time. Try again; if it keeps failing, check phone_status. | — |
 | `failed` | anything else, and `close_window` on the person's window without `force` | The phone's or the app's own sentence. — or: Window <id> was opened by the person. Pass force: true to close it anyway. | `window` when one is named |
 
@@ -555,7 +555,10 @@ window whose stream the phone forgot (`error no_stream`) → `phone_closed`
 (closedBy `phone`); Use This Phone, a new phone paired, a phone forgotten or a
 re-pairing → `phone_switched` (closedBy `person`); a trust loss →
 `phone_closed` (closedBy `phone`). A window the Mac closes for the person
-records its close like any other: every close answers `recentlyClosed`.
+records its close like any other: every close answers `recentlyClosed`. Its
+`package` is the app the window was showing when it closed, which for a link or
+handoff window is the one its `window.title` adopted after it opened — never the
+nil it was created with.
 
 ## A window an agent opens (MCP-100, MCP-101)
 
@@ -654,9 +657,12 @@ clients learned the hard way:
   and accents ignored — so a browser page's ninety rows become the one the
   client was looking for, and an empty search bar, whose words are its hint
   (MCP-104) rather than its text, is found too.
-- **Only what is on screen, and how much is not (MCP-106).** A node off the
-  display, not visible to the user or under 8×8 visible pixels is left out;
-  a long WebView list sends only its on-screen rows and counts the rest.
+- **Only what is on screen, and how much is not (MCP-106, MCP-73).** A node off the
+  display, or out of the visible viewport of a scrollable ancestor that holds it,
+  not visible to the user or under 8×8 visible pixels is left out; a long WebView
+  list sends only its on-screen rows and counts the rest. The viewport counts
+  because a list that comes after a fixed bar in the tree drew a scrolled-out card
+  over that bar: its bar read `covered` and the card's tap point sat on the bar.
   Each scrollable says what it hides as `hidden: [before, after]`, and the
   answer counts every left-out node as `omitted`, so "is there more" is a
   number, not a guess. `find` searches the left-out nodes too: an off-screen
@@ -744,7 +750,11 @@ Both insert — what was in the field stays, and the answer says
 focused field cannot take set text — a custom-drawn editor, a password field
 that already holds text without `clear` — the call fails `not_supported` with a
 sentence naming the way through, and types nothing; with no focused field it
-fails `no_field`. There is no clipboard fallback. `submit` sends ENTER after.
+fails `no_field`. The way through is `clear: true` only while it is untried: a
+call that already set it is told to type plain keyboard characters, without
+accents or emoji, since replacing the text was never the trouble — the field
+takes no set text at all. There is no clipboard fallback. `submit` sends ENTER
+after.
 
 The person's own keyboard uses the `text` message, and its
 non-ASCII runs take the same `ACTION_SET_TEXT` route (WIN-80). Only a focused

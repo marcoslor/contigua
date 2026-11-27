@@ -87,7 +87,7 @@ object TextEntry {
      */
     fun type(window: Int, text: String, clear: Boolean, submit: Boolean, focus: Focus?, keys: Keys): Outcome {
         when (val plan = plan(text, clear, focus?.field, keys.strokes(text))) {
-            is Plan.Refuse -> return Outcome.Refused(plan.code, sentence(plan.code, window))
+            is Plan.Refuse -> return Outcome.Refused(plan.code, sentence(plan.code, window, clear))
             is Plan.Keys -> {
                 keys.press(plan.strokes)
                 if (submit) keys.press(ENTER)
@@ -174,11 +174,21 @@ object TextEntry {
         return search(found, 0) ?: found
     }
 
-    /** Item 10's sentence for [code] on window [window]. */
-    fun sentence(code: String, window: Int): String = when (code) {
+    /**
+     * Item 10's sentence for [code] on window [window]. A refusal that already
+     * had `clear` does not suggest it again (S3, MCP-109): the way through is
+     * the text a keyboard can type, which must lose its accents.
+     */
+    fun sentence(code: String, window: Int, clear: Boolean = false): String = when (code) {
         NO_FIELD -> "Window $window has no focused text field. Tap the field first."
-        NOT_SUPPORTED -> "The focused field on window $window can't take this text: type only letters, digits " +
-            "and symbols a keyboard has, or pass clear: true to replace what is there."
+        NOT_SUPPORTED ->
+            if (clear) {
+                "The focused field on window $window can't take non-keyboard characters: type only plain " +
+                    "letters, digits and symbols a keyboard has (no accents or emoji)."
+            } else {
+                "The focused field on window $window can't take this text: type only letters, digits " +
+                    "and symbols a keyboard has, or pass clear: true to replace what is there."
+            }
         else -> "The focused field on window $window refused the text."
     }
 

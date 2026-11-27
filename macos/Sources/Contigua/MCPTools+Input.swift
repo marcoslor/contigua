@@ -361,7 +361,7 @@ final class MCPHostActEnvironment: MCPActEnvironment {
         }
         guard reply.ok else {
             let code = reply.code ?? "failed"
-            refusalError = MCPToolError.typeRefusal(code: code, window: id)
+            refusalError = MCPToolError.typeRefusal(code: code, window: id, clear: typing.clear)
             return .typeFailed(code)
         }
         didNow = MCPActDid.type(characters: reply.characters ?? typing.text.unicodeScalars.count,
@@ -537,15 +537,19 @@ struct MCPTyping {
 extension MCPToolError {
     /// The phone's `ui.type` refusal as a closed code with design/mcp.md's
     /// sentence; nil for a code whose generic sentence stands (MCP-6, MCP-109).
-    static func typeRefusal(code: String, window id: Int) -> MCPToolError? {
+    /// [clear] is whether the call already asked to replace the field's text: a
+    /// call that did is never told to pass `clear: true` again, since that
+    /// hides the real way through — plain keyboard characters (S3).
+    static func typeRefusal(code: String, window id: Int, clear: Bool = false) -> MCPToolError? {
         switch code {
         case "no_field":
             return MCPToolError(.noField, "Window \(id) has no focused text field. Tap the field first.",
                                 ["window": id])
         case "not_supported":
-            return MCPToolError(.notSupported,
-                                "The focused field on window \(id) can't take this text: type only letters, digits and symbols a keyboard has, or pass clear: true to replace what is there.",
-                                ["window": id])
+            let message = clear
+                ? "The focused field on window \(id) can't take non-keyboard characters: type only plain letters, digits and symbols a keyboard has (no accents or emoji)."
+                : "The focused field on window \(id) can't take this text: type only letters, digits and symbols a keyboard has, or pass clear: true to replace what is there."
+            return MCPToolError(.notSupported, message, ["window": id])
         default:
             return nil
         }

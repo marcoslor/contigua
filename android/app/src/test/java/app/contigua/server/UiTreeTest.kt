@@ -470,6 +470,62 @@ class UiTreeTest {
         assertEquals(over.single { it["click"] == true }["k"], over.single { it["edit"] == true }["covered"])
     }
 
+    /**
+     * S5: a food app's `RecyclerView` (`[0, 208, 590, 1197]`) sits under a fixed
+     * search bar (`y` 72..141) and comes later in the tree, so a card scrolled
+     * out of its top ghosted over `Voltar`, the field and `Limpar texto`: the
+     * bar read `covered` and the card's tap point sat inside the bar. A node's
+     * visible bounds are clipped to its enclosing scrollable's box as well as
+     * the display (MCP-73, MCP-106, WIN-79).
+     */
+    @Test
+    fun testAScrolledItemAboveItsScrollableDoesNotCoverTheToolbar_MCP73() {
+        val bar = node(
+            role = "android.widget.FrameLayout", box = UiTree.Box(0, 72, 590, 141),
+            children = listOf(
+                node(role = "android.widget.ImageButton", desc = "Voltar", clickable = true,
+                    box = UiTree.Box(20, 72, 100, 141)),
+                node(role = "android.widget.EditText", text = "Restaurantes", editable = true,
+                    box = UiTree.Box(110, 72, 470, 141)),
+                node(role = "android.widget.TextView", text = "Limpar texto", clickable = true,
+                    box = UiTree.Box(480, 72, 570, 141)),
+            ),
+        )
+        // The first card is half scrolled out of the list's top; the second is
+        // out with only 4 px left inside the list, under F9's 8 px.
+        val partly = node(role = "android.view.View", text = "Card 1", clickable = true,
+            box = UiTree.Box(0, 72, 590, 224))
+        val gone = node(role = "android.view.View", text = "Card 2", clickable = true,
+            box = UiTree.Box(0, 60, 590, 212))
+        val list = node(role = "androidx.recyclerview.widget.RecyclerView", scrollable = true,
+            box = UiTree.Box(0, 208, 590, 1197), children = listOf(gone, partly))
+        val size = IntSize(590, 1_197)
+
+        val body = reply(listOf(layer(bar, list)), size = size)
+        val rows = nodes(body)
+        // The partly scrolled card is the list's viewport's, not the bar's.
+        val card = rows.single { it["text"] == "Card 1" }
+        assertEquals(listOf(0, 208, 590, 224), card["box"])
+        assertEquals(listOf(0.5, 0.18), card["at"])
+        // The one 4 px inside the list is off: left out and counted.
+        assertNull(rows.singleOrNull { it["text"] == "Card 2" })
+        assertEquals(listOf(1, 0), rows.single { it["scroll"] == true }["hidden"])
+        assertEquals(1, body["omitted"])
+        // Nothing in the fixed bar is covered by either card.
+        for (label in listOf("Voltar", "Restaurantes", "Limpar texto")) {
+            val row = rows.single { it["desc"] == label || it["text"] == label }
+            assertFalse("$label was covered", row.containsKey("covered"))
+        }
+
+        // On an `offscreen` read the out card says which way to swipe: the
+        // list's own top edge, not the display's.
+        val all = nodes(reply(listOf(layer(bar, list)), size = size, offscreen = true))
+        val out = all.single { it["text"] == "Card 2" }
+        assertEquals(true, out["off"])
+        assertEquals("above", out["where"])
+        assertFalse(out.containsKey("at"))
+    }
+
     @Test
     fun testAChildIsNotCoveredByItsOwnParent() { // [MCP-73]
         val label = UiTree.Node(role = "TextView", text = "Send", drawingOrder = 3, box = UiTree.Box(100, 100, 300, 200))

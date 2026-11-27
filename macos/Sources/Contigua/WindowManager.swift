@@ -1036,7 +1036,11 @@ final class WindowManager {
     func closeAll(cause: MCPWindowLedger.Cause? = nil) {
         lock.lock()
         let controllers = Array(streams.values)
-        if let cause { for controller in controllers { recordClose(controller.stream, cause: cause) } }
+        if let cause {
+            for controller in controllers {
+                recordClose(controller.stream, cause: cause, package: Self.ledgerPackage(controller))
+            }
+        }
         streams.removeAll()
         frontOrder.removeAll()
         lock.unlock()
@@ -1183,9 +1187,24 @@ final class WindowManager {
                                      visible: visible, chrome: controller.style.windowSize(stream: .zero))
     }
 
-    /// MCP-52: record why a window closed. The first cause wins.
+    /// MCP-52: record why a window closed. The first cause wins. A window that
+    /// learned its package after it opened (a link or handoff adopting the app
+    /// its display shows) still keeps that package in its close record.
     func recordClose(_ stream: UInt32, cause: MCPWindowLedger.Cause) {
+        recordClose(stream, cause: cause, package: controller(for: stream).flatMap(Self.ledgerPackage))
+    }
+
+    /// [recordClose] with the package already in hand: for a caller that holds
+    /// the windows lock, which it may not take again (MCP-52).
+    private func recordClose(_ stream: UInt32, cause: MCPWindowLedger.Cause, package: String?) {
+        if let package, !package.isEmpty { ledger.setPackage(package, for: stream) }
         ledger.closed(stream, cause: cause, now: ProcessInfo.processInfo.systemUptime)
+    }
+
+    /// A link or handoff window learned the app its display shows (`window.title`):
+    /// the ledger keeps it for the window's close record (MCP-52).
+    func noteAdoptedPackage(_ pkg: String, stream: UInt32) {
+        ledger.setPackage(pkg, for: stream)
     }
 
     static func ledgerPackage(_ controller: StreamWindowController) -> String? {

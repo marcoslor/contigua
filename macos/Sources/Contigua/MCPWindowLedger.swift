@@ -39,7 +39,7 @@ struct MCPWindowLedger {
 
     private struct Open {
         let kind: Kind
-        let package: String?
+        var package: String?
         let opener: Opener
         let at: TimeInterval
     }
@@ -65,6 +65,13 @@ struct MCPWindowLedger {
     mutating func opened(_ id: UInt32, kind: Kind, package: String?, by opener: Opener, now: TimeInterval) {
         guard open[id] == nil else { return }
         open[id] = Open(kind: kind, package: package, opener: opener, at: now)
+    }
+
+    /// MCP-52: a window learns the package that displays it after it opened
+    /// (`window.title`), and its close record must keep that one.
+    mutating func setPackage(_ package: String, for id: UInt32) {
+        guard !package.isEmpty else { return }
+        open[id]?.package = package
     }
 
     mutating func closed(_ id: UInt32, cause: Cause, now: TimeInterval) {
