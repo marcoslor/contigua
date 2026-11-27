@@ -236,6 +236,79 @@ enum RailLayout {
     }
 }
 
+/// The condensed rail's skipped-letter dots (DECK-7): a slot that covers
+/// several letters draws only one, so a vertical dot in each gap says which
+/// letters are skipped between two drawn ones. The dots are neutral, never
+/// accent-tinted, and they ride the same arc as the letters.
+enum RailCondensed {
+    static let dotDiameter: CGFloat = 2.5
+
+    /// One dot in the gap after slot `afterSlot`, in the rail's own space.
+    struct Dot: Equatable {
+        /// The slot the dot follows (its gap).
+        let afterSlot: Int
+        /// The arc's leftward offset, the average of the two slots it sits
+        /// between, so it stays under a magnified pair.
+        let xOffset: CGFloat
+        /// The dot's drawn centre y.
+        let y: CGFloat
+        /// Whether any letter the dot stands in for has apps.
+        let hasApps: Bool
+    }
+
+    /// The letter a slot draws: the hovered one, else the current one when it
+    /// lives in the slot, else the slot's first.
+    static func shownLetterIndex(for slotIndex: Int, slot: DeckRail.Slot,
+                                 hovered: (slot: Int, letterIndex: Int)?,
+                                 currentIndex: Int?) -> Int {
+        if hovered?.slot == slotIndex, let hovered {
+            return hovered.letterIndex
+        }
+        if let currentIndex, (slot.first..<(slot.first + slot.count)).contains(currentIndex) {
+            return currentIndex
+        }
+        return slot.first
+    }
+
+    /// Every dot the drawn slots skip, one per gap whose neighbouring drawn
+    /// letters leave letters between them. Empty unless the three lists agree.
+    static func dots(slots: [DeckRail.Slot], layout: [RailLayout.Slot],
+                     scales: [CGFloat], entries: [DeckRail.Entry],
+                     hovered: (slot: Int, letterIndex: Int)?, currentIndex: Int?,
+                     reduceMotion: Bool, arcRoom: CGFloat) -> [Dot] {
+        guard slots.count == layout.count, slots.count == scales.count,
+              !slots.isEmpty else { return [] }
+        let shown = slots.indices.map {
+            shownLetterIndex(for: $0, slot: slots[$0], hovered: hovered,
+                             currentIndex: currentIndex)
+        }
+        var dots: [Dot] = []
+        for index in slots.indices {
+            let lower = shown[index] + 1
+            let upper = index < slots.count - 1 ? shown[index + 1] : DeckRail.letters.count
+            guard upper > lower else { continue }
+            let hasApps = (lower..<upper).contains {
+                entries.indices.contains($0) && entries[$0].index != nil
+            }
+            if index < slots.count - 1 {
+                let y = layout[index].y + layout[index].height
+                let xOffset = (RailArc.offset(scale: scales[index], reduceMotion: reduceMotion,
+                                             room: arcRoom)
+                    + RailArc.offset(scale: scales[index + 1], reduceMotion: reduceMotion,
+                                     room: arcRoom)) / 2
+                dots.append(Dot(afterSlot: index, xOffset: xOffset, y: y, hasApps: hasApps))
+            } else {
+                // The last slot's dot keeps strictly inside the span's bottom.
+                let y = layout[index].y + layout[index].height - dotDiameter / 2
+                let xOffset = RailArc.offset(scale: scales[index], reduceMotion: reduceMotion,
+                                             room: arcRoom)
+                dots.append(Dot(afterSlot: index, xOffset: xOffset, y: y, hasApps: hasApps))
+            }
+        }
+        return dots
+    }
+}
+
 /// The rail's hit column (DECK-34): the letters' drawn column widened by at
 /// most 4 pt each side. The rail's frame is wider than its letters, and the
 /// strip right of the letters is the grid's, not the rail's.
